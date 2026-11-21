@@ -90,13 +90,13 @@ export default function Hero({ content = {} }) {
         </AnimatePresence>
       </div>
 
-      {/* ---------- Blue-led veil: icy white for copy, deep blue for depth ---------- */}
-      <div className="absolute inset-0 -z-20 bg-gradient-to-r from-[#F7FBFF]/96 via-[#DCEBFF]/82 to-[#002B66]/45 sm:from-[#F7FBFF]/95 sm:via-[#DCEBFF]/72 sm:to-[#002B66]/35" aria-hidden="true" />
-      <div className="absolute inset-0 -z-20 bg-gradient-to-t from-white/85 via-white/10 to-white/40" aria-hidden="true" />
-      <div className="absolute inset-y-0 right-0 -z-20 hidden w-[48%] bg-gradient-to-l from-primary-deeper/75 via-primary/25 to-transparent lg:block" aria-hidden="true" />
-      <div className="absolute inset-0 -z-20 bg-white/50 sm:hidden" aria-hidden="true" />
-      <div className="absolute inset-0 -z-20 bg-mesh opacity-60" aria-hidden="true" />
-      <div className="absolute inset-0 -z-10 bg-grid opacity-[0.18] mask-fade-b" aria-hidden="true" />
+      {/* ---------- Blue-led veil: ~50% transparent so the facility photos show through ---------- */}
+      <div className="absolute inset-0 -z-20 bg-gradient-to-r from-[#F7FBFF]/55 via-[#DCEBFF]/45 to-[#002B66]/40 sm:from-[#F7FBFF]/50 sm:via-[#DCEBFF]/40 sm:to-[#002B66]/35" aria-hidden="true" />
+      <div className="absolute inset-0 -z-20 bg-gradient-to-t from-white/35 via-white/10 to-white/20" aria-hidden="true" />
+      <div className="absolute inset-y-0 right-0 -z-20 hidden w-[48%] bg-gradient-to-l from-primary-deeper/40 via-primary/20 to-transparent lg:block" aria-hidden="true" />
+      <div className="absolute inset-0 -z-20 bg-white/25 sm:hidden" aria-hidden="true" />
+      <div className="absolute inset-0 -z-20 bg-mesh opacity-40" aria-hidden="true" />
+      <div className="absolute inset-0 -z-10 bg-grid opacity-[0.12] mask-fade-b" aria-hidden="true" />
       <div className="absolute inset-x-0 top-0 -z-10 h-px bg-gradient-to-r from-transparent via-primary/50 to-transparent" aria-hidden="true" />
 
       {/* ---------- luminous blue accents ---------- */}
