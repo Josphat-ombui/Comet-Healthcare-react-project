@@ -7,6 +7,7 @@ import {
   resolveMedia,
 } from '../../src/lib/media.js'
 import { canonicalizeProvider } from '../../src/lib/experts.js'
+import { webpForGalleryUrl } from '../lib/media.js'
 
 test('resolveMedia layers Content Studio overrides over the shared defaults', () => {
   const media = resolveMedia({
@@ -69,4 +70,13 @@ test('canonicalizeProvider keeps scheduling slugs but corrects identity and phot
   assert.equal(canonical.name, 'Dr. George Wafula')
   assert.equal(canonical.photoKey, 'team.georgeWafula')
   assert.equal(canonical.image, '/uploads/new-george.png')
+})
+
+test('webpForGalleryUrl maps gallery originals to their generated derivative', () => {
+  assert.equal(
+    webpForGalleryUrl('/images/gallery/DSC_3017.jpg'),
+    '/images/gallery/DSC_3017-1080.webp'
+  )
+  assert.equal(webpForGalleryUrl('/images/team/peter-asingo.jpg'), '')
+  assert.equal(webpForGalleryUrl('/images/gallery/DSC_3017-1080.webp'), '')
 })

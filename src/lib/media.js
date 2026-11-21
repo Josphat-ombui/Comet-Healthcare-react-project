@@ -27,7 +27,7 @@ export const DEFAULT_MEDIA = {
     production: { src: '/images/gallery/DSC_0481.jpg', webp: '/images/hero-slider/DSC_0481-1080.webp' },
     tablets: { src: '/images/gallery/DSC_3434.jpg', webp: '/images/hero-slider/DSC_3434-1080.webp' },
     gmp: { src: '/images/gallery/DSC_3513.jpg', webp: '/images/hero-slider/DSC_3513-1080.webp' },
-    exterior: { src: '/images/gallery/DSC_2897.jpg', webp: '' },
+    exterior: { src: '/images/gallery/DSC_2897.jpg', webp: '/images/gallery/DSC_2897-1080.webp' },
   },
   culture: {
     hero: { src: '/images/culture/culture-hero.jpg', webp: '' },

@@ -10,6 +10,7 @@
 //
 // Run with `npm run dev` (auto-restarts) or `npm start`.
 
+import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import express from 'express'
@@ -26,6 +27,7 @@ import { adminRouter } from './routes/admin.routes.js'
 import { contentRouter } from './routes/content.routes.js'
 import { documentsRouter } from './routes/documents.routes.js'
 import { requireAuth } from './lib/auth.js'
+import { webpForGalleryUrl } from './lib/media.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -66,6 +68,20 @@ app.use('/api/admin', requireAuth, adminRouter)
 // ---- production: serve the built frontend from dist/ and SPA-fallback ----
 const dist = path.resolve(__dirname, '../dist')
 const publicDir = path.resolve(__dirname, '../public')
+
+// Transparently serve generated WebP derivatives for gallery photos. Existing
+// <img src="/images/gallery/....jpg"> markup stays unchanged; supporting
+// browsers receive a much smaller file with the correct MIME type.
+app.use((req, res, next) => {
+  if (req.method !== 'GET' && req.method !== 'HEAD') return next()
+  if (!req.accepts('image/webp')) return next()
+  const webpUrl = webpForGalleryUrl(req.path)
+  if (!webpUrl) return next()
+  const file = path.join(publicDir, webpUrl.slice(1))
+  const galleryDir = path.join(publicDir, 'images', 'gallery') + path.sep
+  if (!file.startsWith(galleryDir) || !fs.existsSync(file)) return next()
+  return res.sendFile(file, { maxAge: '7d', headers: { 'Content-Type': 'image/webp' } })
+})
 
 // Serve the media library + static images from public/ in ALL environments so
 // admin-uploaded photos work identically in dev and production.

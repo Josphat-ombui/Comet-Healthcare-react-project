@@ -13,6 +13,19 @@ export const GALLERY_DIR = path.resolve(__dirname, '../../public/images/gallery'
 const ALLOWED_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif'])
 export const ALLOWED_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
 
+// Generated responsive derivatives are served transparently in place of the
+// originals; hide them from the admin media picker so photos aren't duplicated.
+const isDerivative = (name) => /-\d+\.webp$/i.test(name)
+
+/** WebP derivative that replaces a gallery original for supporting browsers. */
+export function webpForGalleryUrl(url) {
+  if (typeof url !== 'string') return ''
+  const match = /^\/images\/gallery\/([^/]+)\.(?:jpe?g|png)$/i.exec(url.split('?')[0])
+  return match && !isDerivative(match[1])
+    ? `/images/gallery/${encodeURIComponent(match[1])}-1080.webp`
+    : ''
+}
+
 export function ensureGalleryDir() {
   fs.mkdirSync(GALLERY_DIR, { recursive: true })
 }
@@ -22,7 +35,7 @@ export function listMedia() {
   ensureGalleryDir()
   return fs
     .readdirSync(GALLERY_DIR)
-    .filter((f) => ALLOWED_EXT.has(path.extname(f).toLowerCase()))
+    .filter((f) => ALLOWED_EXT.has(path.extname(f).toLowerCase()) && !isDerivative(f))
     .sort((a, b) => a.localeCompare(b))
     .map((name) => {
       const stat = fs.statSync(path.join(GALLERY_DIR, name))
