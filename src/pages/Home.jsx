@@ -58,10 +58,10 @@ export default function Home() {
       <Solutions items={valueProps} heading={home.valueProps || {}} />
       <Impact stats={normaliseStats(home.hero?.stats)} testimonials={testimonials} />
       <Innovations />
-      <Experts experts={experts} />
+      <Experts experts={experts} content={home.experts || {}} />
       <WhyChooseUs />
       <Insights />
-      <FinalCTA />
+      <FinalCTA content={home.finalCta || {}} />
     </>
   )
 }

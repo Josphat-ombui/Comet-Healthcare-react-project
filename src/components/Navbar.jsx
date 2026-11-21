@@ -5,6 +5,8 @@ import {
   ShieldCheck, Sparkles, Compass, FlaskConical, Users,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext.jsx'
+import { useContent } from '../context/ContentContext.jsx'
+import { contactHref, DEFAULT_GLOBAL } from '../lib/site.js'
 import { primaryNav, isActivePath, isAboutActive } from '../lib/navigation.js'
 import Button from './ui/Button.jsx'
 import Logo from './Logo.jsx'
@@ -32,6 +34,8 @@ export default function Navbar() {
   const [scrolled, setScrolled] = useState(() => typeof window !== 'undefined' && window.scrollY > 24)
   const [openDropdown, setOpenDropdown] = useState(false)
   const { user } = useAuth()
+  const { site } = useContent()
+  const global = { ...DEFAULT_GLOBAL, ...(site?.global || {}) }
   const location = useLocation()
 
   const isHome = location.pathname === '/'
@@ -58,11 +62,11 @@ export default function Navbar() {
         <div className="absolute -bottom-12 -left-8 h-32 w-64 rounded-full bg-primary-strong/10 blur-3xl" aria-hidden="true" />
         <div className="relative mx-auto flex max-w-7xl items-center justify-between gap-6 px-4 py-2.5 sm:px-6 lg:px-8">
           <div className="flex items-center gap-6">
-            <a href="tel:+254725519844" className="flex items-center gap-1.5 font-medium transition-colors hover:text-primary">
-              <Phone size={12} aria-hidden="true" /> +254 725 519 844
+            <a href={contactHref(global.phone)} className="flex items-center gap-1.5 font-medium transition-colors hover:text-primary">
+              <Phone size={12} aria-hidden="true" /> {global.phone}
             </a>
-            <a href="mailto:info@comethealthcares.com" className="flex items-center gap-1.5 font-medium transition-colors hover:text-primary">
-              <Mail size={12} aria-hidden="true" /> info@comethealthcares.com
+            <a href={contactHref(global.email, 'mailto')} className="flex items-center gap-1.5 font-medium transition-colors hover:text-primary">
+              <Mail size={12} aria-hidden="true" /> {global.email}
             </a>
           </div>
           <div className="flex items-center gap-4">
@@ -73,7 +77,7 @@ export default function Navbar() {
               <Sparkles size={12} className="text-primary-strong" aria-hidden="true" /> PPB Registered
             </span>
             <span className="h-3.5 w-px bg-primary/15" aria-hidden="true" />
-            <span className="text-slate/70">Mon–Fri 8:00am–5:00pm · Sat 8:30am–3:00pm</span>
+            <span className="text-slate/70">{global.hours}</span>
           </div>
         </div>
         <div className="absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-primary/35 to-transparent" aria-hidden="true" />

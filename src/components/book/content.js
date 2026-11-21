@@ -1,7 +1,6 @@
 // Editorial content for the Book a Consultation page. The server CMS provides
 // the live copy; these values keep the page useful when the API is unavailable.
 
-import { DEFAULT_MEDIA, photoSrc } from '../../lib/media.js'
 import { EXPERT_PROFILES } from '../../lib/experts.js'
 
 export const SEO = {
@@ -83,7 +82,7 @@ export const FALLBACK_BOOK_EXPERTS = EXPERT_PROFILES.map((profile) => ({
   specialty: profile.specialty,
   location: profile.location,
   bio: profile.bio,
-  image: photoSrc(DEFAULT_MEDIA, profile.photo),
+  // The photo is resolved from the live media registry in canonicalizeProvider.
   photoKey: profile.photo,
   yearsExperience: profile.yearsExperience,
   rating: profile.rating,
@@ -109,7 +108,9 @@ export function resolveBookContent(site) {
     hero: merge(HERO, cms.hero),
     assurances: mergeItems(ASSURANCES, cms.assurances),
     types: Array.isArray(cms.types) && cms.types.length ? cms.types : BOOKING_TYPES,
-    process: mergeItems(PROCESS, cms.process),
+    // The same "three steps" story is also editable on the homepage; use it
+    // when the booking-specific copy has not been customised.
+    process: mergeItems(PROCESS, cms.process?.length ? cms.process : site?.home?.howItWorks?.steps),
     trust: merge(TRUST, cms.trust),
     trustPoints: mergeItems(TRUST.points, cms.trust?.points),
     topics: mergeItems(TOPICS, cms.topics),

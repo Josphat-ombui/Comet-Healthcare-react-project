@@ -161,3 +161,50 @@ export const companyProfileSchema = z.object({
   taxRate: z.number().min(0).max(1).default(0.16),
   footerNote: z.string().trim().max(2000).optional().or(z.literal('')),
 })
+
+// ------------------------------------------------------- site content (CMS)
+//
+// The CMS tree is deliberately open-ended — Content Studio can add new copy
+// fields without a deploy — so validation focuses on shape and safety rather
+// than enumerating every branch: a plain object, bounded strings/arrays, and
+// no prototype-polluting keys that could poison `deepMerge` on the server.
+
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
+const cmsValue = z.lazy(() =>
+  z.union([
+    z.string().max(20000),
+    z.number().finite(),
+    z.boolean(),
+    z.null(),
+    z.array(cmsValue).max(500),
+    z.record(z.string().max(120), cmsValue),
+  ])
+)
+
+function hasUnsafeKey(value) {
+  const stack = [value]
+  while (stack.length) {
+    const node = stack.pop()
+    if (Array.isArray(node)) {
+      stack.push(...node)
+    } else if (node && typeof node === 'object') {
+      for (const key of Object.keys(node)) {
+        if (UNSAFE_KEYS.has(key)) return true
+        stack.push(node[key])
+      }
+    }
+  }
+  return false
+}
+
+export const siteContentSchema = z.intersection(
+  // Zod drops `__proto__` while parsing records, so inspect the raw input too.
+  z.any().refine((value) => !hasUnsafeKey(value), 'Content contains an unsafe field name'),
+  cmsValue
+    .refine((value) => value !== null && typeof value === 'object' && !Array.isArray(value), 'Content must be a JSON object')
+    .refine(
+      (value) => JSON.stringify(value).length <= 2_000_000,
+      'Content payload is too large'
+    )
+)

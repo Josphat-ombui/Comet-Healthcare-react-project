@@ -1,8 +1,9 @@
 import { ArrowRight, ArrowUpRight, FlaskConical } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { Icon } from '../../lib/icons.jsx'
+import { useMedia } from '../../context/ContentContext.jsx'
 import { Reveal, Stagger, StaggerItem } from './motion.jsx'
-import { DEFAULT_MEDIA, photoSrc } from '../../lib/media.js'
+import { photoSrc } from '../../lib/media.js'
 
 const DEFAULT_ITEMS = [
   { icon: 'flask', title: 'CDMO & Contract Manufacturing', desc: 'End-to-end support from formulation and scale-up to packaging — one accountable partner for the whole drug lifecycle.' },
@@ -12,6 +13,7 @@ const DEFAULT_ITEMS = [
 ]
 
 export default function Solutions({ items = DEFAULT_ITEMS, heading = {} }) {
+  const media = useMedia()
   const [featured, ...rest] = items.length ? items : DEFAULT_ITEMS
 
   return (
@@ -38,7 +40,7 @@ export default function Solutions({ items = DEFAULT_ITEMS, heading = {} }) {
           <StaggerItem className="lg:col-span-7">
             <div className="group relative h-full min-h-[26rem] overflow-hidden rounded-[1.75rem] border border-primary/10 bg-white shadow-card transition-all duration-500 hover:shadow-card-hover">
               <img
-                src={photoSrc(DEFAULT_MEDIA, 'site.lab')}
+                src={photoSrc(media, 'site.lab')}
                 alt="Quality control laboratory at Comet Healthcare"
                 loading="lazy"
                 decoding="async"

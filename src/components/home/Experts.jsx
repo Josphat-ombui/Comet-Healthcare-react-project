@@ -12,22 +12,24 @@ const FALLBACK_EXPERTS = [
   { name: 'Christopher Musembi', title: 'CDMO & scale-up', specialty: 'Manufacturing', photo: 'team.christopherMusembi', slug: 'christopher-musembi', location: 'Machakos, KE' },
 ]
 
-export default function Experts({ experts = [] }) {
+export default function Experts({ experts = [], content = {} }) {
   const media = useMedia()
   const shown = (experts.length ? experts : FALLBACK_EXPERTS).slice(0, 3)
+  const eyebrow = content.eyebrow || 'Our experts'
+  const title = content.title || 'Talk to the people who'
+  const highlight = content.highlight || 'do the work.'
+  const lead = content.lead || 'Senior pharmacists, scientists and regulatory specialists — available for direct consultation.'
 
   return (
     <section className="relative overflow-hidden bg-white py-24 lg:py-28" aria-labelledby="experts-title">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         <div className="flex flex-col gap-6 sm:flex-row sm:items-end sm:justify-between">
           <Reveal className="max-w-2xl">
-            <span className="eyebrow">Our experts</span>
+            <span className="eyebrow">{eyebrow}</span>
             <h2 id="experts-title" className="mt-4 font-heading text-3xl font-extrabold leading-[1.15] tracking-[-0.03em] text-ink sm:text-4xl lg:text-[2.7rem] text-balance">
-              Talk to the people who <span className="text-gradient">do the work.</span>
+              {title} <span className="text-gradient">{highlight}</span>
             </h2>
-            <p className="mt-4 text-base leading-relaxed text-slate">
-              Senior pharmacists, scientists and regulatory specialists — available for direct consultation.
-            </p>
+            <p className="mt-4 text-base leading-relaxed text-slate">{lead}</p>
           </Reveal>
           <Reveal delay={0.1}>
             <Link to="/experts" className="group inline-flex shrink-0 items-center gap-2 text-sm font-bold text-primary hover:text-primary-strong">

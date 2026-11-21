@@ -146,6 +146,28 @@ export function getAt(obj, path) {
   return path.split('.').reduce((value, key) => (value == null ? undefined : value[key]), obj)
 }
 
+/**
+ * Apply a Shared Photos edit to the site's `media` branch.
+ *
+ * `media` is already the registry object (site.media), so paths are relative
+ * to it (`team.peterAsingo`, not `media.team.peterAsingo`). Wrapping the path
+ * in another `media` key silently saved changes to a branch nothing reads.
+ */
+export function updateSharedPhoto(media, path, patch) {
+  const setIn = (obj, keys, value) => {
+    if (keys.length === 0) return value
+    const [head, ...rest] = keys
+    const base = Array.isArray(obj) ? [...obj] : { ...(obj || {}) }
+    base[head] = setIn(obj?.[head], rest, value)
+    return base
+  }
+  let next = media
+  for (const [field, fieldValue] of Object.entries(patch)) {
+    next = setIn(next, [...path.split('.'), field], fieldValue)
+  }
+  return next
+}
+
 function mediaEntry(media, path) {
   const value = getAt(media || DEFAULT_MEDIA, path)
   // A plain string is accepted for simple CMS overrides.
@@ -215,3 +237,39 @@ export function applyMediaRegistry(site, mediaOverride = site?.media) {
 /** Product/hero gallery helpers keep the filename convention in one place. */
 export const gallery = (name) => `/images/gallery/${name}`
 export const galleryWebp = (id) => `/images/hero-slider/${id}-1080.webp`
+
+/**
+ * Turn a CMS slide (`{ image, alt }`) into the responsive descriptor the hero
+ * needs. Gallery photos have 640/1080/1600px WebP derivatives in the project;
+ * uploaded photos simply use their original URL.
+ */
+export function gallerySlide(slide = {}, position = 'center') {
+  const image = slide.image || slide.src || ''
+  const id = String(image).match(/\/images\/gallery\/(DSC_\d+)\.jpe?g$/i)?.[1]
+  return {
+    id: id || image || 'slide',
+    image,
+    src: image,
+    srcSet: id
+      ? `/images/hero-slider/${id}-640.webp 640w, /images/hero-slider/${id}-1080.webp 1080w, /images/hero-slider/${id}-1600.webp 1600w`
+      : '',
+    sizes: '100vw',
+    preview: id ? galleryWebp(id) : image,
+    alt: slide.alt || '',
+    position: slide.position || position,
+  }
+}
+
+/**
+ * Resolve a page-level image field: registry photos follow Shared Photos
+ * edits, while an explicitly edited CMS field still wins over the registry.
+ */
+export function mediaImage(media, key, customSrc, customWebp) {
+  const registrySrc = photoSrc(media, key)
+  const isCustom = Boolean(customSrc) && customSrc !== photoSrc(DEFAULT_MEDIA, key)
+  const src = isCustom ? customSrc : registrySrc
+  const webp = customWebp !== undefined
+    ? customWebp
+    : (src === registrySrc ? photoWebp(media, key) : '')
+  return { src, webp }
+}

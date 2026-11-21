@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
 import {
   ArrowRight, PlayCircle, ShieldCheck, BadgeCheck, Sparkles,
@@ -7,12 +8,23 @@ import {
 import Button from '../ui/Button.jsx'
 import { Reveal, Stagger, StaggerItem } from './motion.jsx'
 import { HERO_IMAGES } from './data.js'
-import { DEFAULT_MEDIA, photoSrc } from '../../lib/media.js'
+import { useMedia } from '../../context/ContentContext.jsx'
+import { gallerySlide, photoSrc } from '../../lib/media.js'
+
+const BADGE_ICONS = [ShieldCheck, BadgeCheck, Sparkles, BadgeCheck]
 
 export default function Hero({ content = {} }) {
+  const media = useMedia()
   const [index, setIndex] = useState(0)
   const reduce = useReducedMotion()
-  const count = HERO_IMAGES.length
+
+  // Content Studio owns the slideshow. The static, curated list is only used
+  // while the CMS is loading or when an admin clears the slides array.
+  const slides = useMemo(
+    () => (content.slides?.length ? content.slides.map((slide) => gallerySlide(slide)) : HERO_IMAGES),
+    [content.slides]
+  )
+  const count = slides.length
 
   const go = useCallback((dir) => {
     setIndex((i) => (i + dir + count) % count)
@@ -28,12 +40,17 @@ export default function Hero({ content = {} }) {
   useEffect(() => {
     if (reduce) return
     const next = new Image()
-    next.src = HERO_IMAGES[(index + 1) % count].preview
-  }, [index, count, reduce])
+    next.src = slides[(index + 1) % count].preview
+  }, [index, count, reduce, slides])
 
   const badge = content.badge || 'Trusted pharmaceutical partner · Kenya & East Africa'
   const sub = content.sub || 'From formulation and scale-up to registration and quality assurance — one accountable partner for the entire life of your product.'
-  const slide = HERO_IMAGES[index]
+  const title = content.title || 'Expert guidance for the journey from'
+  const highlight = (content.highlight || 'molecule to market').replace(/[.!?]+$/, '')
+  const badges = content.badges?.length
+    ? content.badges
+    : ['GMP Certified', 'PPB Registered', '20+ Years of Trust']
+  const slide = slides[index % count]
 
   return (
     <section
@@ -94,7 +111,7 @@ export default function Hero({ content = {} }) {
                 id="home-hero-title"
                 className="mt-7 max-w-3xl text-[2.6rem] font-extrabold leading-[1.05] tracking-[-0.045em] text-ink sm:text-6xl lg:text-[4.5rem] xl:text-[5rem] text-balance"
               >
-                Expert guidance for the journey <span className="text-gradient">from molecule to market.</span>
+                {title} <span className="text-gradient">{highlight}.</span>
               </h1>
             </Reveal>
 
@@ -110,24 +127,26 @@ export default function Hero({ content = {} }) {
                   Book a Consultation
                   <ArrowRight size={18} aria-hidden="true" className="transition-transform duration-300 group-hover:translate-x-1" />
                 </Button>
-                <a href="/products" className="btn btn-outline btn-lg group !px-8 backdrop-blur-md">
+                <Link to="/services" className="btn btn-outline btn-lg group !px-8 backdrop-blur-md">
                   <PlayCircle size={18} aria-hidden="true" />
-                  Explore Our Work
-                </a>
+                  Explore our services
+                </Link>
               </div>
+              <Link to="/products" className="mt-4 inline-flex items-center gap-1.5 text-sm font-bold text-primary underline decoration-primary/30 underline-offset-4 transition-colors hover:text-primary-strong">
+                Or browse the product portfolio <ArrowRight size={15} aria-hidden="true" />
+              </Link>
             </Reveal>
 
             <Stagger className="mt-11 flex flex-wrap items-center gap-x-7 gap-y-4" delay={0.4} stagger={0.1}>
-              {[
-                { icon: ShieldCheck, label: 'GMP Certified' },
-                { icon: BadgeCheck, label: 'PPB Registered' },
-                { icon: Sparkles, label: '20+ Years of Trust' },
-              ].map(({ icon: Icon, label }) => (
-                <StaggerItem key={label} className="flex items-center gap-2 text-sm font-semibold text-primary">
-                  <Icon size={17} className="text-primary-strong" aria-hidden="true" />
-                  {label}
-                </StaggerItem>
-              ))}
+              {badges.map((label, i) => {
+                const Icon = BADGE_ICONS[i % BADGE_ICONS.length]
+                return (
+                  <StaggerItem key={`${label}-${i}`} className="flex items-center gap-2 text-sm font-semibold text-primary">
+                    <Icon size={17} className="text-primary-strong" aria-hidden="true" />
+                    {label}
+                  </StaggerItem>
+                )
+              })}
             </Stagger>
           </div>
 
@@ -140,7 +159,7 @@ export default function Hero({ content = {} }) {
                 <div className="relative overflow-hidden rounded-[1.8rem] border border-white/80 bg-white/70 p-2 shadow-pop backdrop-blur-xl">
                   <div className="relative overflow-hidden rounded-[1.4rem]">
                     <img
-                      src={photoSrc(DEFAULT_MEDIA, 'site.lab')}
+                      src={photoSrc(media, 'site.lab')}
                       alt="Scientists and analytical equipment in the Comet Healthcare quality control laboratory"
                       loading="lazy"
                       decoding="async"
@@ -201,7 +220,7 @@ export default function Hero({ content = {} }) {
         </span>
 
         <div className="hidden items-center gap-1.5 sm:flex">
-          {HERO_IMAGES.map((item, i) => (
+          {slides.map((item, i) => (
             <button
               key={item.id}
               type="button"

@@ -20,7 +20,7 @@ import { useContent } from '../../context/ContentContext.jsx'
 import { useToast } from '../../context/ToastContext.jsx'
 import { api, uploadMedia } from '../../lib/api.js'
 import {
-  DEFAULT_MEDIA, getAt, MEDIA_GROUPS, photoSrc, resolveMedia,
+  DEFAULT_MEDIA, getAt, MEDIA_GROUPS, photoSrc, resolveMedia, updateSharedPhoto,
 } from '../../lib/media.js'
 
 /* ------------------------------------------------------------ path helpers */
@@ -308,13 +308,8 @@ function SharedPhotosEditor({ value = {}, onChange }) {
   const [picking, setPicking] = useState(null)
   const media = useMemo(() => resolveMedia(value), [value])
 
-  const update = (path, patch) => {
-    let next = value
-    for (const [field, fieldValue] of Object.entries(patch)) {
-      next = setIn(next, ['media', ...path.split('.'), field], fieldValue)
-    }
-    onChange(next)
-  }
+  // `value` is already the site's `media` branch — do not add a second one.
+  const update = (path, patch) => onChange(updateSharedPhoto(value, path, patch))
 
   return (
     <div className="space-y-5">
@@ -430,7 +425,7 @@ export default function ContentStudio() {
   }, [draft, push, refresh])
 
   const resetDefaults = useCallback(async () => {
-    if (!window.confirm('Reset ALL website content and photos back to the factory defaults? This cannot be undone.')) return
+    if (!window.confirm('Reset all website text and shared photo selections back to the factory defaults? Uploaded photos stay in the media library. This cannot be undone.')) return
     setSaving(true)
     try {
       await api.post('/admin/content/reset')

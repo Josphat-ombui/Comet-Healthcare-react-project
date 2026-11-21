@@ -5,12 +5,28 @@
 import { Router } from 'express'
 import { prisma } from '../lib/prisma.js'
 import { requireRole } from '../lib/auth.js'
-import { appointmentStatusSchema, inquiryStatusSchema, documentGenerateSchema, documentPatchSchema, companyProfileSchema } from '../lib/validation.js'
+import { appointmentStatusSchema, inquiryStatusSchema, documentGenerateSchema, documentPatchSchema, companyProfileSchema, siteContentSchema } from '../lib/validation.js'
 import { addDays, localIsoDay } from '../lib/slots.js'
 import { DOCUMENT_KINDS, getCompanyProfile, upsertCompanyProfile, nextDocumentNumber, computeLine, computeTotals, toPublicDocument } from '../lib/documents.js'
-import { getSiteContent, setSiteContent } from '../lib/content.js'
+import { DEFAULT_SITE_CONTENT, getSiteContent, setSiteContent } from '../lib/content.js'
 import { listMedia, saveMedia, deleteMedia, ALLOWED_MIME } from '../lib/media.js'
+import { DEFAULT_MEDIA } from '../../src/lib/media.js'
 import express from 'express'
+
+// Factory photos are committed source files referenced by the CMS defaults.
+// Collect their URLs once so they can never be deleted from the media library
+// (which would leave the site broken after a Content Studio reset).
+function collectGalleryUrls(value, out = new Set()) {
+  if (typeof value === 'string') {
+    if (value.startsWith('/images/gallery/')) out.add(value)
+  } else if (Array.isArray(value)) {
+    for (const item of value) collectGalleryUrls(item, out)
+  } else if (value && typeof value === 'object') {
+    for (const item of Object.values(value)) collectGalleryUrls(item, out)
+  }
+  return out
+}
+const FACTORY_MEDIA_URLS = collectGalleryUrls({ site: DEFAULT_SITE_CONTENT, media: DEFAULT_MEDIA })
 
 export const adminRouter = Router()
 adminRouter.use(requireRole('ADMIN'))
@@ -265,10 +281,14 @@ adminRouter.get('/content', async (_req, res) => {
 // tree or a partial (`{ site: {...} }` is also accepted); defaults fill gaps.
 adminRouter.put('/content', async (req, res) => {
   const body = req.body?.site ?? req.body
-  if (!body || typeof body !== 'object' || Array.isArray(body)) {
-    return res.status(400).json({ error: 'Content must be a JSON object' })
+  const parsed = siteContentSchema.safeParse(body)
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: 'Invalid content payload',
+      details: parsed.error.issues.slice(0, 8).map((issue) => `${issue.path.join('.') || 'content'}: ${issue.message}`),
+    })
   }
-  const site = await setSiteContent(prisma, body)
+  const site = await setSiteContent(prisma, parsed.data)
   return res.json({ site })
 })
 
@@ -314,6 +334,11 @@ adminRouter.post('/media/delete', async (req, res) => {
     return res.status(400).json({ error: 'Invalid media url' })
   }
   if (typeof req.auth?.userId === 'string' && listMedia().some((m) => m.url === url)) {
+    // Built-in gallery photos back the factory content and media registry —
+    // deleting one would break the defaults and cannot be undone from the UI.
+    if (FACTORY_MEDIA_URLS.has(url)) {
+      return res.status(409).json({ error: 'This is one of Comet’s built-in photos and cannot be deleted.' })
+    }
     // Guard: never delete the last copy of an image still referenced in content.
     const site = await getSiteContent(prisma)
     const used = JSON.stringify(site).includes(url)

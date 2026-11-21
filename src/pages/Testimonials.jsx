@@ -5,8 +5,17 @@ import PageHero from '../components/PageHero.jsx'
 import SectionReveal from '../components/SectionReveal.jsx'
 import { SkeletonBlock } from '../components/ui/SmartImage.jsx'
 import Button from '../components/ui/Button.jsx'
+import CTASection from '../components/CTASection.jsx'
+import { useContent } from '../context/ContentContext.jsx'
 
 export default function Testimonials() {
+  const { site } = useContent()
+  const intro = {
+    eyebrow: 'Client Stories',
+    title: 'The partners and facilities who trust Comet',
+    lead: 'Genuine feedback from the hospital systems, distributors and innovators we work with across Kenya and East Africa.',
+    ...(site?.home?.testimonials || {}),
+  }
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
 
@@ -25,9 +34,9 @@ export default function Testimonials() {
   return (
     <>
       <PageHero
-        eyebrow="Client Stories"
-        title="The partners and facilities who trust Comet"
-        lead="Genuine feedback from the hospital systems, distributors and innovators we work with across Kenya and East Africa."
+        eyebrow={intro.eyebrow}
+        title={intro.title}
+        lead={intro.lead}
       >
         <Button to="/book" size="lg">
           Start a conversation
@@ -69,6 +78,7 @@ export default function Testimonials() {
           )}
         </div>
       </section>
+      <CTASection />
     </>
   )
 }

@@ -1,7 +1,7 @@
 // Homepage editorial content. CMS values flow in from Home.jsx where available;
 // photos resolve through the shared registry so one edit applies everywhere.
 
-import { DEFAULT_MEDIA, gallery, photoSrc } from '../../lib/media.js'
+import { gallery, photoSrc } from '../../lib/media.js'
 
 // Ten authentic facility photographs, each with responsive WebP variants so a
 // phone downloads ~10–50 KB instead of the full 1920px original.
@@ -41,21 +41,21 @@ export const IMPACT_STATS = [
   { value: 100, suffix: '%', label: 'Batch quality tested', detail: 'Before any product leaves our facility' },
 ]
 
-export const INNOVATIONS = [
+export const getInnovations = (media) => [
   {
-    image: photoSrc(DEFAULT_MEDIA, 'facility.hero'),
+    image: photoSrc(media, 'facility.hero'),
     category: 'Manufacturing',
     title: 'A facility built for precision',
     desc: 'Modern production lines, controlled environments and disciplined processes under one roof.',
   },
   {
-    image: photoSrc(DEFAULT_MEDIA, 'facility.qualityLab'),
+    image: photoSrc(media, 'facility.qualityLab'),
     category: 'Quality control',
     title: 'Science behind every batch',
     desc: 'Analytical testing and documentation that make quality measurable, repeatable and auditable.',
   },
   {
-    image: photoSrc(DEFAULT_MEDIA, 'facility.packaging'),
+    image: photoSrc(media, 'facility.packaging'),
     category: 'Registration',
     title: 'Ready for the market',
     desc: 'Packaging and regulatory support designed to move products confidently into distribution.',
@@ -69,23 +69,23 @@ export const COMPARISON = [
   { feature: 'Lifecycle accountability', comet: 'One accountable partner', other: 'Multiple vendors' },
 ]
 
-export const INSIGHTS = [
+export const getInsights = (media) => [
   {
-    image: photoSrc(DEFAULT_MEDIA, 'site.science'),
+    image: photoSrc(media, 'site.science'),
     category: 'Quality',
     title: 'Why GMP discipline is a commercial advantage',
     desc: 'How documented quality systems shorten audits, build buyer confidence and protect your brand.',
     to: '/science',
   },
   {
-    image: photoSrc(DEFAULT_MEDIA, 'site.training'),
+    image: photoSrc(media, 'site.training'),
     category: 'Regulatory',
     title: 'A practical guide to product registration in East Africa',
     desc: 'What to prepare, what reviewers look for, and the mistakes that slow approvals down.',
     to: '/services',
   },
   {
-    image: photoSrc(DEFAULT_MEDIA, 'site.community'),
+    image: photoSrc(media, 'site.community'),
     category: 'Partnerships',
     title: 'Choosing the right CDMO partner for your portfolio',
     desc: 'Five questions to ask before you commit your formulation, timeline and reputation.',

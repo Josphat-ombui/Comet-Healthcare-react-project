@@ -12,6 +12,7 @@
 // defaults below.
 
 import { DEFAULT_MEDIA, gallery, photoSrc, photoWebp } from '../../src/lib/media.js'
+import { DEFAULT_GLOBAL } from '../../src/lib/site.js'
 
 const G = gallery
 
@@ -64,14 +65,8 @@ const PRODUCT_GALLERY = [
 ]
 
 export const DEFAULT_SITE_CONTENT = {
-  global: {
-    brand: 'Comet Healthcare',
-    tagline: "Kenya's Premier Pharmaceutical Manufacturer",
-    email: 'info@comethealthcare.com',
-    phone: '+254 725 519 844',
-    address: 'Machakos, Kenya',
-    hours: 'Mon–Fri 8:00am – 5:00pm EAT',
-  },
+  // Shared contact details used by the nav bar, footer and contact page.
+  global: DEFAULT_GLOBAL,
   // Shared photo registry. Content Studio → Shared photos edits these entries;
   // every page and the provider seed resolves images through the same keys.
   media: DEFAULT_MEDIA,
@@ -102,23 +97,24 @@ export const DEFAULT_SITE_CONTENT = {
     },
     experts: {
       eyebrow: 'Our Experts',
-      title: 'Book time with the people behind the product',
+      title: 'Talk to the people who',
+      highlight: 'do the work.',
       lead: 'Senior pharmacists, scientists and regulatory specialists — available for direct consultation.',
-    },
-    howItWorks: {
-      eyebrow: 'How it works',
-      title: 'Book a consultation in three steps',
-      lead: 'Real availability, instant confirmation, no phone tag. Manage everything from your client portal.',
-      steps: [
-        { step: '01', icon: 'bell', title: 'Choose an expert', desc: 'Browse our directory of senior specialists — regulatory, CDMO, quality, training and business development.' },
-        { step: '02', icon: 'calendar', title: 'Pick a time that works', desc: 'See real availability and book in under a minute. No calls, no back-and-forth emails.' },
-        { step: '03', icon: 'clipboard', title: 'Meet & move forward', desc: 'Get a clear action plan, then track your inquiry and consultations from your client portal.' },
-      ],
     },
     testimonials: {
       eyebrow: 'Client Stories',
       title: 'Trusted by facilities, distributors and partners',
       lead: 'Real feedback from hospital systems, wholesalers and innovators we work with across the region.',
+    },
+    finalCta: {
+      badge: "Let's build what's next",
+      title: 'Have a product question worth',
+      highlight: "an expert's time?",
+      lead: "Book a direct consultation or start a conversation with our business development team. From formulation to registration, we've done it before.",
+      primary: { label: 'Book a Consultation', to: '/book' },
+      secondary: { label: 'Send an Inquiry', to: '/contact' },
+      assurances: ['PPB Certified', 'GMP Compliant', 'Senior specialists', 'East Africa'],
+      imageKey: 'site.factory',
     },
   },
   products: {
@@ -602,6 +598,8 @@ export function deepMerge(base, override) {
   if (typeof base !== 'object' || typeof override !== 'object') return override
   const out = { ...base }
   for (const key of Object.keys(override)) {
+    // Never let a stored value redefine a prototype through the merge.
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue
     out[key] = deepMerge(base[key], override[key])
   }
   return out

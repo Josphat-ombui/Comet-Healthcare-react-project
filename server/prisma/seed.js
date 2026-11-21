@@ -190,12 +190,15 @@ async function main() {
   console.log('✓ Company template (letterhead) settings')
 
   // ---- Site content (CMS defaults) ----
-  await prisma.setting.upsert({
-    where: { key: 'site_content' },
-    update: { value: DEFAULT_SITE_CONTENT },
-    create: { key: 'site_content', value: DEFAULT_SITE_CONTENT },
-  })
-  console.log('✓ Site content (CMS defaults)')
+  // Seed only when absent: re-running the seed must never overwrite copy or
+  // photo choices saved through Content Studio.
+  const existingSiteContent = await prisma.setting.findUnique({ where: { key: 'site_content' } })
+  if (existingSiteContent) {
+    console.log('✓ Site content (kept existing Content Studio edits)')
+  } else {
+    await prisma.setting.create({ data: { key: 'site_content', value: DEFAULT_SITE_CONTENT } })
+    console.log('✓ Site content (CMS defaults)')
+  }
 
   // ---- Sample business documents ----
   const client = await prisma.user.findUnique({ where: { email: 'client@comethealthcare.local' } })

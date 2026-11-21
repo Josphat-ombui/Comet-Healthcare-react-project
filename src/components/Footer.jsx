@@ -1,5 +1,7 @@
 import { Link } from 'react-router-dom'
 import { Phone, Mail, MapPin, ArrowUpRight, ArrowRight } from 'lucide-react'
+import { useContent } from '../context/ContentContext.jsx'
+import { contactHref, DEFAULT_GLOBAL } from '../lib/site.js'
 import { footerCompanyLinks, footerExploreLinks, ROUTES } from '../lib/navigation.js'
 import { FacebookIcon, XIcon, LinkedInIcon } from './SocialIcons'
 import Logo from './Logo.jsx'
@@ -11,6 +13,8 @@ const socials = [
 ]
 
 export default function Footer() {
+  const { site } = useContent()
+  const global = { ...DEFAULT_GLOBAL, ...(site?.global || {}) }
   return (
     <footer className="relative isolate overflow-hidden bg-gradient-to-br from-white via-primary-50 to-primary-100 text-ink">
       {/* Light ambient field */}
@@ -84,18 +88,18 @@ export default function Footer() {
             <ul className="mt-5 space-y-4 text-sm text-slate">
               <li className="flex items-start gap-3">
                 <MapPin size={17} className="mt-0.5 shrink-0 text-primary-strong" aria-hidden="true" />
-                <span>Mua-Kitanga Road, off Mombasa Road, Machakos, Kenya</span>
+                <span>{global.address}</span>
               </li>
               <li>
-                <a href="tel:+254725519844" className="flex items-center gap-3 font-medium transition-colors hover:text-primary">
+                <a href={contactHref(global.phone)} className="flex items-center gap-3 font-medium transition-colors hover:text-primary">
                   <Phone size={17} className="shrink-0 text-primary-strong" aria-hidden="true" />
-                  +254 725 519 844
+                  {global.phone}
                 </a>
               </li>
               <li>
-                <a href="mailto:info@comethealthcares.com" className="flex items-center gap-3 break-all font-medium transition-colors hover:text-primary">
+                <a href={contactHref(global.email, 'mailto')} className="flex items-center gap-3 break-all font-medium transition-colors hover:text-primary">
                   <Mail size={17} className="shrink-0 text-primary-strong" aria-hidden="true" />
-                  info@comethealthcares.com
+                  {global.email}
                 </a>
               </li>
             </ul>
@@ -111,11 +115,11 @@ export default function Footer() {
         </div>
 
         <div className="mt-14 flex flex-col gap-3 border-t border-primary/10 pt-6 text-xs text-slate sm:flex-row sm:items-center sm:justify-between">
-          <p>© {new Date().getFullYear()} Comet Healthcare Ltd. All rights reserved.</p>
+          <p>© {new Date().getFullYear()} {global.brand} Ltd. All rights reserved.</p>
           <p className="flex flex-wrap items-center gap-4">
             <span className="font-semibold text-primary">PPB Certified · GMP Compliant</span>
             <span className="h-3 w-px bg-primary/15" aria-hidden="true" />
-            <span>P.O. BOX 6293, Nairobi, Kenya 00300</span>
+            <span>{global.poBox}</span>
           </p>
         </div>
       </div>

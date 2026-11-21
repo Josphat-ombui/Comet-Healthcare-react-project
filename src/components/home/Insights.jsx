@@ -1,9 +1,12 @@
 import { Link } from 'react-router-dom'
 import { ArrowRight, ArrowUpRight, Clock3 } from 'lucide-react'
 import { Reveal, Stagger, StaggerItem } from './motion.jsx'
-import { INSIGHTS } from './data.js'
+import { getInsights } from './data.js'
+import { useMedia } from '../../context/ContentContext.jsx'
 
 export default function Insights() {
+  const media = useMedia()
+  const insights = getInsights(media)
   return (
     <section id="insights" className="relative overflow-hidden bg-cream py-24 lg:py-32" aria-labelledby="insights-title">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
@@ -23,7 +26,7 @@ export default function Insights() {
         </div>
 
         <Stagger className="mt-14 grid gap-6 md:grid-cols-3" stagger={0.1}>
-          {INSIGHTS.map((article) => (
+          {insights.map((article) => (
             <StaggerItem key={article.title}>
               <Link
                 to={article.to}

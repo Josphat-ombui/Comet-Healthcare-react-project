@@ -9,6 +9,7 @@ import Alert from '../components/ui/Alert.jsx'
 import { api, fieldErrorsFrom } from '../lib/api.js'
 import { Icon } from '../lib/icons.jsx'
 import { useContent } from '../context/ContentContext.jsx'
+import { contactHref, DEFAULT_GLOBAL } from '../lib/site.js'
 
 const FALLBACK_HERO = {
   eyebrow: 'Get in Touch',
@@ -20,31 +21,6 @@ const FALLBACK_LOCATIONS = [
   { icon: 'map', place: 'Head office & plant', detail: 'Mua-Kitanga Road, off Mombasa Road, Machakos, Kenya' },
   { icon: 'mail', place: 'Commercial & regulatory', detail: 'P.O. BOX 6293, Nairobi, Kenya 00300' },
   { icon: 'clock', place: 'Service hours (all sites)', detail: 'Mon–Fri 8:00am–5:00pm · Sat 8:30am–3:00pm' },
-]
-
-const contactInfo = [
-  {
-    icon: MapPin,
-    title: 'Visit Us',
-    lines: ['Mua-Kitanga Road, off Mombasa Road', 'Machakos, Kenya', 'P.O. BOX 6293, Nairobi 00300'],
-  },
-  {
-    icon: Phone,
-    title: 'Call Us',
-    lines: ['+254 725 519 844'],
-    href: 'tel:+254725519844',
-  },
-  {
-    icon: Mail,
-    title: 'Email Us',
-    lines: ['info@comethealthcares.com'],
-    href: 'mailto:info@comethealthcares.com',
-  },
-  {
-    icon: Clock,
-    title: 'Working Hours',
-    lines: ['Mon–Fri: 8:00am – 5:00pm', 'Sat: 8:30am – 3:00pm', 'Sun: Closed'],
-  },
 ]
 
 const INITIAL = { kind: 'CONTACT', name: '', company: '', email: '', phone: '', subject: '', message: '' }
@@ -142,8 +118,15 @@ function InquiryForm() {
 
 export default function Contact() {
   const { site } = useContent()
+  const global = { ...DEFAULT_GLOBAL, ...(site?.global || {}) }
   const hero = { ...FALLBACK_HERO, ...(site?.contact?.hero || {}) }
   const locations = site?.contact?.locations?.length ? site.contact.locations : FALLBACK_LOCATIONS
+  const contactInfo = [
+    { icon: MapPin, title: 'Visit Us', lines: [global.address, global.poBox] },
+    { icon: Phone, title: 'Call Us', lines: [global.phone], href: contactHref(global.phone) },
+    { icon: Mail, title: 'Email Us', lines: [global.email], href: contactHref(global.email, 'mailto') },
+    { icon: Clock, title: 'Working Hours', lines: [global.hours] },
+  ]
 
   return (
     <>

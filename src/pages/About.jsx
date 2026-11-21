@@ -4,8 +4,8 @@ import SectionReveal from '../components/SectionReveal'
 import CTASection from '../components/CTASection'
 import { Icon } from '../lib/icons.jsx'
 import { ROUTES } from '../lib/navigation.js'
-import { useContent } from '../context/ContentContext.jsx'
-import { DEFAULT_MEDIA, photoSrc } from '../lib/media.js'
+import { useContent, useMedia } from '../context/ContentContext.jsx'
+import { photoSrc } from '../lib/media.js'
 
 const FALLBACK = {
   hero: {
@@ -21,7 +21,7 @@ const FALLBACK = {
       'We are a manufacturer of generic and brand pharmaceuticals with a mission to provide high quality, safe, efficacious, and cost-effective medicines to alleviate global health challenges.',
       'Our dedicated team continuously works to develop innovative pharmaceutical solutions that address the evolving healthcare needs of our communities. We invest in research to improve existing formulations and create new treatment options that are both effective and accessible.',
     ],
-    image: photoSrc(DEFAULT_MEDIA, 'site.pharma'),
+    image: '/images/pharma.jpg',
     stats: [
       { icon: 'building', value: '20+', label: 'Years in Operation' },
       { icon: 'pill', value: '14+', label: 'Products' },
@@ -55,6 +55,7 @@ const FALLBACK = {
 
 export default function About() {
   const { site } = useContent()
+  const media = useMedia()
   const about = site?.about || {}
   const hero = { ...FALLBACK.hero, ...(about.hero || {}) }
   const story = { ...FALLBACK.story, ...(about.story || {}) }
@@ -112,7 +113,7 @@ export default function About() {
                   ))}
                 </div>
                 <div className="rounded-2xl overflow-hidden shadow-lg">
-                  <img src={story.image || photoSrc(DEFAULT_MEDIA, 'site.pharma')} alt="Pharmaceutical manufacturing" className="w-full h-56 object-cover" loading="lazy" />
+                  <img src={story.image || photoSrc(media, 'site.pharma')} alt="Pharmaceutical manufacturing" className="w-full h-56 object-cover" loading="lazy" />
                 </div>
               </div>
             </div>

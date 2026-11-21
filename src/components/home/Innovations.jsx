@@ -1,9 +1,12 @@
 import { Link } from 'react-router-dom'
 import { ArrowRight, ArrowUpRight } from 'lucide-react'
 import { Reveal, Stagger, StaggerItem } from './motion.jsx'
-import { INNOVATIONS } from './data.js'
+import { getInnovations } from './data.js'
+import { useMedia } from '../../context/ContentContext.jsx'
 
 export default function Innovations() {
+  const media = useMedia()
+  const innovations = getInnovations(media)
   return (
     <section id="innovations" className="relative overflow-hidden bg-cream py-24 lg:py-32" aria-labelledby="innovations-title">
       <div className="pointer-events-none absolute -right-32 top-10 h-96 w-96 rounded-full bg-primary-100/60 blur-3xl" aria-hidden="true" />
@@ -25,7 +28,7 @@ export default function Innovations() {
         </div>
 
         <Stagger className="mt-14 grid gap-6 md:grid-cols-3" stagger={0.11}>
-          {INNOVATIONS.map((item, i) => (
+          {innovations.map((item, i) => (
             <StaggerItem key={item.title}>
               <Link
                 to="/products"

@@ -18,7 +18,7 @@ import { Reveal, Stagger, StaggerItem } from '../components/home/motion.jsx'
 import { addDays, localIsoDay } from '../lib/dates.js'
 import usePageMeta from '../lib/usePageMeta.js'
 import { canonicalizeProvider, findExpertProfile } from '../lib/experts.js'
-import { photoSrc, photoWebp } from '../lib/media.js'
+import { mediaImage } from '../lib/media.js'
 import {
   BOOKING_TYPES, FALLBACK_BOOK_EXPERTS, resolveBookContent,
 } from '../components/book/content.js'
@@ -31,15 +31,6 @@ function fmtDay(iso) {
   const [y, m, d] = iso.split('-').map(Number)
   const date = new Date(y, m - 1, d)
   return { weekday: WEEKDAYS[date.getDay()], day: d, month: date.toLocaleString('en', { month: 'short' }) }
-}
-
-function registryImage(media, key, custom) {
-  const fallbackKey = key || 'facility.story'
-  const registrySrc = photoSrc(media, fallbackKey)
-  return {
-    src: custom || registrySrc,
-    webp: custom && custom !== registrySrc ? '' : photoWebp(media, fallbackKey),
-  }
 }
 
 export default function Book() {
@@ -258,8 +249,8 @@ export default function Book() {
     }
   }
 
-  const heroImage = registryImage(media, content.hero.imageKey, content.hero.image)
-  const trustImage = registryImage(media, content.trust.imageKey, content.trust.image)
+  const heroImage = mediaImage(media, content.hero.imageKey, content.hero.image, content.hero.imageWebp)
+  const trustImage = mediaImage(media, content.trust.imageKey, content.trust.image, content.trust.imageWebp)
 
   const breadcrumb = (
     <nav aria-label="Breadcrumb" className="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-slate">
@@ -384,7 +375,7 @@ export default function Book() {
 
           <Stagger className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {content.topics.map((topic, i) => {
-              const image = registryImage(media, topic.photoKey, topic.image)
+              const image = mediaImage(media, topic.photoKey, topic.image, topic.imageWebp)
               return (
                 <StaggerItem key={`${topic.title}-${i}`}>
                   <button

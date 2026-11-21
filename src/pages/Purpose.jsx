@@ -6,6 +6,7 @@ import Button from '../components/ui/Button.jsx'
 import { useContent, useMedia } from '../context/ContentContext.jsx'
 import usePageMeta from '../lib/usePageMeta.js'
 import { resolvePurposeContent } from '../components/purpose/content.js'
+import { mediaImage } from '../lib/media.js'
 import { getImages, SECTIONS } from '../components/purpose/data.js'
 import SectionNav from '../components/ui/SectionNav.jsx'
 import BeliefSection from '../components/purpose/BeliefSection.jsx'
@@ -55,7 +56,7 @@ export default function Purpose() {
       <WellbeingSection content={content.wellbeing} />
       <ServiceSection content={content.service} />
       <PeopleSection content={content.people} />
-      <PurposeCTA content={{ ...content.cta, image: images.cta }} />
+      <PurposeCTA content={{ ...content.cta, image: mediaImage(media, 'site.story', content.cta?.image).src }} />
     </>
   )
 }
