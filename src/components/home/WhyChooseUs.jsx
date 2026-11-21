@@ -12,7 +12,7 @@ const BENEFITS = [
 
 export default function WhyChooseUs() {
   return (
-    <section id="why-us" className="relative overflow-hidden bg-white py-24 lg:py-32" aria-labelledby="why-title">
+    <section id="why-us" className="relative overflow-hidden bg-gradient-to-b from-white via-ice/60 to-white py-24 lg:py-32" aria-labelledby="why-title">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         <div className="grid items-center gap-14 lg:grid-cols-2 lg:gap-20">
           {/* Copy */}
@@ -41,10 +41,16 @@ export default function WhyChooseUs() {
               ))}
             </Stagger>
 
-            <Link to="/about" className="group mt-9 inline-flex items-center gap-2 text-sm font-bold text-primary hover:text-primary-strong">
-              More about Comet
-              <ArrowRight size={17} aria-hidden="true" className="transition-transform duration-300 group-hover:translate-x-1" />
-            </Link>
+            <div className="mt-9 flex flex-col items-start gap-5 sm:flex-row sm:items-center">
+              <Link to="/about" className="group inline-flex items-center gap-2 text-sm font-bold text-primary hover:text-primary-strong">
+                More about Comet
+                <ArrowRight size={17} aria-hidden="true" className="transition-transform duration-300 group-hover:translate-x-1" />
+              </Link>
+              <Link to="/book" className="btn btn-primary btn-md group">
+                Book a consultation
+                <ArrowRight size={16} aria-hidden="true" className="transition-transform duration-300 group-hover:translate-x-1" />
+              </Link>
+            </div>
           </Reveal>
 
           {/* Comparison card */}

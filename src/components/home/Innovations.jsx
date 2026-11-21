@@ -63,6 +63,24 @@ export default function Innovations() {
             </StaggerItem>
           ))}
         </Stagger>
+
+        <Reveal delay={0.2} className="mt-12 flex flex-col gap-5 rounded-[1.5rem] border border-primary/15 bg-white/85 p-6 shadow-card backdrop-blur sm:flex-row sm:items-center sm:justify-between sm:p-8">
+          <div>
+            <span className="eyebrow-line">See it for yourself</span>
+            <p className="mt-3 max-w-xl font-heading text-lg font-extrabold leading-snug text-ink sm:text-xl">
+              Bring your question to the people who run the lines and the lab.
+            </p>
+          </div>
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <Link to="/book" className="btn btn-primary btn-md group">
+              Book a facility consult
+              <ArrowRight size={16} aria-hidden="true" className="transition-transform duration-300 group-hover:translate-x-1" />
+            </Link>
+            <Link to="/products" className="btn btn-outline btn-md">
+              View the portfolio
+            </Link>
+          </div>
+        </Reveal>
       </div>
     </section>
   )

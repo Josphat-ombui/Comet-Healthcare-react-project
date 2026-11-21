@@ -3,6 +3,7 @@ import { api } from '../lib/api.js'
 import { useContent } from '../context/ContentContext.jsx'
 import Hero from '../components/home/Hero.jsx'
 import TrustBar from '../components/home/TrustBar.jsx'
+import QuickLinks from '../components/home/QuickLinks.jsx'
 import Solutions from '../components/home/Solutions.jsx'
 import Impact from '../components/home/Impact.jsx'
 import Innovations from '../components/home/Innovations.jsx'
@@ -55,6 +56,7 @@ export default function Home() {
     <>
       <Hero content={home.hero || {}} />
       <TrustBar />
+      <QuickLinks />
       <Solutions items={valueProps} heading={home.valueProps || {}} />
       <Impact stats={normaliseStats(home.hero?.stats)} testimonials={testimonials} />
       <Innovations />

@@ -1,4 +1,5 @@
-import { Quote, Star, CheckCircle2, TrendingUp, Globe2 } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { ArrowRight, Quote, Star, CheckCircle2, TrendingUp, Globe2 } from 'lucide-react'
 import AnimatedCounter from './AnimatedCounter.jsx'
 import { Reveal, Stagger, StaggerItem } from './motion.jsx'
 import { IMPACT_STATS } from './data.js'
@@ -14,7 +15,7 @@ export default function Impact({ stats = IMPACT_STATS, testimonials = [] }) {
   const story = testimonials.find((t) => t.quote) || FALLBACK_QUOTE
 
   return (
-    <section id="impact" className="relative isolate overflow-hidden bg-gradient-to-br from-white via-primary-50 to-primary-100 py-24 lg:py-32" aria-labelledby="impact-title">
+    <section id="impact" className="relative isolate overflow-hidden bg-blue-field py-24 lg:py-32" aria-labelledby="impact-title">
       {/* Light decorative field */}
       <div className="absolute inset-0 -z-20 bg-grid opacity-[0.25]" aria-hidden="true" />
       <div className="absolute -left-32 top-0 -z-10 h-[30rem] w-[30rem] rounded-full bg-primary-light/20 blur-[120px]" aria-hidden="true" />
@@ -30,6 +31,10 @@ export default function Impact({ stats = IMPACT_STATS, testimonials = [] }) {
           <p className="mx-auto mt-5 max-w-2xl text-base leading-relaxed text-slate">
             Numbers tell part of the story. The rest is in the products that reach patients and the partners who trust us to get there.
           </p>
+          <Link to="/testimonials" className="group mt-5 inline-flex items-center gap-2 text-sm font-bold text-primary transition-colors hover:text-primary-strong">
+            Read client stories
+            <ArrowRight size={16} aria-hidden="true" className="transition-transform duration-300 group-hover:translate-x-1" />
+          </Link>
         </Reveal>
 
         <Stagger className="mt-16 grid gap-10 sm:grid-cols-3 sm:gap-6" stagger={0.12}>

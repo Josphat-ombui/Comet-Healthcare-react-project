@@ -17,7 +17,7 @@ export default function Solutions({ items = DEFAULT_ITEMS, heading = {} }) {
   const [featured, ...rest] = items.length ? items : DEFAULT_ITEMS
 
   return (
-    <section id="solutions" className="relative overflow-hidden bg-white py-24 lg:py-32" aria-labelledby="solutions-title">
+    <section id="solutions" className="relative overflow-hidden bg-gradient-to-b from-white via-ice/70 to-white py-24 lg:py-32" aria-labelledby="solutions-title">
       <div className="pointer-events-none absolute -left-40 top-20 h-96 w-96 rounded-full bg-primary-50/70 blur-3xl" aria-hidden="true" />
 
       <div className="relative mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
@@ -38,34 +38,35 @@ export default function Solutions({ items = DEFAULT_ITEMS, heading = {} }) {
         <Stagger className="mt-14 grid gap-5 lg:grid-cols-12" stagger={0.1}>
           {/* Featured solution */}
           <StaggerItem className="lg:col-span-7">
-            <div className="group relative h-full min-h-[26rem] overflow-hidden rounded-[1.75rem] border border-primary/10 bg-white shadow-card transition-all duration-500 hover:shadow-card-hover">
+            <div className="group relative h-full min-h-[26rem] overflow-hidden rounded-[1.75rem] border border-primary/20 bg-primary-deeper shadow-card transition-all duration-500 hover:shadow-deep">
               <img
                 src={photoSrc(media, 'site.lab')}
                 alt="Quality control laboratory at Comet Healthcare"
                 loading="lazy"
                 decoding="async"
-                className="absolute inset-0 h-full w-full object-cover brightness-[1.12] transition-transform duration-[1400ms] ease-out group-hover:scale-110"
+                className="absolute inset-0 h-full w-full object-cover brightness-[1.05] transition-transform duration-[1400ms] ease-out group-hover:scale-110"
               />
-              <div className="absolute inset-0 bg-gradient-to-t from-white via-white/85 to-white/15" aria-hidden="true" />
-              <div className="absolute inset-0 bg-mesh opacity-30" aria-hidden="true" />
+              <div className="absolute inset-0 bg-gradient-to-t from-primary-deeper/95 via-primary/80 to-primary-light/25" aria-hidden="true" />
+              <div className="absolute inset-0 bg-grid opacity-[0.12]" aria-hidden="true" />
+              <div className="pointer-events-none absolute -right-20 -top-20 h-72 w-72 rounded-full bg-azure/25 blur-3xl" aria-hidden="true" />
 
               <div className="relative flex h-full flex-col justify-between p-7 sm:p-9">
                 <div className="flex items-start justify-between gap-4">
-                  <span className="glass-light inline-flex items-center gap-2 rounded-full px-4 py-2 text-xs font-bold text-primary shadow-card">
-                    <FlaskConical size={15} className="text-primary-strong" aria-hidden="true" />
+                  <span className="glass-deep inline-flex items-center gap-2 rounded-full px-4 py-2 text-xs font-bold text-white shadow-card">
+                    <FlaskConical size={15} className="text-azure" aria-hidden="true" />
                     Core capability
                   </span>
-                  <span className="font-heading text-6xl font-extrabold leading-none text-primary/10">01</span>
+                  <span className="font-heading text-6xl font-extrabold leading-none text-white/20">01</span>
                 </div>
 
                 <div className="max-w-md">
-                  <h3 className="font-heading text-2xl font-extrabold leading-tight text-ink sm:text-3xl">
+                  <h3 className="font-heading text-2xl font-extrabold leading-tight text-white sm:text-3xl">
                     {featured.title}
                   </h3>
-                  <p className="mt-3 text-sm leading-relaxed text-slate sm:text-base">{featured.desc}</p>
+                  <p className="mt-3 text-sm leading-relaxed text-white/75 sm:text-base">{featured.desc}</p>
                   <Link
                     to="/services"
-                    className="mt-6 inline-flex items-center gap-2 rounded-full bg-white px-5 py-3 text-sm font-bold text-primary shadow-glow transition-all duration-300 hover:-translate-y-0.5 hover:bg-primary-50"
+                    className="mt-6 inline-flex items-center gap-2 rounded-full bg-white px-5 py-3 text-sm font-bold text-primary-deeper shadow-glow transition-all duration-300 hover:-translate-y-0.5 hover:bg-primary-50"
                   >
                     Explore this solution
                     <ArrowRight size={16} aria-hidden="true" />
@@ -100,13 +101,21 @@ export default function Solutions({ items = DEFAULT_ITEMS, heading = {} }) {
           </div>
         </Stagger>
 
-        <Reveal delay={0.2} className="mt-12 text-center">
+        <Reveal delay={0.2} className="mt-12 flex flex-col items-center justify-center gap-5 sm:flex-row">
           <Link
             to="/services"
             className="group inline-flex items-center gap-2 text-sm font-bold text-primary transition-colors hover:text-primary-strong"
           >
             View all services
             <ArrowRight size={17} aria-hidden="true" className="transition-transform duration-300 group-hover:translate-x-1" />
+          </Link>
+          <span className="hidden h-5 w-px bg-mist sm:block" aria-hidden="true" />
+          <Link
+            to="/book"
+            className="group inline-flex items-center gap-2 rounded-full border border-primary/20 bg-white px-5 py-2.5 text-sm font-bold text-primary shadow-soft transition-all duration-300 hover:-translate-y-0.5 hover:border-primary hover:bg-primary-50"
+          >
+            Book a specialist
+            <ArrowRight size={16} aria-hidden="true" className="transition-transform duration-300 group-hover:translate-x-1" />
           </Link>
         </Reveal>
       </div>

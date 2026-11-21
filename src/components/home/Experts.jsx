@@ -21,7 +21,7 @@ export default function Experts({ experts = [], content = {} }) {
   const lead = content.lead || 'Senior pharmacists, scientists and regulatory specialists — available for direct consultation.'
 
   return (
-    <section className="relative overflow-hidden bg-white py-24 lg:py-28" aria-labelledby="experts-title">
+    <section className="relative overflow-hidden bg-gradient-to-b from-white via-ice/60 to-white py-24 lg:py-28" aria-labelledby="experts-title">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         <div className="flex flex-col gap-6 sm:flex-row sm:items-end sm:justify-between">
           <Reveal className="max-w-2xl">
@@ -31,10 +31,15 @@ export default function Experts({ experts = [], content = {} }) {
             </h2>
             <p className="mt-4 text-base leading-relaxed text-slate">{lead}</p>
           </Reveal>
-          <Reveal delay={0.1}>
+          <Reveal delay={0.1} className="flex flex-col items-start gap-4 sm:items-end">
             <Link to="/experts" className="group inline-flex shrink-0 items-center gap-2 text-sm font-bold text-primary hover:text-primary-strong">
               View all experts
               <ArrowRight size={17} aria-hidden="true" className="transition-transform duration-300 group-hover:translate-x-1" />
+            </Link>
+            <Link to="/book" className="btn btn-primary btn-md group">
+              <CalendarDays size={16} aria-hidden="true" />
+              Book a specialist
+              <ArrowUpRight size={15} aria-hidden="true" className="transition-transform duration-300 group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
             </Link>
           </Reveal>
         </div>

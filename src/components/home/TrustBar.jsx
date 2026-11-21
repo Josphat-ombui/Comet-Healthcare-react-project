@@ -1,10 +1,12 @@
+import { Link } from 'react-router-dom'
+import { ArrowRight } from 'lucide-react'
 import { Icon } from '../../lib/icons.jsx'
 import { Reveal, Stagger, StaggerItem } from './motion.jsx'
 import { ACCREDITATIONS } from './data.js'
 
 export default function TrustBar() {
   return (
-    <section id="accreditations" className="relative overflow-hidden border-b border-mist bg-white" aria-labelledby="trust-title">
+    <section id="accreditations" className="relative overflow-hidden border-b border-mist bg-gradient-to-b from-white via-ice to-white" aria-labelledby="trust-title">
       <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-primary/40 to-transparent" aria-hidden="true" />
       <div className="mx-auto max-w-7xl px-4 py-14 sm:px-6 lg:px-8 lg:py-16">
         <Reveal className="mb-9 text-center">
@@ -29,13 +31,19 @@ export default function TrustBar() {
           ))}
         </Stagger>
 
-        <Reveal delay={0.2} className="mt-10 flex flex-wrap items-center justify-center gap-x-8 gap-y-3 border-t border-mist/80 pt-8">
-          <span className="text-[11px] font-bold uppercase tracking-[0.2em] text-slate">Trusted across</span>
-          {['Hospitals', 'Retail pharmacy', 'Distributors', 'Manufacturers', 'Clinics'].map((name) => (
-            <span key={name} className="font-heading text-sm font-extrabold uppercase tracking-[0.14em] text-primary/45 transition-colors hover:text-primary">
-              {name}
-            </span>
-          ))}
+        <Reveal delay={0.2} className="mt-10 flex flex-col items-center gap-5 border-t border-mist/80 pt-8 lg:flex-row lg:justify-between">
+          <div className="flex flex-wrap items-center justify-center gap-x-8 gap-y-3 lg:justify-start">
+            <span className="text-[11px] font-bold uppercase tracking-[0.2em] text-slate">Trusted across</span>
+            {['Hospitals', 'Retail pharmacy', 'Distributors', 'Manufacturers', 'Clinics'].map((name) => (
+              <span key={name} className="font-heading text-sm font-extrabold uppercase tracking-[0.14em] text-primary/45 transition-colors hover:text-primary">
+                {name}
+              </span>
+            ))}
+          </div>
+          <Link to="/about" className="group inline-flex shrink-0 items-center gap-2 text-sm font-bold text-primary hover:text-primary-strong">
+            See why partners trust us
+            <ArrowRight size={16} aria-hidden="true" className="transition-transform duration-300 group-hover:translate-x-1" />
+          </Link>
         </Reveal>
       </div>
     </section>

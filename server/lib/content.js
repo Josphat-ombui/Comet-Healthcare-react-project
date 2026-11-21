@@ -19,16 +19,16 @@ const G = gallery
 // Curated from the client photo pool (photos/compressjpeg, ~20MP DSLR shots).
 // Landscape masters for full-bleed heroes, spread across shoots for variety.
 const HERO_SLIDES = [
-  { image: G('DSC_3017.jpg'), alt: 'Comet Healthcare manufacturing facility' },
-  { image: G('DSC_0481.jpg'), alt: 'Pharmaceutical production line' },
-  { image: G('DSC_2989.jpg'), alt: 'Quality control laboratory' },
-  { image: G('DSC_3122.jpg'), alt: 'Pharmaceutical packaging area' },
-  { image: G('DSC_3234.jpg'), alt: 'Laboratory research and testing' },
-  { image: G('DSC_3275.jpg'), alt: 'Analytical instruments in the QC lab' },
-  { image: G('DSC_2897.jpg'), alt: 'Pharmaceutical facility exterior' },
-  { image: G('DSC_3348.jpg'), alt: 'Manufacturing operations' },
-  { image: G('DSC_3434.jpg'), alt: 'Tablet production and finish' },
-  { image: G('DSC_3513.jpg'), alt: 'GMP production environment' },
+  { image: G('DSC_0481.jpg'), alt: 'Pharmaceutical production line at Comet Healthcare', position: 'center 55%' },
+  { image: G('DSC_2989.jpg'), alt: 'Quality control laboratory at Comet Healthcare', position: 'center 45%' },
+  { image: G('DSC_3017.jpg'), alt: 'Comet Healthcare manufacturing facility', position: 'center 40%' },
+  { image: G('DSC_3275.jpg'), alt: 'Analytical instruments in the quality control lab', position: 'center 50%' },
+  { image: G('DSC_3122.jpg'), alt: 'Pharmaceutical packaging area', position: 'center 55%' },
+  { image: G('DSC_3234.jpg'), alt: 'Laboratory research and testing', position: 'center 45%' },
+  { image: G('DSC_3348.jpg'), alt: 'Manufacturing operations at Comet Healthcare', position: 'center 50%' },
+  { image: G('DSC_3434.jpg'), alt: 'Tablet production and finishing', position: 'center 55%' },
+  { image: G('DSC_3513.jpg'), alt: 'GMP-compliant production environment', position: 'center 45%' },
+  { image: G('DSC_2897.jpg'), alt: 'Pharmaceutical facility exterior', position: 'center 50%' },
 ]
 
 const PRODUCT_GALLERY = [
@@ -72,17 +72,24 @@ export const DEFAULT_SITE_CONTENT = {
   media: DEFAULT_MEDIA,
   home: {
     hero: {
-      badge: "Kenya's Premier Pharmaceutical Manufacturer",
+      badge: '20+ years of GMP manufacturing · Kenya & East Africa',
       title: 'Expert guidance for the journey from',
       highlight: 'molecule to market',
-      sub: 'Comet Healthcare combines 20+ years of GMP manufacturing with senior scientific consultation — so you can book direct advice from the people who build, register and qualify medicines across East Africa.',
+      sub: 'From formulation and scale-up to registration and quality assurance, Comet gives you direct access to the seniors who manufacture, test and qualify medicines across East Africa — one accountable partner from molecule to market.',
       stats: [
         { value: '20+', label: 'Years Experience' },
         { value: '14+', label: 'Products' },
         { value: '100%', label: 'Quality Assured' },
       ],
       slides: HERO_SLIDES,
-      badges: ['PPB Certified', 'GMP Compliant', 'Kenya · East Africa', '20+ Years'],
+      badges: ['GMP Certified', 'PPB Registered', '100% Batch Tested', 'East Africa'],
+      ctas: {
+        primary: { label: 'Book a Consultation', to: '/book' },
+        secondary: { label: 'Explore our services', to: '/services' },
+        tertiary: { label: 'Meet our experts', to: '/experts' },
+        portfolio: { label: 'Browse the product portfolio', to: '/products' },
+      },
+      supportingImageKey: 'facility.production',
     },
     valueProps: {
       eyebrow: 'What We Offer',
@@ -113,8 +120,10 @@ export const DEFAULT_SITE_CONTENT = {
       lead: "Book a direct consultation or start a conversation with our business development team. From formulation to registration, we've done it before.",
       primary: { label: 'Book a Consultation', to: '/book' },
       secondary: { label: 'Send an Inquiry', to: '/contact' },
+      tertiary: { label: 'Explore our services', to: '/services' },
       assurances: ['PPB Certified', 'GMP Compliant', 'Senior specialists', 'East Africa'],
       imageKey: 'site.factory',
+      panelImageKey: 'facility.hero',
     },
   },
   products: {

@@ -16,16 +16,16 @@ const heroSlide = (id, alt, position = 'center') => ({
 })
 
 export const HERO_IMAGES = [
-  heroSlide('DSC_3017', 'Comet Healthcare manufacturing facility'),
-  heroSlide('DSC_0481', 'Pharmaceutical production line'),
-  heroSlide('DSC_2989', 'Quality control laboratory'),
-  heroSlide('DSC_3122', 'Pharmaceutical packaging area'),
-  heroSlide('DSC_3234', 'Laboratory research and testing'),
-  heroSlide('DSC_3275', 'Analytical instruments in the quality control lab'),
-  heroSlide('DSC_2897', 'Pharmaceutical facility exterior'),
-  heroSlide('DSC_3348', 'Manufacturing operations at Comet Healthcare'),
-  heroSlide('DSC_3434', 'Tablet production and finishing'),
-  heroSlide('DSC_3513', 'GMP-compliant production environment'),
+  heroSlide('DSC_0481', 'Pharmaceutical production line at Comet Healthcare', 'center 55%'),
+  heroSlide('DSC_2989', 'Quality control laboratory at Comet Healthcare', 'center 45%'),
+  heroSlide('DSC_3017', 'Comet Healthcare manufacturing facility', 'center 40%'),
+  heroSlide('DSC_3275', 'Analytical instruments in the quality control lab', 'center 50%'),
+  heroSlide('DSC_3122', 'Pharmaceutical packaging area', 'center 55%'),
+  heroSlide('DSC_3234', 'Laboratory research and testing', 'center 45%'),
+  heroSlide('DSC_3348', 'Manufacturing operations at Comet Healthcare', 'center 50%'),
+  heroSlide('DSC_3434', 'Tablet production and finishing', 'center 55%'),
+  heroSlide('DSC_3513', 'GMP-compliant production environment', 'center 45%'),
+  heroSlide('DSC_2897', 'Pharmaceutical facility exterior', 'center 50%'),
 ]
 
 export const ACCREDITATIONS = [

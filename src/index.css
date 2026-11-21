@@ -18,6 +18,17 @@
   --color-primary-deeper: #002B66;
   --color-primary-50: #EAF2FF;
   --color-primary-100: #D7E7FF;
+  --color-primary-200: #B9D6FF;
+  --color-primary-300: #8CBFFF;
+
+  /* Extended Comet Blue palette — cool, luminous and still unmistakably blue. */
+  --color-ice: #F3F8FF;
+  --color-ice-dark: #E3EEFF;
+  --color-sky: #3FA9F5;
+  --color-azure: #6FD3FF;
+  --color-periwinkle: #8FA9FF;
+  --color-navy: #041C44;
+  --color-navy-soft: #0A2F6B;
 
   /* Accent blues (kept as aliases so existing pages stay consistent) */
   --color-secondary: #0052CC;
@@ -52,6 +63,7 @@
   --shadow-soft: 0 1px 2px rgba(11, 27, 51, 0.04);
   --shadow-pop: 0 28px 70px -22px rgba(0, 43, 102, 0.42);
   --shadow-glow: 0 22px 60px -20px rgba(0, 123, 255, 0.6);
+  --shadow-deep: 0 40px 90px -32px rgba(2, 27, 68, 0.55);
 }
 
 @layer base {
@@ -108,8 +120,8 @@
       disabled:cursor-not-allowed disabled:opacity-55 disabled:pointer-events-none;
   }
   .btn-primary {
-    @apply text-white bg-gradient-to-r from-primary to-primary-strong hover:from-primary-dark hover:to-primary active:scale-[0.98]
-      shadow-[0_1px_0_rgba(255,255,255,0.22)_inset,0_12px_26px_-10px_rgba(0,82,204,0.65)];
+    @apply text-white bg-gradient-to-r from-primary via-primary-strong to-primary hover:-translate-y-0.5 hover:from-primary-dark hover:to-primary-strong active:translate-y-0 active:scale-[0.98]
+      shadow-[0_1px_0_rgba(255,255,255,0.25)_inset,0_16px_34px_-12px_rgba(0,123,255,0.75)];
   }
   .btn-secondary {
     @apply bg-white text-primary hover:bg-primary-50 active:scale-[0.98] border border-primary/15
@@ -220,6 +232,40 @@
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
+  }
+  .text-gradient-blue {
+    background-image: linear-gradient(100deg, #003B99 0%, #0052CC 42%, #00AEEF 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .eyebrow-line {
+    @apply inline-flex items-center gap-2.5 text-[11px] font-bold uppercase tracking-[0.2em] text-primary;
+  }
+  .eyebrow-line::before {
+    content: "";
+    width: 26px;
+    height: 2px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--color-primary), var(--color-primary-light));
+  }
+  .bg-blue-field {
+    background-image:
+      radial-gradient(circle at 8% 12%, rgba(63, 169, 245, 0.18), transparent 36%),
+      radial-gradient(circle at 92% 6%, rgba(0, 174, 239, 0.16), transparent 34%),
+      linear-gradient(160deg, #F8FBFF 0%, #EAF2FF 48%, #F8FBFF 100%);
+  }
+  .bg-blue-deep {
+    background-image:
+      radial-gradient(circle at 12% 10%, rgba(0, 123, 255, 0.45), transparent 42%),
+      radial-gradient(circle at 88% 85%, rgba(0, 174, 239, 0.3), transparent 38%),
+      linear-gradient(125deg, #041C44 0%, #002B66 48%, #003B99 100%);
+  }
+  .glass-deep {
+    @apply border border-white/20 bg-white/10 backdrop-blur-xl;
+  }
+  .ring-blue {
+    box-shadow: 0 0 0 1px rgba(0, 82, 204, 0.12), 0 0 0 8px rgba(0, 174, 239, 0.05);
   }
   .bg-mesh {
     background-image:
