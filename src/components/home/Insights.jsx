@@ -8,7 +8,7 @@ export default function Insights() {
   const media = useMedia()
   const insights = getInsights(media)
   return (
-    <section id="insights" className="relative overflow-hidden bg-cream py-24 lg:py-32" aria-labelledby="insights-title">
+    <section id="insights" className="relative overflow-hidden bg-gradient-to-b from-ice via-cream to-ice py-24 lg:py-32" aria-labelledby="insights-title">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         <div className="flex flex-col gap-6 sm:flex-row sm:items-end sm:justify-between">
           <Reveal className="max-w-2xl">
@@ -62,6 +62,24 @@ export default function Insights() {
             </StaggerItem>
           ))}
         </Stagger>
+
+        <Reveal delay={0.2} className="mt-12 flex flex-col gap-5 rounded-[1.5rem] border border-primary/15 bg-white/85 p-6 shadow-card backdrop-blur sm:flex-row sm:items-center sm:justify-between sm:p-8">
+          <div>
+            <span className="eyebrow-line">Keep the conversation going</span>
+            <p className="mt-3 max-w-xl font-heading text-lg font-extrabold leading-snug text-ink sm:text-xl">
+              Have a regulatory or formulation question these articles don't cover?
+            </p>
+          </div>
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <Link to="/contact" className="btn btn-primary btn-md group">
+              Talk to our team
+              <ArrowRight size={16} aria-hidden="true" className="transition-transform duration-300 group-hover:translate-x-1" />
+            </Link>
+            <Link to="/science" className="btn btn-outline btn-md">
+              Explore our science
+            </Link>
+          </div>
+        </Reveal>
       </div>
     </section>
   )

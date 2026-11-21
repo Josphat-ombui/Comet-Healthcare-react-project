@@ -59,13 +59,13 @@ export default function WhyChooseUs() {
               <div className="absolute -inset-5 rounded-[2.5rem] bg-gradient-to-br from-primary/10 via-primary-light/10 to-transparent blur-2xl" aria-hidden="true" />
               <div className="relative overflow-hidden rounded-[1.75rem] border border-mist bg-white shadow-card-hover">
                 {/* Header */}
-                <div className="relative overflow-hidden border-b border-primary/10 bg-gradient-to-br from-primary-50 via-white to-primary-100 px-6 py-7 sm:px-8">
-                  <div className="absolute inset-0 bg-grid opacity-30" aria-hidden="true" />
-                  <div className="absolute -right-10 -top-14 h-44 w-44 rounded-full bg-primary-light/20 blur-2xl" aria-hidden="true" />
+                <div className="relative overflow-hidden border-b border-primary/20 bg-blue-deep px-6 py-7 sm:px-8">
+                  <div className="absolute inset-0 bg-grid opacity-[0.12]" aria-hidden="true" />
+                  <div className="absolute -right-10 -top-14 h-44 w-44 rounded-full bg-azure/25 blur-2xl" aria-hidden="true" />
                   <div className="relative">
-                    <span className="text-[11px] font-bold uppercase tracking-[0.2em] text-primary">The Comet difference</span>
-                    <h3 className="mt-2 font-heading text-2xl font-extrabold text-ink">What sets us apart</h3>
-                    <p className="mt-1.5 text-sm text-slate">A clear comparison, based on how we work every day.</p>
+                    <span className="text-[11px] font-bold uppercase tracking-[0.2em] text-azure">The Comet difference</span>
+                    <h3 className="mt-2 font-heading text-2xl font-extrabold text-white">What sets us apart</h3>
+                    <p className="mt-1.5 text-sm text-white/70">A clear comparison, based on how we work every day.</p>
                   </div>
                 </div>
 
