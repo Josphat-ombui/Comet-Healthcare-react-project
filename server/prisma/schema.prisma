@@ -1,0 +1,210 @@
+// Comet Healthcare — data model
+//
+// BUSINESS MODEL: Comet is a pharmaceutical manufacturer (CDMO / GMP / regulatory /
+// training). The booking flow is "expert consultation" (regulatory affairs, formulation
+// science, QA/QC, business development) with PARTNER/CLIENT companies, and the directory
+// lists internal experts. Generic model names are kept on purpose:
+//   User.role   PATIENT  -> partner/client account   (renamed in UI)
+//   User.role   PROVIDER -> internal expert/consultant
+//   Appointment         -> booked expert consultation
+//
+// NOTE ON HIPAA / PERSONAL DATA: this schema stores personal contact details for
+// clients. It is a DEVELOPMENT MODEL ONLY. Before any real patient or personal data is
+// handled in production you must: enable encryption at rest on the DB, add auditable
+// access logging, review retention/deletion policies, run a third-party compliance
+// review, and NOT claim HIPAA compliance. See README.md -> "Production readiness".
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  PATIENT
+  PROVIDER
+  ADMIN
+}
+
+enum AppointmentStatus {
+  SCHEDULED
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+}
+
+enum InquiryKind {
+  CONTACT
+  CATALOG
+  CDMO
+}
+
+enum InquiryStatus {
+  NEW
+  REVIEWED
+  ARCHIVED
+}
+
+enum DocumentKind {
+  QUOTATION
+  PROFORMA_INVOICE
+  INVOICE
+  ORDER_CONFIRMATION
+  CDMO_SLA
+  NDA
+  COA
+}
+
+enum DocumentStatus {
+  DRAFT
+  ISSUED
+  VOID
+}
+
+// Key/value app settings, e.g. company_profile (the letterhead template) and
+// per-document number sequences (doc_seq_QUOTATION, ...).
+model Setting {
+  key   String @id
+  value Json?
+}
+
+model User {
+  id             String    @id @default(cuid())
+  email          String    @unique
+  passwordHash   String
+  firstName      String
+  lastName       String
+  phone          String?
+  company        String?
+  role           Role      @default(PATIENT)
+  resetTokenHash String?
+  resetTokenExp  DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  provider     Provider?         @relation(fields: [providerId], references: [id])
+  providerId   String?           @unique
+  appointments Appointment[]     @relation("PatientAppointments")
+  documents    BusinessDocument[]
+}
+
+model Provider {
+  id              String            @id @default(cuid())
+  slug            String            @unique
+  user            User?
+  name            String
+  title           String
+  specialty       String
+  location        String
+  bio             String
+  image           String
+  yearsExperience Int
+  rating          Decimal           @default(4.8)
+  reviewsCount    Int               @default(0)
+  phone           String?
+  email           String?
+  active          Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  schedules     ProviderSchedule[]
+  appointments  Appointment[]
+}
+
+model ProviderSchedule {
+  id          String   @id @default(cuid())
+  provider    Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  providerId  String
+  dayOfWeek   Int // 0 = Sunday ... 6 = Saturday
+  startTime   String // "09:00" (24h, local)
+  endTime     String // "17:00"
+  slotMinutes Int      @default(30)
+}
+
+model Appointment {
+  id            String            @id @default(cuid())
+  code          String            @unique
+  patient       User?             @relation("PatientAppointments", fields: [patientId], references: [id])
+  patientId     String?
+  patientName   String
+  patientEmail  String
+  patientPhone  String?
+  company       String?
+  provider      Provider          @relation(fields: [providerId], references: [id])
+  providerId    String
+  date          String // ISO yyyy-mm-dd (local)
+  startTime     String // "HH:MM" 24h local
+  endTime       String
+  type          String            @default("Consultation")
+  status        AppointmentStatus @default(SCHEDULED)
+  notes         String?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@index([providerId, date, status])
+  @@index([patientId])
+}
+
+model Inquiry {
+  id        String        @id @default(cuid())
+  kind      InquiryKind
+  name      String
+  company   String?
+  email     String
+  phone     String?
+  subject   String?
+  message   String
+  status    InquiryStatus @default(NEW)
+  createdAt DateTime      @default(now())
+
+  @@index([status])
+}
+
+model Testimonial {
+  id        String   @id @default(cuid())
+  name      String
+  role      String
+  quote     String
+  rating    Int      @default(5)
+  approved  Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+
+// Sales & corporate documents generated from the company template (letterhead).
+// `data` holds the structured content (items / clauses / params / productInfo)
+// and `company` is the letterhead snapshot used at generation time, so a PDF
+// can always be re-rendered deterministically.
+model BusinessDocument {
+  id            String         @id @default(cuid())
+  number        String         @unique
+  kind          DocumentKind
+  title         String
+  status        DocumentStatus @default(DRAFT)
+  currency      String         @default("KES")
+  taxRate       Float          @default(0.16)
+  issueDate     String // ISO yyyy-mm-dd
+  dueDate       String?
+  validUntil    String?
+  clientName    String
+  clientCompany String
+  clientEmail   String
+  clientPhone   String?
+  notes         String?
+  subtotal      Float          @default(0)
+  tax           Float          @default(0)
+  total         Float          @default(0)
+  data          Json?
+  company       Json?
+  createdById   String?
+  createdBy     User?          @relation(fields: [createdById], references: [id])
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@index([kind])
+  @@index([status])
+  @@index([clientEmail])
+  @@index([createdById])
+}
