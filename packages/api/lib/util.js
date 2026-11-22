@@ -16,6 +16,17 @@ export function genBookingCode() {
   return `CMT-${randomCode(8)}`
 }
 
+/** Error carrying an HTTP status so the central handler can serialise it
+ *  without leaking internals. */
+export class HttpError extends Error {
+  constructor(status, message, extra = {}) {
+    super(message)
+    this.name = 'HttpError'
+    this.status = status
+    Object.assign(this, extra)
+  }
+}
+
 /** Simple in-memory, per-IP sliding-window rate limiter. Fine for a dev/preview
  *  deployment; swap for redis/rate-limiter in production. */
 export function rateLimit({ windowMs = 60_000, max = 60 } = {}) {

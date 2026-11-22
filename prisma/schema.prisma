@@ -644,6 +644,8 @@ model Thread {
   branch         Branch?            @relation("ThreadBranch", fields: [branchId], references: [id])
   inboxId        String?
   inbox          Inbox?             @relation(fields: [inboxId], references: [id])
+  channelId      String?
+  channel        Channel?           @relation(fields: [channelId], references: [id])
   subject        String
   status         ThreadStatus       @default(OPEN)
   priority       ThreadPriority     @default(NORMAL)
@@ -663,6 +665,7 @@ model Thread {
   messages Message[]
 
   @@index([companyId, inboxId, lastMessageAt])
+  @@index([companyId, channelId, lastMessageAt])
   @@index([companyId, assignedToId, status])
 }
 
@@ -796,6 +799,7 @@ model Channel {
   deletedAt      DateTime?
 
   members ChannelMembership[]
+  threads Thread[]
 
   @@unique([companyId, name])
 }

@@ -25,7 +25,10 @@ export async function emitEvent(type, data, options = {}) {
     data,
   })
 
-  return db.outboxEvent.create({
+  // A service can pass a transaction client so the business write and its
+  // outbox row commit together. Requests normally rely on the tenant proxy.
+  const client = options.client || db
+  return client.outboxEvent.create({
     data: {
       companyId: envelope.companyId,
       eventType: envelope.type,

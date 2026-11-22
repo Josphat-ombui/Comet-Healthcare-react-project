@@ -7,6 +7,7 @@
 //   /api/inquiries/*   contact / CDMO / catalogue leads
 //   /api/admin/*       admin-only management surface
 //   /api/documents/*   generated business documents + branded PDFs
+//   /api/messaging/*   internal inboxes, threads, messages, channels (Phase 4)
 //
 // Run with `npm run dev` (auto-restarts) or `npm start`.
 
@@ -24,6 +25,7 @@ import { authRouter } from './routes/auth.routes.js'
 import { identityRouter } from './routes/identity.routes.js'
 import { orgRouter } from './routes/org.routes.js'
 import { auditRouter } from './routes/audit.routes.js'
+import { messagingRouter } from './routes/messaging.routes.js'
 import { providerRouter } from './routes/providers.routes.js'
 import { appointmentRouter } from './routes/appointments.routes.js'
 import { inquiryRouter } from './routes/inquiries.routes.js'
@@ -86,6 +88,7 @@ app.use('/api/auth', authRouter)
 app.use('/api/identity', identityRouter)
 app.use('/api/org', orgRouter)
 app.use('/api/audit', auditRouter)
+app.use('/api/messaging', messagingRouter)
 app.use('/api/providers', providerRouter)
 app.use('/api/appointments', appointmentRouter)
 app.use('/api/inquiries', inquiryRouter)
@@ -143,6 +146,12 @@ app.use((err, _req, res, _next) => {
   }
   if (err instanceof PasswordPolicyError) {
     return res.status(err.status).json({ error: err.message })
+  }
+  if (err?.status && err.status >= 400 && err.status < 500) {
+    const body = { error: err.message }
+    if (err.types) body.types = err.types
+    if (err.invalid) body.invalid = err.invalid
+    return res.status(err.status).json(body)
   }
   // Do NOT leak internals (stack traces, query details) to clients.
   console.error('Unhandled error:', err)

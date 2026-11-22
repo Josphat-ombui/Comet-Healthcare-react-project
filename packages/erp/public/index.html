@@ -8,7 +8,7 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand"><span class="mark">C</span> Comet Healthcare <small>ERP · Phase 3</small></div>
+    <div class="brand"><span class="mark">C</span> Comet Healthcare <small>ERP · Phase 4</small></div>
     <div id="identity" class="identity"></div>
   </header>
 
@@ -30,21 +30,75 @@
     </section>
 
     <section id="dashboard" hidden>
-      <div class="grid">
-        <section class="card span-2">
-          <div class="card-head"><h2>User directory</h2><span id="userCount" class="pill"></span></div>
-          <table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Branch</th><th>MFA</th></tr></thead><tbody id="userRows"></tbody></table>
-        </section>
-        <section class="card">
-          <div class="card-head"><h2>Branches</h2></div>
-          <ul id="branchList" class="list"></ul>
-        </section>
-        <section class="card">
-          <div class="card-head"><h2>Active sessions</h2><button id="revokeOthers" class="link" type="button">Sign out others</button></div>
-          <ul id="sessionList" class="list"></ul>
-        </section>
-      </div>
-      <p class="muted footer-note">Messaging arrives in Phase 4. Audit verification and role management are available under <code>/api/audit</code> and <code>/api/identity</code>.</p>
+      <nav class="tabs" aria-label="ERP sections">
+        <button id="tabInbox" class="tab active" type="button">Inbox</button>
+        <button id="tabDirectory" class="tab" type="button">Directory</button>
+        <span id="connection" class="pill connection" aria-live="polite">Connecting…</span>
+      </nav>
+
+      <section id="inboxView" class="inbox">
+        <div class="card thread-panel">
+          <div class="card-head">
+            <h2>Threads</h2>
+            <button id="newThreadButton" class="link" type="button">New thread</button>
+          </div>
+          <p id="inboxError" class="error" role="alert"></p>
+          <form id="newThreadForm" hidden>
+            <label>Subject<input id="newSubject" required maxlength="220" placeholder="e.g. Delivery schedule" /></label>
+            <label>Internal recipients<input id="newRecipients" maxlength="400" placeholder="staff@internal, role:MANAGER" /></label>
+            <label>Message<textarea id="newBody" rows="3" required maxlength="20000" placeholder="Write the first message"></textarea></label>
+            <button type="submit">Create thread</button>
+            <button id="cancelNewThread" class="secondary" type="button">Cancel</button>
+          </form>
+          <ul id="threadList" class="thread-list" aria-label="Threads"></ul>
+        </div>
+
+        <div class="card message-panel">
+          <div class="card-head message-head">
+            <div>
+              <h2 id="threadSubject">Select a thread</h2>
+              <p id="threadMeta" class="muted"></p>
+            </div>
+            <div class="thread-actions">
+              <select id="assignSelect" aria-label="Assign to user" hidden></select>
+              <button id="assignButton" class="secondary" type="button" hidden>Assign</button>
+              <button id="resolveButton" class="secondary" type="button" hidden>Resolve</button>
+            </div>
+          </div>
+          <p id="typing" class="typing muted" aria-live="polite"></p>
+          <div id="messageList" class="message-list" role="log" aria-live="polite">
+            <p class="muted">Choose a thread to read its messages.</p>
+          </div>
+          <form id="composer" class="composer" hidden>
+            <label class="note-toggle">
+              <input id="internalNote" type="checkbox" /> Internal note (staff only)
+            </label>
+            <textarea id="composerBody" rows="3" maxlength="20000" placeholder="Write a reply…" required></textarea>
+            <div class="composer-actions">
+              <span id="composeStatus" class="muted"></span>
+              <button id="sendButton" type="submit">Send</button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <section id="directoryView" hidden>
+        <div class="grid">
+          <section class="card span-2">
+            <div class="card-head"><h2>User directory</h2><span id="userCount" class="pill"></span></div>
+            <table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Branch</th><th>MFA</th></tr></thead><tbody id="userRows"></tbody></table>
+          </section>
+          <section class="card">
+            <div class="card-head"><h2>Branches</h2></div>
+            <ul id="branchList" class="list"></ul>
+          </section>
+          <section class="card">
+            <div class="card-head"><h2>Active sessions</h2><button id="revokeOthers" class="link" type="button">Sign out others</button></div>
+            <ul id="sessionList" class="list"></ul>
+          </section>
+        </div>
+        <p class="muted footer-note">Audit verification and role management remain under <code>/api/audit</code> and <code>/api/identity</code>.</p>
+      </section>
     </section>
   </main>
   <script type="module" src="/app.js"></script>

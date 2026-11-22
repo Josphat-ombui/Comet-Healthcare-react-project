@@ -52,6 +52,33 @@ export function signMfaChallenge(user, sessionId, correlationId = '') {
   )
 }
 
+/** Short-lived token used only to authorise Socket.IO rooms. It carries no
+ *  message content and is derived from a full API request's principal. */
+export function signRealtimeToken(principal, rooms) {
+  return jwt.sign(
+    {
+      sub: principal.userId,
+      companyId: principal.companyId,
+      branchIds: principal.branchIds || [],
+      roles: principal.roles || [],
+      rooms,
+      scope: 'realtime',
+      jti: crypto.randomUUID(),
+    },
+    config.jwtSecret,
+    { expiresIn: config.realtime.tokenTtl }
+  )
+}
+
+export function verifyRealtimeToken(token) {
+  const payload = jwt.verify(token, config.jwtSecret)
+  if (payload.scope !== 'realtime') throw new Error('Invalid token scope')
+  if (!payload.companyId || !payload.sub || !Array.isArray(payload.rooms)) {
+    throw new Error('Invalid realtime token claims')
+  }
+  return payload
+}
+
 function cookieOptions() {
   return {
     httpOnly: true,

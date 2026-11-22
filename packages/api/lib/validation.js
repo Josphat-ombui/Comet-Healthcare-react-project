@@ -96,6 +96,97 @@ export const auditQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).default(100),
 })
 
+// ------------------------------------------------------------ phase 4 messaging
+
+const internalRecipientSchema = z.string().trim().min(2).max(200)
+  .refine((value) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value), 'External email addresses cannot be used for internal messaging')
+
+const classificationSchema = z.enum(['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'])
+const prioritySchema = z.enum(['LOW', 'NORMAL', 'HIGH', 'URGENT'])
+const optionalIsoDateTime = z.string().refine((value) => !Number.isNaN(Date.parse(value)), 'Enter a valid date and time')
+
+export const createInboxSchema = z.object({
+  code: z.string().trim().min(2).max(60).regex(/^[a-z0-9_-]+$/, 'Use lowercase letters, numbers, _ or -'),
+  name: z.string().trim().min(2).max(120),
+  kind: z.enum(['PERSONAL', 'DEPARTMENT', 'ROLE', 'BRANCH', 'SHARED']),
+  internalAddress: z.string().trim().max(120).optional().or(z.literal('')),
+  branchId: z.string().max(60).nullable().optional(),
+  departmentId: z.string().max(60).nullable().optional(),
+  description: z.string().trim().max(500).optional().or(z.literal('')),
+  classification: classificationSchema.default('INTERNAL'),
+})
+
+export const createThreadSchema = z.object({
+  subject: z.string().trim().min(2, 'Enter a subject').max(220),
+  inboxId: z.string().max(60).nullable().optional(),
+  channelId: z.string().max(60).nullable().optional(),
+  branchId: z.string().max(60).nullable().optional(),
+  priority: prioritySchema.default('NORMAL'),
+  classification: classificationSchema.default('INTERNAL'),
+  recipients: z.array(internalRecipientSchema).max(50).optional(),
+})
+
+export const threadQuerySchema = z.object({
+  status: z.enum(['OPEN', 'PENDING', 'RESOLVED', 'CLOSED']).optional(),
+  inboxId: z.string().max(60).optional(),
+  channelId: z.string().max(60).optional(),
+  assignedToId: z.string().max(60).optional(),
+  archived: z.enum(['true', 'false']).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+})
+
+export const updateThreadSchema = z.object({
+  status: z.enum(['OPEN', 'PENDING', 'RESOLVED', 'CLOSED']).optional(),
+  priority: prioritySchema.optional(),
+  dueDate: optionalIsoDateTime.nullable().optional(),
+  snoozedUntil: optionalIsoDateTime.nullable().optional(),
+  archived: z.boolean().optional(),
+})
+
+export const assignThreadSchema = z.object({
+  assignedToId: z.string().max(60).nullable(),
+})
+
+export const sendMessageSchema = z.object({
+  body: z.string().trim().min(1, 'Enter a message').max(20_000),
+  recipients: z.array(internalRecipientSchema).max(50).optional(),
+  visibility: z.enum(['RECIPIENT', 'INTERNAL']).default('RECIPIENT'),
+  priority: prioritySchema.optional(),
+  classification: classificationSchema.optional(),
+})
+
+export const editMessageSchema = z.object({
+  body: z.string().trim().min(1, 'Enter a message').max(20_000),
+  reason: z.string().trim().max(200).optional().or(z.literal('')),
+})
+
+export const reactionSchema = z.object({
+  emoji: z.string().trim().min(1).max(16).regex(/^[\p{Extended_Pictographic}\uFE0F\u200D]+$/u, 'Use a single emoji'),
+})
+
+export const messageQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  before: z.string().max(60).optional(),
+  after: z.string().max(60).optional(),
+})
+
+export const createChannelSchema = z.object({
+  name: z.string().trim().min(2).max(120),
+  description: z.string().trim().max(500).optional().or(z.literal('')),
+  visibility: z.enum(['PUBLIC', 'PRIVATE']).default('PUBLIC'),
+  branchId: z.string().max(60).nullable().optional(),
+  departmentId: z.string().max(60).nullable().optional(),
+  classification: classificationSchema.default('INTERNAL'),
+})
+
+export const routingEvaluateSchema = z.object({
+  subject: z.string().trim().max(220).optional().or(z.literal('')),
+  body: z.string().trim().max(4000).optional().or(z.literal('')),
+  formType: z.string().trim().max(80).optional().or(z.literal('')),
+  senderType: z.string().trim().max(80).optional().or(z.literal('')),
+  branchId: z.string().max(60).nullable().optional(),
+})
+
 export const visitDateSchema = z
   .string()
   .refine(isValidIsoDate, 'Choose a valid date')

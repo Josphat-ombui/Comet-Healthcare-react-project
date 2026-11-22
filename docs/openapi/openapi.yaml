@@ -1,12 +1,25 @@
 openapi: 3.1.0
 info:
   title: Comet Healthcare Enterprise API
-  version: 0.3.0-phase.3
+  version: 0.4.0-phase.4
   summary: REST and webhook contract for the Comet Healthcare enterprise platform.
   description: |
     Phase 3 adds local identity, sessions, MFA, OIDC, organisation directory and audit.
+    Phase 4 adds tenant-scoped internal messaging, channels, DLP, and realtime events.
     Tenant and branch context are derived from the authenticated principal; clients must
     never supply companyId directly. Refresh tokens are HttpOnly cookies, never response bodies.
+
+    Internal messaging never uses external SMTP. Recipients are internal user IDs,
+    inbox codes/addresses, or `department:`/`role:`/`branch:` aliases. External-looking
+    email addresses are rejected with 400 before any lookup. `visibility=INTERNAL` notes are excluded from
+    recipient DTOs, receipts, sockets, and audits; only inbox managers and the author
+    can see them. DLP fails closed (`DLP_MODE=block`) unless explicitly set to `flag`.
+
+    Every `POST /api/messaging/threads/{id}/messages` requires an `Idempotency-Key`
+    header; safe replays return 200 with `replay: true` instead of creating duplicates.
+    Domain events and Socket.IO payloads carry message/thread IDs and classification
+    only — no subject or body. Clients fetch content through authenticated endpoints
+    so visibility is always rechecked.
   contact:
     name: Comet Healthcare Platform Team
   license:
@@ -45,6 +58,37 @@ x-phase-roadmap:
   phase13: /api/manufacturing
   phase14: /api/reporting
   phase15: /api/public/v1 and /api/webhooks
+x-realtime:
+  transport: Socket.IO 4 with Redis adapter; client bundle served by the realtime service.
+  authentication: |
+    GET /api/messaging/realtime-token returns a short-lived JWT (scope=realtime)
+    containing companyId, branchIds, roles and an explicit room allow-list.
+    The token carries no message content. A token can never join a room outside its tenant.
+  rooms:
+    - company:{companyId}
+    - company:{companyId}:user:{userId}
+    - company:{companyId}:branch:{branchId}
+    - company:{companyId}:inbox:{inboxId}
+    - company:{companyId}:thread:{threadId}
+    - company:{companyId}:channel:{channelId}
+  clientEvents:
+    subscribe:thread: 'Join an additional authorised thread room.'
+    typing: 'Broadcast { threadId, isTyping } to a thread room.'
+  serverEvents:
+    message:new: 'A message was committed; refetch via GET /api/messaging/threads/{id}/messages.'
+    message:recalled: 'A message was recalled.'
+    thread:assigned: 'Thread assignment changed.'
+    thread:resolved: 'Thread status changed to RESOLVED or reopened.'
+    reaction:added: 'A reaction was added.'
+    presence:update: '{ userId, online } for a tenant member.'
+    typing:update: '{ threadId, userId, isTyping }.'
+  eventPayload:
+    eventId: string
+    type: string
+    occurredAt: string (date-time)
+    correlationId: string
+    data: IDs and classification only; no body or subject.
+  fallback: Authenticated polling of /api/messaging/threads and messages when sockets are unavailable.
 paths:
   /api/health/live:
     get:
@@ -487,6 +531,288 @@ paths:
       responses:
         '200':
           description: Verification result.
+  /api/messaging/inboxes:
+    get:
+      tags: [Messaging]
+      summary: List inboxes visible to the principal
+      responses:
+        '200':
+          description: Visible inboxes.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  inboxes:
+                    type: array
+                    items: { $ref: '#/components/schemas/Inbox' }
+    post:
+      tags: [Messaging]
+      summary: Create an inbox
+      responses:
+        '201':
+          description: Inbox created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  inbox: { $ref: '#/components/schemas/Inbox' }
+  /api/messaging/inboxes/{id}/members:
+    get:
+      tags: [Messaging]
+      summary: List inbox memberships
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: Memberships for the inbox.
+  /api/messaging/threads:
+    get:
+      tags: [Messaging]
+      summary: List threads visible to the principal
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [OPEN, PENDING, RESOLVED, CLOSED] }
+        - name: inboxId
+          in: query
+          schema: { type: string }
+        - name: channelId
+          in: query
+          schema: { type: string }
+        - name: assignedToId
+          in: query
+          schema: { type: string }
+        - name: archived
+          in: query
+          schema: { type: string, enum: ['true', 'false'] }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Matching threads.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  threads:
+                    type: array
+                    items: { $ref: '#/components/schemas/Thread' }
+    post:
+      tags: [Messaging]
+      summary: Create a thread with internal recipients
+      description: 'Recipients may be user IDs, inbox codes/addresses, or department:/role:/branch: aliases.'
+      responses:
+        '201':
+          description: Thread created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  thread: { $ref: '#/components/schemas/Thread' }
+        '400':
+          description: Invalid payload, including an external-looking email address.
+        '422':
+          description: A recipient could not be resolved to an internal user or inbox.
+  /api/messaging/threads/{id}:
+    get:
+      tags: [Messaging]
+      summary: Read a thread and the caller's access level
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: Thread detail, including `canSeeInternal`.
+        '404':
+          description: Thread not found or not accessible.
+    patch:
+      tags: [Messaging]
+      summary: Update status, priority, dates or archive state
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: Updated thread.
+  /api/messaging/threads/{id}/assign:
+    post:
+      tags: [Messaging]
+      summary: Assign or unassign a shared-inbox thread
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: Thread with the new assignee.
+        '403':
+          description: Caller cannot manage this shared inbox.
+  /api/messaging/threads/{id}/resolve:
+    post:
+      tags: [Messaging]
+      summary: Mark a thread RESOLVED
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: Updated thread.
+  /api/messaging/threads/{id}/messages:
+    get:
+      tags: [Messaging]
+      summary: List messages in a thread
+      description: INTERNAL notes are omitted for principals without inbox manager access.
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: before
+          in: query
+          schema: { type: string }
+        - name: after
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Visible messages.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  messages:
+                    type: array
+                    items: { $ref: '#/components/schemas/Message' }
+    post:
+      tags: [Messaging]
+      summary: Send a message or internal note
+      description: Requires an Idempotency-Key. DLP findings block the write by default.
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '201':
+          description: Message created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { $ref: '#/components/schemas/Message' }
+                  replay: { type: boolean, enum: [false] }
+                  dlpTypes: { type: array, items: { type: string } }
+        '200':
+          description: Idempotent replay of an existing message; nothing was created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { $ref: '#/components/schemas/Message' }
+                  replay: { type: boolean, enum: [true] }
+        '400':
+          description: Missing Idempotency-Key.
+        '422':
+          description: DLP violation or unresolved recipient.
+  /api/messaging/messages/{id}/recall:
+    post:
+      tags: [Messaging]
+      summary: Recall a message
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: Recalled message.
+  /api/messaging/messages/{id}/edit:
+    post:
+      tags: [Messaging]
+      summary: Edit a message and retain the previous body in an edit record
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: Edited message.
+  /api/messaging/messages/{id}/reactions:
+    post:
+      tags: [Messaging]
+      summary: Add a reaction
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '201':
+          description: Reaction added.
+        '200':
+          description: Reaction already existed.
+  /api/messaging/messages/{id}/reactions/{emoji}:
+    delete:
+      tags: [Messaging]
+      summary: Remove the caller's reaction
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - name: emoji
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Removal result.
+  /api/messaging/messages/{id}/read:
+    post:
+      tags: [Messaging]
+      summary: Record a read receipt
+      description: INTERNAL notes never produce receipts.
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: Whether a receipt was recorded.
+  /api/messaging/channels:
+    get:
+      tags: [Messaging]
+      summary: List channels visible to the principal
+      responses:
+        '200':
+          description: Visible channels.
+    post:
+      tags: [Messaging]
+      summary: Create a channel
+      responses:
+        '201':
+          description: Channel created; creator becomes OWNER.
+  /api/messaging/channels/{id}/join:
+    post:
+      tags: [Messaging]
+      summary: Join a public channel
+      description: Private channels require an invitation and return 403.
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: Join result.
+  /api/messaging/routing/evaluate:
+    post:
+      tags: [Messaging]
+      summary: Evaluate routing rules without creating a thread
+      responses:
+        '200':
+          description: Matching rule or null.
+  /api/messaging/realtime-token:
+    get:
+      tags: [Messaging]
+      summary: Issue a short-lived Socket.IO token with an explicit room allow-list
+      responses:
+        '200':
+          description: Realtime token and rooms.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  rooms:
+                    type: array
+                    items: { type: string }
 components:
   securitySchemes:
     bearerAuth:
@@ -518,6 +844,14 @@ components:
       schema:
         type: string
         example: cor_01JQ8Z3M9K2P7YV4
+    IdempotencyKey:
+      description: |
+        Client-generated unique key for a message send. Reusing the same key replays
+        the original message instead of creating a duplicate.
+      schema:
+        type: string
+        maxLength: 200
+      required: true
   parameters:
     UserId:
       name: id
@@ -528,7 +862,85 @@ components:
       name: limit
       in: query
       schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Client-generated key; safe replays return the original message.
+      schema: { type: string, minLength: 1, maxLength: 200 }
   schemas:
+    Inbox:
+      type: object
+      required: [id, code, name, kind]
+      properties:
+        id: { type: string }
+        code: { type: string }
+        name: { type: string }
+        internalAddress: { type: string, nullable: true }
+        kind: { type: string, enum: [PERSONAL, DEPARTMENT, ROLE, BRANCH, SHARED] }
+        branchId: { type: string, nullable: true }
+        departmentId: { type: string, nullable: true }
+        classification: { type: string, enum: [PUBLIC, INTERNAL, CONFIDENTIAL, RESTRICTED] }
+        isActive: { type: boolean }
+    Thread:
+      type: object
+      required: [id, subject, status, priority]
+      properties:
+        id: { type: string }
+        companyId: { type: string }
+        branchId: { type: string, nullable: true }
+        inboxId: { type: string, nullable: true }
+        channelId: { type: string, nullable: true }
+        subject: { type: string }
+        status: { type: string, enum: [OPEN, PENDING, RESOLVED, CLOSED] }
+        priority: { type: string, enum: [LOW, NORMAL, HIGH, URGENT] }
+        assignedToId: { type: string, nullable: true }
+        createdById: { type: string }
+        lastMessageAt: { type: string, format: date-time }
+        snoozedUntil: { type: string, format: date-time, nullable: true }
+        archived: { type: boolean }
+        classification: { type: string, enum: [PUBLIC, INTERNAL, CONFIDENTIAL, RESTRICTED] }
+        messageCount: { type: integer }
+        access: { type: string, nullable: true }
+        canSeeInternal: { type: boolean }
+    Message:
+      type: object
+      required: [id, threadId, senderId, body, visibility, createdAt]
+      properties:
+        id: { type: string }
+        threadId: { type: string }
+        senderId: { type: string }
+        senderName: { type: string }
+        senderInboxId: { type: string, nullable: true }
+        body: { type: string, description: Recalled messages render a placeholder. }
+        visibility: { type: string, enum: [RECIPIENT, INTERNAL] }
+        priority: { type: string, enum: [LOW, NORMAL, HIGH, URGENT] }
+        classification: { type: string, enum: [PUBLIC, INTERNAL, CONFIDENTIAL, RESTRICTED] }
+        recalledAt: { type: string, format: date-time, nullable: true }
+        editedAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+        reactions:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              userId: { type: string }
+              emoji: { type: string }
+              createdAt: { type: string, format: date-time }
+        receipts:
+          type: array
+          description: Always empty for INTERNAL notes. BCC recipients are hidden from non-senders.
+          items:
+            type: object
+            properties:
+              userId: { type: string, nullable: true }
+              inboxId: { type: string, nullable: true }
+              status: { type: string }
+              deliveredAt: { type: string, format: date-time, nullable: true }
+              readAt: { type: string, format: date-time, nullable: true }
+        edits: { type: array, items: { type: object } }
+        attachments: { type: array, items: { type: object } }
     User:
       type: object
       required: [id, email, firstName, lastName, role]

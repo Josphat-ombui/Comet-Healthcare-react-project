@@ -13,11 +13,50 @@ export const EventEnvelopeSchema = z.object({
   data: z.record(z.string(), z.unknown()),
 })
 
+// Event payloads carry opaque IDs and classification only. Message bodies and
+// subjects never enter the event bus — subscribers fetch content through the
+// authenticated API so visibility and DLP rules are always rechecked.
+const VisibilitySchema = z.enum(['RECIPIENT', 'INTERNAL'])
+const ClassificationSchema = z.enum(['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'])
+
 export const MessageSentDataSchema = z.object({
   messageId: z.string(),
   threadId: z.string(),
   inboxId: z.string().nullable().optional(),
-  subject: z.string().nullable().optional(),
+  channelId: z.string().nullable().optional(),
+  visibility: VisibilitySchema,
+  classification: ClassificationSchema,
+  recipientUserIds: z.array(z.string()),
+  recipientInboxIds: z.array(z.string()),
+})
+
+export const ThreadAssignedDataSchema = z.object({
+  threadId: z.string(),
+  inboxId: z.string().nullable().optional(),
+  assignedToId: z.string().nullable(),
+  assignedById: z.string(),
+})
+
+export const ThreadResolvedDataSchema = z.object({
+  threadId: z.string(),
+  inboxId: z.string().nullable().optional(),
+  status: z.enum(['OPEN', 'PENDING', 'RESOLVED', 'CLOSED']),
+  resolvedById: z.string(),
+})
+
+export const MessageRecalledDataSchema = z.object({
+  messageId: z.string(),
+  threadId: z.string(),
+  recalledById: z.string(),
+  recipientUserIds: z.array(z.string()),
+  recipientInboxIds: z.array(z.string()),
+})
+
+export const ReactionAddedDataSchema = z.object({
+  messageId: z.string(),
+  threadId: z.string(),
+  userId: z.string(),
+  emoji: z.string().max(16),
 })
 
 export const UserCreatedDataSchema = z.object({
@@ -59,6 +98,10 @@ export const DepartmentCreatedDataSchema = z.object({
 
 export const DomainEventSchemas = {
   MessageSent: MessageSentDataSchema,
+  ThreadAssigned: ThreadAssignedDataSchema,
+  ThreadResolved: ThreadResolvedDataSchema,
+  MessageRecalled: MessageRecalledDataSchema,
+  ReactionAdded: ReactionAddedDataSchema,
   UserCreated: UserCreatedDataSchema,
   UserDisabled: UserDisabledDataSchema,
   RoleAssigned: RoleAssignedDataSchema,

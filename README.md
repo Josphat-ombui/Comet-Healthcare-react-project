@@ -29,10 +29,15 @@ npm run db:generate   # generate Prisma client
 npm run db:deploy     # apply versioned migrations (RLS, roles, audit rules)
 npm run db:seed       # tenant, branches, departments, inboxes, demo data
 npm run dev           # API on :4000 + Vite on :5173 (Vite proxies /api -> :4000)
+npm run dev:erp       # internal ERP shell on :5174
+npm run dev:realtime  # Socket.IO server on :4001 (loads Redis if available)
+npm run dev:workers   # outbox → Redis Streams publisher
 ```
 
 Open http://localhost:5173. The API runs as the non-owner `comet_app` role from
 `DATABASE_URL_APP`; migrations and seeds use the owner `DATABASE_URL`.
+The ERP inbox is at http://localhost:5174; it polls the API when the realtime
+service is not running.
 
 ### Demo accounts (seeded)
 
@@ -60,8 +65,13 @@ Open http://localhost:5173. The API runs as the non-owner `comet_app` role from
 - **REST API** — `packages/api/routes/` with Zod validation, auth/role/permission
   guards, tenant-scoped Prisma proxy, rate limiting, and conflict-safe slot
   availability. All endpoints are under `/api`; contract: `docs/openapi/openapi.yaml`.
-- **ERP shell (Phase 3)** — minimal login, session list, user directory and branch
-  list at http://localhost:5174 (`npm run dev:erp`). Full messaging arrives in Phase 4.
+- **Internal messaging (Phase 4)** — tenant-scoped inboxes, threads, channels,
+  internal notes hidden from non-managers, read receipts, recall/edit/reactions,
+  routing rules, fail-closed DLP, idempotent sends, and Socket.IO realtime with a
+  polling fallback. Messaging never calls SMTP. Contract: `docs/openapi/openapi.yaml`.
+- **ERP shell (Phase 4)** — login, sessions, user directory and branches plus a
+  working inbox (thread list, composer, internal-note toggle, reactions, recall,
+  assign/resolve, presence/typing, offline queue) at http://localhost:5174.
 
 ## Commands
 
@@ -70,7 +80,9 @@ Open http://localhost:5173. The API runs as the non-owner `comet_app` role from
 | `npm run dev`            | Run API (`:4000`) + Vite (`:5173`) together         |
 | `npm run dev:web`        | Vite only                                           |
 | `npm run dev:api`        | Express only (watch)                                |
-| `npm run dev:erp`        | Minimal ERP shell on `:5174`                        |
+| `npm run dev:erp`        | ERP shell + inbox on `:5174`                        |
+| `npm run dev:realtime`   | Socket.IO + Redis adapter on `:4001`                |
+| `npm run dev:workers`    | Outbox → Redis Streams publisher                    |
 | `npm run build`          | Production build to `packages/web/dist/`            |
 | `npm start`              | Production server (serves the web build too)        |
 | `npm run lint`           | Oxlint                                              |
@@ -88,7 +100,10 @@ Everything is read from `.env` — see `.env.example` for the annotated list:
 `RESET_TOKEN_TTL_SECONDS`, SMTP settings, and `SEED_ADMIN_PASSWORD`.
 Phase 3 also adds `OBJECT_ENCRYPTION_KEY`, `PASSWORD_BREACH_ENFORCE`,
 `REFRESH_TOKEN_TTL_SECONDS`, `MAX_CONCURRENT_SESSIONS`, `LOGIN_MAX_ATTEMPTS`,
-`LOGIN_WINDOW_SECONDS`, and `OIDC_*`.
+`LOGIN_WINDOW_SECONDS`, and `OIDC_*`. Phase 4 adds `REALTIME_PORT`,
+`REALTIME_TOKEN_TTL`, `REALTIME_CORS_ORIGINS`, `REALTIME_CONSUMER_GROUP`,
+`REDIS_EVENT_STREAM`, `OUTBOX_POLL_MS`, `OUTBOX_MAX_ATTEMPTS`, and `DLP_MODE`
+(`block` by default; use `flag` only for supervised rollout).
 
 ## Project layout
 
@@ -98,17 +113,17 @@ packages/
   api/                Express app: index.js, lib/, routes/, tests/
   web/                Storefront: src/, public/, tests/, Vite config
   cms/                Content Studio workspace scaffold
-  erp/                Internal suite: Phase 3 shell (public/, static server)
-  realtime/           Socket.IO server scaffold (Phase 4)
-  workers/            BullMQ consumers scaffold (Phase 5)
+  erp/                Internal suite: ERP shell + messaging UI (public/, static server)
+  realtime/           Socket.IO server, Redis adapter and stream relay (Phase 4)
+  workers/            Outbox publisher; BullMQ jobs planned for Phase 5
 prisma/
   schema.prisma       PostgreSQL 16 schema (identity, org, messaging, legacy)
   migrations/         Versioned SQL + RLS/role/audit rules
   seed.js             Tenant, branches, departments, inboxes, demo data
 docs/
   architecture/       Phase 1 architecture + Phase 3 ERD
-  decisions/          ADRs (0001-0008)
-  openapi/            Phase 3 API contract
+  decisions/          ADRs (0001-0009)
+  openapi/            Phase 4 API contract
 ```
 
 ## Production-readiness notes

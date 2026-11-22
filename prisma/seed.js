@@ -204,7 +204,7 @@ async function main() {
   })
   console.log('✓ Demo client: client@comethealthcare.local (password: ClientPass123!)')
 
-  await prisma.user.upsert({
+  const staffUser = await prisma.user.upsert({
     where: { companyId_email: { companyId, email: 'staff@comethealthcare.local' } },
     update: {},
     create: {
@@ -219,6 +219,79 @@ async function main() {
     },
   })
   console.log('✓ Demo staff: staff@comethealthcare.local (password: StaffPass123!)')
+
+  // ---- Phase 4 messaging demo ----
+  const careInbox = await prisma.inbox.findUnique({
+    where: { companyId_internalAddress: { companyId, internalAddress: 'customercare@internal' } },
+  })
+  if (careInbox) {
+    for (const [user, role] of [[adminUser, 'MANAGER'], [staffUser, 'AGENT']]) {
+      await prisma.inboxMembership.upsert({
+        where: { inboxId_userId: { inboxId: careInbox.id, userId: user.id } },
+        update: { role },
+        create: { companyId, inboxId: careInbox.id, userId: user.id, role, canAssign: true },
+      })
+    }
+  }
+
+  let demoThread = await prisma.thread.findFirst({
+    where: { companyId, subject: 'Welcome to the internal inbox' },
+  })
+  if (!demoThread && careInbox) {
+    demoThread = await prisma.thread.create({
+      data: {
+        companyId,
+        inboxId: careInbox.id,
+        branchId: hqBranch?.id || null,
+        subject: 'Welcome to the internal inbox',
+        status: 'OPEN',
+        priority: 'NORMAL',
+        classification: 'INTERNAL',
+        createdById: adminUser.id,
+        lastMessageAt: new Date(),
+      },
+    })
+    const welcome = await prisma.message.create({
+      data: {
+        companyId,
+        threadId: demoThread.id,
+        branchId: hqBranch?.id || null,
+        senderId: adminUser.id,
+        body: 'This thread demonstrates internal delivery without any external email dependency.',
+        visibility: 'RECIPIENT',
+        classification: 'INTERNAL',
+        idempotencyKey: `${companyId}:seed:welcome-message`,
+        recipients: {
+          create: {
+            companyId,
+            userId: staffUser.id,
+            inboxId: careInbox.id,
+            status: 'DELIVERED',
+            deliveredAt: new Date(),
+          },
+        },
+      },
+    })
+    await prisma.message.create({
+      data: {
+        companyId,
+        threadId: demoThread.id,
+        branchId: hqBranch?.id || null,
+        senderId: staffUser.id,
+        body: 'Confirmed — replies and read receipts stay inside the platform.',
+        visibility: 'INTERNAL',
+        classification: 'INTERNAL',
+        idempotencyKey: `${companyId}:seed:welcome-note`,
+        recipients: {
+          create: { companyId, userId: adminUser.id, status: 'DELIVERED', deliveredAt: new Date() },
+        },
+      },
+    })
+    await prisma.messageReaction.create({
+      data: { companyId, messageId: welcome.id, userId: staffUser.id, emoji: '👍' },
+    })
+    console.log('✓ Messaging demo: shared inbox thread with a reply and internal note')
+  }
 
   // ---- Experts (seeded once) ----
   if ((await prisma.provider.count()) === 0) {

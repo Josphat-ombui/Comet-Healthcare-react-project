@@ -17,7 +17,7 @@ export async function resolvePrincipal(req, _res, next) {
       const principal = await withTenant({ companyId }, async () => {
         const user = await db.user.findFirst({
           where: { id: payload.sub, companyId, status: 'ACTIVE' },
-          select: { id: true, companyId: true, branchId: true, role: true, status: true },
+          select: { id: true, companyId: true, branchId: true, departmentId: true, role: true, status: true },
         })
         if (!user) return null
         if (payload.sessionId) {
@@ -41,6 +41,7 @@ export async function resolvePrincipal(req, _res, next) {
           companyId,
           branchId: principal.user.branchId || null,
           branchIds: payload.branchIds || (principal.user.branchId ? [principal.user.branchId] : []),
+          departmentId: principal.user.departmentId || null,
           roles,
           role: roles[0],
           sessionId: payload.sessionId || null,

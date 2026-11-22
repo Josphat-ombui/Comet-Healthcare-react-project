@@ -8,7 +8,44 @@ The format follows a phase-gate model: each enterprise phase ends with passing t
 
 ## [Unreleased]
 
-### Phase 3 — Identity, Organisation, and Audit
+### Phase 4 — Messaging and Realtime
+
+**Added**
+
+- `packages/shared/src/dlp.js`: shared detection patterns for card numbers, Kenyan national IDs, KRA PINs and secrets; findings expose type and offsets only, plus redaction helpers.
+- Expanded `packages/shared/src/permissions.js` and `packages/shared/src/events.js` with messaging permissions and ID-only event contracts (`MessageSent`, `ThreadAssigned`, `ThreadResolved`, `MessageRecalled`, `ReactionAdded`).
+- API libraries `dlp.js`, `messaging-repository.js` and `messaging.js`: inbox/thread access checks, internal aliases, internal-note visibility, read receipts, recall/edit/reactions, routing evaluation, DLP and realtime room tokens.
+- `packages/api/routes/messaging.routes.js` mounted at `/api/messaging`: inboxes, members, threads, messages, channels, routing and realtime token endpoints. Sends require `Idempotency-Key`.
+- `packages/realtime`: Socket.IO server with Redis adapter, scope-limited room tokens, presence/typing, and a Redis Streams consumer that fans events out to authorised rooms.
+- `packages/workers`: transactional outbox → Redis Streams publisher with retry/backoff; BullMQ remains deferred to Phase 5.
+- Migration `20261122000400_messaging_phase4`: channel-linked threads, partial unique recipient indexes, outbox publish index.
+- ERP inbox at `:5174`: thread list, message pane, composer, internal-note toggle, reactions, recall, assign/resolve, presence/typing, server-served Socket.IO client, polling fallback and an offline queue replayed with idempotency keys.
+- Phase 4 OpenAPI paths/schemas, ADR-0009, README and `.env.example` updates.
+- Backend tests for DLP detection/redaction, DLP policy mode, event contracts, messaging permissions, realtime token scope and event fan-out.
+
+**Changed**
+
+- RBAC/ABAC now resolves `departmentId` so department inboxes are accessible without widening roles.
+- `emitEvent` accepts a transaction client so business writes and outbox rows commit together.
+- `HttpError` is serialised centrally with status and safe extra fields (finding types, invalid recipients).
+- `COMPLIANCE` retains audit-only reads and is not granted messaging send rights.
+- Socket and event payloads carry IDs and classification only — message bodies and subjects are always fetched from the authenticated API.
+
+**New dependencies / licences**
+
+- `@socket.io/redis-adapter` (MIT), `socket.io` (MIT), `jsonwebtoken` (MIT) and `redis` (MIT) in the realtime/workers workspaces.
+
+**Verification**
+
+- `npm test` — 36 passed (29 Phase 1–3 + 7 Phase 4).
+- `npm run test:smoke` — 31 passed (7 files). One initial flaky document-title assertion passed on rerun; no web code changed in this phase.
+- `npm run lint` — warnings only (no errors).
+- `npm run build` — passed (`packages/web/dist/`).
+- OpenAPI YAML parsed successfully with a YAML 1.2 loader.
+- Migrations applied cleanly via `npm run db:deploy`; seed is idempotent via `npm run db:seed`.
+- RLS verified with the `comet_app` role: `cmp_comet` sees 2 threads / 3 messages / 3 recipients; `cmp_other` sees 0 / 0 / 0.
+- Runtime smoke — 26/26 checks passed: admin/staff login, thread and message reads, manager visibility of internal notes with empty receipts, RBAC denial for a non-messaging principal, DLP block without echoing the value, required `Idempotency-Key`, idempotent replay, external-address rejection, cross-tenant denial, short-lived realtime tokens, two authenticated sockets with presence and `message:new` fan-out, ID-only socket payloads, outbox event `PUBLISHED` with no body, and Redis Stream delivery.
+- Fixed during verification: `Channel.members` relation name in channel listing/creation and `ownerUserId` in the inbox select used by access checks.
 
 **Added**
 

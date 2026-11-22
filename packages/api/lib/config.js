@@ -30,6 +30,24 @@ export const config = {
   password: {
     enforceBreach: process.env.PASSWORD_BREACH_ENFORCE === 'true',
   },
+  // Internal messaging never calls SMTP. DLP fails closed unless explicitly
+  // switched to flag-only mode for a supervised rollout.
+  dlp: {
+    mode: process.env.DLP_MODE === 'flag' ? 'flag' : 'block',
+  },
+  realtime: {
+    port: int(process.env.REALTIME_PORT, 4001),
+    tokenTtl: process.env.REALTIME_TOKEN_TTL || '5m',
+    corsOrigins: (process.env.REALTIME_CORS_ORIGINS || 'http://localhost:4000,http://localhost:5173,http://localhost:5174')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+  },
+  events: {
+    redisUrl: process.env.REDIS_URL || '',
+    stream: process.env.REDIS_EVENT_STREAM || 'comet.events',
+    outboxPollMs: int(process.env.OUTBOX_POLL_MS, 1000),
+  },
   session: {
     refreshTtlSeconds: int(process.env.REFRESH_TOKEN_TTL_SECONDS, SESSION_POLICY.refreshTokenTtlSeconds),
     maxConcurrent: int(process.env.MAX_CONCURRENT_SESSIONS, SESSION_POLICY.maxConcurrentSessions),
