@@ -107,69 +107,73 @@ export default function Hero({ content = {} }) {
       <div className="relative mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8">
         <div className="grid items-center gap-14 lg:grid-cols-12 lg:gap-10">
           {/* ---------- Copy ---------- */}
-          <div className="lg:col-span-7">
-            <Reveal>
-              <span className="glass-light inline-flex items-center gap-2.5 rounded-full px-4 py-2 text-[12px] font-bold tracking-wide text-primary shadow-card ring-1 ring-primary/10 sm:text-[13px]">
-                <span className="relative flex h-2 w-2">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary-strong opacity-60" />
-                  <span className="relative inline-flex h-2 w-2 rounded-full bg-primary-strong" />
+          <div className="relative lg:col-span-7">
+            {/* Local scrim: keeps copy legible without raising the 50% photo veil. */}
+            <div className="hero-copy-scrim pointer-events-none absolute -inset-x-10 -inset-y-12 z-0 rounded-[3rem] blur-2xl sm:-inset-x-16" aria-hidden="true" />
+            <div className="relative z-10">
+              <Reveal>
+                <span className="glass-light inline-flex items-center gap-2.5 rounded-full px-4 py-2 text-[12px] font-bold tracking-wide text-primary shadow-card ring-1 ring-primary/10 sm:text-[13px]">
+                  <span className="relative flex h-2 w-2">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary-strong opacity-60" />
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-primary-strong" />
+                  </span>
+                  {badge}
                 </span>
-                {badge}
-              </span>
-            </Reveal>
+              </Reveal>
 
-            <Reveal delay={0.08}>
-              <h1
-                id="home-hero-title"
-                className="mt-7 max-w-3xl text-[2.6rem] font-extrabold leading-[1.05] tracking-[-0.045em] text-ink sm:text-6xl lg:text-[4.5rem] xl:text-[5rem] text-balance"
-              >
-                {title} <span className="text-gradient-blue">{highlight}.</span>
-              </h1>
-              <div className="mt-7 h-1 w-24 rounded-full bg-gradient-to-r from-primary via-primary-strong to-azure sm:w-32" aria-hidden="true" />
-            </Reveal>
+              <Reveal delay={0.08}>
+                <h1
+                  id="home-hero-title"
+                  className="mt-7 max-w-3xl text-[2.6rem] font-extrabold leading-[1.05] tracking-[-0.045em] text-ink sm:text-6xl lg:text-[4.5rem] xl:text-[5rem] text-balance"
+                >
+                  {title} <span className="text-gradient-blue">{highlight}.</span>
+                </h1>
+                <div className="mt-7 h-1 w-24 rounded-full bg-gradient-to-r from-primary via-primary-strong to-azure sm:w-32" aria-hidden="true" />
+              </Reveal>
 
-            <Reveal delay={0.16}>
-              <p className="mt-6 max-w-xl text-base font-medium leading-relaxed text-slate sm:text-lg">
-                {sub}
-              </p>
-            </Reveal>
+              <Reveal delay={0.16}>
+                <p className="mt-6 max-w-xl text-base font-medium leading-relaxed text-slate sm:text-lg">
+                  {sub}
+                </p>
+              </Reveal>
 
-            <Reveal delay={0.24}>
-              <div className="mt-9 flex flex-col gap-3.5 sm:flex-row">
-                <Button to={ctas.primary?.to || '/book'} size="lg" className="group !px-8">
-                  {ctas.primary?.label || 'Book a Consultation'}
-                  <ArrowRight size={18} aria-hidden="true" className="transition-transform duration-300 group-hover:translate-x-1" />
-                </Button>
-                <Link to={ctas.secondary?.to || '/services'} className="btn btn-outline btn-lg group !px-8 backdrop-blur-md">
-                  <PlayCircle size={18} aria-hidden="true" />
-                  {ctas.secondary?.label || 'Explore our services'}
-                </Link>
-              </div>
-              <div className="mt-5 flex flex-wrap items-center gap-x-6 gap-y-2">
-                <Link to={ctas.tertiary?.to || '/experts'} className="group inline-flex items-center gap-1.5 text-sm font-bold text-primary transition-colors hover:text-primary-strong">
-                  <Users size={16} aria-hidden="true" />
-                  {ctas.tertiary?.label || 'Meet our experts'}
-                  <ArrowUpRight size={14} aria-hidden="true" className="transition-transform duration-300 group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
-                </Link>
-                <Link to={ctas.portfolio?.to || '/products'} className="inline-flex items-center gap-1.5 text-sm font-bold text-primary underline decoration-primary/30 underline-offset-4 transition-colors hover:text-primary-strong">
-                  {ctas.portfolio?.label || 'Browse the product portfolio'} <ArrowRight size={15} aria-hidden="true" />
-                </Link>
-              </div>
-            </Reveal>
+              <Reveal delay={0.24}>
+                <div className="mt-9 flex flex-col gap-3.5 sm:flex-row">
+                  <Button to={ctas.primary?.to || '/book'} size="lg" className="group !px-8">
+                    {ctas.primary?.label || 'Book a Consultation'}
+                    <ArrowRight size={18} aria-hidden="true" className="transition-transform duration-300 group-hover:translate-x-1" />
+                  </Button>
+                  <Link to={ctas.secondary?.to || '/services'} className="btn btn-outline btn-lg group !px-8 backdrop-blur-md">
+                    <PlayCircle size={18} aria-hidden="true" />
+                    {ctas.secondary?.label || 'Explore our services'}
+                  </Link>
+                </div>
+                <div className="mt-5 flex flex-wrap items-center gap-x-6 gap-y-2">
+                  <Link to={ctas.tertiary?.to || '/experts'} className="group inline-flex items-center gap-1.5 text-sm font-bold text-primary transition-colors hover:text-primary-strong">
+                    <Users size={16} aria-hidden="true" />
+                    {ctas.tertiary?.label || 'Meet our experts'}
+                    <ArrowUpRight size={14} aria-hidden="true" className="transition-transform duration-300 group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
+                  </Link>
+                  <Link to={ctas.portfolio?.to || '/products'} className="inline-flex items-center gap-1.5 text-sm font-bold text-primary underline decoration-primary/30 underline-offset-4 transition-colors hover:text-primary-strong">
+                    {ctas.portfolio?.label || 'Browse the product portfolio'} <ArrowRight size={15} aria-hidden="true" />
+                  </Link>
+                </div>
+              </Reveal>
 
-            <Stagger className="mt-10" delay={0.4} stagger={0.09}>
-              <div className="glass-light inline-flex max-w-full flex-wrap items-center gap-x-6 gap-y-3 rounded-2xl px-5 py-4 shadow-card ring-1 ring-primary/10">
-                {badges.map((label, i) => {
-                  const Icon = BADGE_ICONS[i % BADGE_ICONS.length]
-                  return (
-                    <StaggerItem key={`${label}-${i}`} className="flex items-center gap-2 text-[13px] font-bold text-primary">
-                      <Icon size={17} className="text-primary-strong" aria-hidden="true" />
-                      {label}
-                    </StaggerItem>
-                  )
-                })}
-              </div>
-            </Stagger>
+              <Stagger className="mt-10" delay={0.4} stagger={0.09}>
+                <div className="glass-light inline-flex max-w-full flex-wrap items-center gap-x-6 gap-y-3 rounded-2xl px-5 py-4 shadow-card ring-1 ring-primary/10">
+                  {badges.map((label, i) => {
+                    const Icon = BADGE_ICONS[i % BADGE_ICONS.length]
+                    return (
+                      <StaggerItem key={`${label}-${i}`} className="flex items-center gap-2 text-[13px] font-bold text-primary">
+                        <Icon size={17} className="text-primary-strong" aria-hidden="true" />
+                        {label}
+                      </StaggerItem>
+                    )
+                  })}
+                </div>
+              </Stagger>
+            </div>
           </div>
 
           {/* ---------- Visual card ---------- */}

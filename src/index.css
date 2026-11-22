@@ -261,6 +261,15 @@
       radial-gradient(circle at 88% 85%, rgba(0, 174, 239, 0.3), transparent 38%),
       linear-gradient(125deg, #041C44 0%, #002B66 48%, #003B99 100%);
   }
+  /* Soft, local readability scrim for hero copy — the global photo veil stays ~50%. */
+  .hero-copy-scrim {
+    background-image: radial-gradient(
+      ellipse at 26% 45%,
+      rgba(255, 255, 255, 0.55) 0%,
+      rgba(255, 255, 255, 0.3) 38%,
+      rgba(255, 255, 255, 0) 72%
+    );
+  }
   .glass-deep {
     @apply border border-white/20 bg-white/10 backdrop-blur-xl;
   }
