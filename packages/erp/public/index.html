@@ -8,8 +8,11 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand"><span class="mark">C</span> Comet Healthcare <small>ERP · Phase 4</small></div>
-    <div id="identity" class="identity"></div>
+    <div class="brand"><span class="mark">C</span> Comet Healthcare <small>ERP · Phase 5</small></div>
+    <div class="header-actions">
+      <button id="unreadBadge" class="pill unread-badge" type="button" title="Unread notifications" aria-label="Unread notifications" hidden>0</button>
+      <div id="identity" class="identity"></div>
+    </div>
   </header>
 
   <main id="app">
@@ -33,6 +36,11 @@
       <nav class="tabs" aria-label="ERP sections">
         <button id="tabInbox" class="tab active" type="button">Inbox</button>
         <button id="tabDirectory" class="tab" type="button">Directory</button>
+        <button id="tabNotifications" class="tab" type="button">Notifications</button>
+        <button id="tabFiles" class="tab" type="button">Files</button>
+        <button id="tabWorkflow" class="tab" type="button">Workflow</button>
+        <button id="tabSearch" class="tab" type="button">Search</button>
+        <button id="tabDocuments" class="tab" type="button">Documents</button>
         <span id="connection" class="pill connection" aria-live="polite">Connecting…</span>
       </nav>
 
@@ -98,6 +106,220 @@
           </section>
         </div>
         <p class="muted footer-note">Audit verification and role management remain under <code>/api/audit</code> and <code>/api/identity</code>.</p>
+      </section>
+
+      <section id="notificationsView" hidden>
+        <div class="grid">
+          <section class="card span-2">
+            <div class="card-head">
+              <h2>Notifications</h2>
+              <button id="markAllRead" class="secondary" type="button">Mark all read</button>
+            </div>
+            <label class="inline-check"><input id="notificationUnreadOnly" type="checkbox" /> Unread only</label>
+            <p id="notificationsError" class="error" role="alert"></p>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Title</th><th>Category</th><th>Created</th><th>Status</th><th></th></tr></thead>
+                <tbody id="notificationRows"></tbody>
+              </table>
+            </div>
+          </section>
+          <section class="card">
+            <div class="card-head"><h2>Notification preferences</h2></div>
+            <form id="preferencesForm">
+              <label class="inline-check"><input id="prefEnabled" type="checkbox" /> In-app notifications enabled</label>
+              <label>Digest interval (minutes)<input id="prefDigest" type="number" min="0" max="1440" step="1" value="0" /></label>
+              <div class="form-actions"><button type="submit">Save preferences</button><span id="preferencesStatus" class="muted"></span></div>
+            </form>
+          </section>
+        </div>
+      </section>
+
+      <section id="filesView" hidden>
+        <div class="grid">
+          <section class="card">
+            <div class="card-head"><h2>Upload file</h2></div>
+            <p id="uploadStatus" class="muted" aria-live="polite"></p>
+            <form id="fileUploadForm">
+              <label>File<input id="uploadFile" type="file" required /></label>
+              <label>Purpose
+                <select id="uploadPurpose">
+                  <option value="GENERAL">General</option>
+                  <option value="MESSAGE_ATTACHMENT">Message attachment</option>
+                  <option value="DOCUMENT">Document</option>
+                  <option value="PROFILE">Profile</option>
+                </select>
+              </label>
+              <label>Classification
+                <select id="uploadClassification">
+                  <option value="INTERNAL">Internal</option>
+                  <option value="PUBLIC">Public</option>
+                  <option value="CONFIDENTIAL">Confidential</option>
+                  <option value="RESTRICTED">Restricted</option>
+                </select>
+              </label>
+              <label>Folder (optional)<input id="uploadFolder" maxlength="120" placeholder="e.g. shared/contracts" /></label>
+              <button id="uploadButton" type="submit">Upload file</button>
+            </form>
+            <div id="versionPanel" class="version-panel" hidden>
+              <p id="versionLabel" class="muted"></p>
+              <label>New version file<input id="versionFile" type="file" /></label>
+              <p id="versionStatus" class="muted" aria-live="polite"></p>
+              <button id="cancelVersion" class="secondary" type="button">Cancel</button>
+            </div>
+          </section>
+          <section class="card span-2">
+            <div class="card-head"><h2>Files</h2><button id="refreshFiles" class="link" type="button">Refresh</button></div>
+            <p id="filesError" class="error" role="alert"></p>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Name</th><th>Size</th><th>Status</th><th>Version</th><th>Classification</th><th>Updated</th><th>Actions</th></tr></thead>
+                <tbody id="fileRows"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section id="workflowView" hidden>
+        <p id="workflowError" class="error" role="alert"></p>
+        <div class="grid">
+          <section class="card span-2">
+            <div class="card-head"><h2>Definitions</h2><span id="definitionCount" class="pill"></span></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Code</th><th>Name</th><th>Steps</th><th>Classification</th><th>Active</th><th>Version</th></tr></thead>
+                <tbody id="definitionRows"></tbody>
+              </table>
+            </div>
+          </section>
+          <section class="card">
+            <div class="card-head"><h2>Create definition</h2></div>
+            <form id="definitionForm">
+              <label>Code<input id="definitionCode" required maxlength="60" placeholder="purchase-approval" /></label>
+              <label>Name<input id="definitionName" required maxlength="160" placeholder="Purchase approval" /></label>
+              <label>Description<input id="definitionDescription" maxlength="500" /></label>
+              <label>Steps (JSON array)<textarea id="definitionSteps" rows="5" required spellcheck="false">[{"key":"review","label":"Manager review","assigneeRole":"MANAGER","requireReason":false}]</textarea></label>
+              <label>Classification
+                <select id="definitionClassification">
+                  <option value="INTERNAL">Internal</option>
+                  <option value="PUBLIC">Public</option>
+                  <option value="CONFIDENTIAL">Confidential</option>
+                  <option value="RESTRICTED">Restricted</option>
+                </select>
+              </label>
+              <label class="inline-check"><input id="definitionActive" type="checkbox" checked /> Active</label>
+              <button type="submit">Create definition</button>
+            </form>
+          </section>
+          <section class="card">
+            <div class="card-head"><h2>Start instance</h2></div>
+            <form id="instanceForm">
+              <label>Definition code<input id="instanceDefinition" required maxlength="60" placeholder="purchase-approval" /></label>
+              <label>Entity type<input id="instanceEntityType" required maxlength="40" value="DOCUMENT" /></label>
+              <label>Entity ID<input id="instanceEntityId" maxlength="80" /></label>
+              <label>Branch ID<input id="instanceBranchId" maxlength="60" /></label>
+              <label>Context (JSON object)<textarea id="instanceContext" rows="3" spellcheck="false">{}</textarea></label>
+              <button type="submit">Start instance</button>
+            </form>
+          </section>
+          <section class="card span-2">
+            <div class="card-head"><h2>Instances</h2><span id="instanceCount" class="pill"></span></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Definition</th><th>Entity</th><th>Status</th><th>Current step</th><th>Created</th></tr></thead>
+                <tbody id="instanceRows"></tbody>
+              </table>
+            </div>
+          </section>
+          <section class="card span-2">
+            <div class="card-head"><h2>My tasks</h2><span id="taskCount" class="pill"></span></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Task</th><th>Instance</th><th>Status</th><th>Comment</th><th>Delegate to</th><th>Actions</th></tr></thead>
+                <tbody id="taskRows"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section id="searchView" hidden>
+        <div class="grid">
+          <section class="card span-2">
+            <div class="card-head"><h2>Global search</h2><span id="searchCount" class="pill"></span></div>
+            <form id="searchForm">
+              <label>Search term<input id="searchQuery" type="search" maxlength="200" placeholder="Search messages, documents, files…" /></label>
+              <fieldset class="type-filters">
+                <legend>Types</legend>
+                <label class="inline-check"><input type="checkbox" data-search-type value="MESSAGE" /> Message</label>
+                <label class="inline-check"><input type="checkbox" data-search-type value="THREAD" /> Thread</label>
+                <label class="inline-check"><input type="checkbox" data-search-type value="DOCUMENT" checked /> Document</label>
+                <label class="inline-check"><input type="checkbox" data-search-type value="FILE" checked /> File</label>
+                <label class="inline-check"><input type="checkbox" data-search-type value="WORKFLOW" /> Workflow</label>
+                <label class="inline-check"><input type="checkbox" data-search-type value="USER" /> User</label>
+              </fieldset>
+              <button type="submit">Search</button>
+            </form>
+            <p id="searchError" class="error" role="alert"></p>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Type</th><th>Title</th><th>Summary</th><th>Classification</th><th>Updated</th></tr></thead>
+                <tbody id="searchRows"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section id="documentsView" hidden>
+        <p id="documentsError" class="error" role="alert"></p>
+        <div class="grid">
+          <section class="card span-2">
+            <div class="card-head"><h2>Documents</h2><button id="refreshDocuments" class="link" type="button">Refresh</button></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Kind</th><th>Title</th><th>Status</th><th>Client</th><th>Total</th><th></th></tr></thead>
+                <tbody id="documentRows"></tbody>
+              </table>
+            </div>
+          </section>
+          <section class="card">
+            <div class="card-head"><h2>Generate document</h2></div>
+            <form id="generateForm">
+              <label>Kind<select id="generateKind" required></select></label>
+              <label>Title<input id="generateTitle" maxlength="220" /></label>
+              <label>Client name<input id="generateClientName" required maxlength="120" /></label>
+              <label>Client company<input id="generateClientCompany" required maxlength="180" /></label>
+              <label>Client email<input id="generateClientEmail" type="email" required /></label>
+              <label>Client phone<input id="generateClientPhone" maxlength="40" /></label>
+              <div class="field-row">
+                <label>Issue date<input id="generateIssueDate" type="date" /></label>
+                <label>Due date<input id="generateDueDate" type="date" /></label>
+                <label>Valid until<input id="generateValidUntil" type="date" /></label>
+              </div>
+              <label>Notes<textarea id="generateNotes" rows="3" maxlength="3000"></textarea></label>
+              <div class="card-head"><h2>Line items</h2><button id="addItem" class="link" type="button">Add item</button></div>
+              <div id="itemRows" class="item-rows">
+                <div class="item-row">
+                  <input data-item="description" placeholder="Description" maxlength="240" />
+                  <input data-item="qty" type="number" min="0" step="1" placeholder="Qty" />
+                  <input data-item="unitPrice" type="number" min="0" step="0.01" placeholder="Unit price" />
+                  <button class="secondary remove-item" type="button" title="Remove item">×</button>
+                </div>
+              </div>
+              <div class="form-actions"><button id="generateButton" type="submit">Queue generation</button><span id="generateStatus" class="muted"></span></div>
+            </form>
+          </section>
+          <section class="card">
+            <div class="card-head"><h2>Generation job</h2></div>
+            <form id="jobForm">
+              <label>Job ID<input id="jobIdInput" required placeholder="Paste a job ID from a generation response" /></label>
+              <button type="submit">Check status</button>
+            </form>
+            <p id="jobStatus" class="muted" aria-live="polite"></p>
+          </section>
+        </div>
       </section>
     </section>
   </main>

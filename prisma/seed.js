@@ -574,6 +574,69 @@ async function main() {
     console.log('✓ Seeded internal messaging proof thread')
   }
 
+  // ---- Phase 5 shared services proof data ----
+  const workflowDefinitions = [
+    {
+      code: 'document_approval',
+      name: 'Business document approval',
+      description: 'Manager review before a generated business document is issued.',
+      steps: [
+        { key: 'review', label: 'Review document', assigneeRole: 'MANAGER', requireReason: false },
+        { key: 'release', label: 'Release document', assigneeRole: 'ADMIN', requireReason: true },
+      ],
+    },
+    {
+      code: 'quality_release',
+      name: 'Quality release',
+      description: 'QA release gate for batch documentation.',
+      steps: [{ key: 'qa', label: 'Quality approval', assigneeRole: 'COMPLIANCE', requireReason: true }],
+    },
+  ]
+  for (const definition of workflowDefinitions) {
+    await prisma.workflowDefinition.upsert({
+      where: { companyId_code_version: { companyId, code: definition.code, version: 1 } },
+      update: { name: definition.name, description: definition.description, steps: definition.steps, active: true },
+      create: { companyId, ...definition, version: 1, classification: 'INTERNAL', createdById: admin.id },
+    })
+  }
+  console.log(`✓ Seeded ${workflowDefinitions.length} workflow definitions`)
+
+  for (const user of [admin, client].filter(Boolean)) {
+    await prisma.notificationPreference.upsert({
+      where: { companyId_userId_channel: { companyId, userId: user.id, channel: 'IN_APP' } },
+      update: { enabled: true, digestMinutes: 0 },
+      create: { companyId, userId: user.id, channel: 'IN_APP', enabled: true, digestMinutes: 0 },
+    })
+  }
+  console.log('✓ Seeded in-app notification preferences')
+
+  const seededDocs = await prisma.businessDocument.findMany({
+    where: { companyId, number: { in: sampleDocs.map((doc) => doc.number) } },
+    select: { id: true, number: true, title: true, clientCompany: true, createdById: true },
+  })
+  for (const doc of seededDocs) {
+    await prisma.searchDocument.upsert({
+      where: { companyId_entityType_entityId: { companyId, entityType: 'DOCUMENT', entityId: doc.id } },
+      update: {
+        title: `${doc.number} ${doc.title}`,
+        summary: doc.clientCompany,
+        allowedUserIds: [doc.createdById, client?.id].filter(Boolean),
+        allowedRoleCodes: ['ADMIN', 'MANAGER', 'COMPLIANCE'],
+      },
+      create: {
+        companyId,
+        entityType: 'DOCUMENT',
+        entityId: doc.id,
+        title: `${doc.number} ${doc.title}`,
+        summary: doc.clientCompany,
+        classification: 'INTERNAL',
+        allowedUserIds: [doc.createdById, client?.id].filter(Boolean),
+        allowedRoleCodes: ['ADMIN', 'MANAGER', 'COMPLIANCE'],
+      },
+    })
+  }
+  console.log(`✓ Indexed ${seededDocs.length} documents for permission-aware search`)
+
   console.log('\nSeed complete ✔')
 }
 

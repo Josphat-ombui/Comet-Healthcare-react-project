@@ -96,6 +96,79 @@ export const DepartmentCreatedDataSchema = z.object({
   name: z.string(),
 })
 
+// Phase 5 shared-service events. As with messaging, payloads carry opaque IDs
+// and classification only — never titles, bodies, checksums or object keys in
+// a form that could leak restricted content through the event bus.
+const EntityRefSchema = z.object({
+  entityType: z.string().max(40),
+  entityId: z.string().max(80).nullable().optional(),
+})
+
+// Strict schemas are intentional: an unexpected `title`, `body`, `objectKey`
+// or checksum is a contract violation rather than a value to silently strip.
+export const FileUploadedDataSchema = EntityRefSchema.extend({
+  fileId: z.string(),
+  uploadedById: z.string(),
+  classification: ClassificationSchema,
+  size: z.number().int().nonnegative(),
+}).strict()
+
+export const FileScannedDataSchema = EntityRefSchema.extend({
+  fileId: z.string(),
+  status: z.enum(['PENDING', 'CLEAN', 'INFECTED', 'QUARANTINED']),
+  classification: ClassificationSchema,
+  uploadedById: z.string(),
+}).strict()
+
+export const NotificationCreatedDataSchema = EntityRefSchema.extend({
+  notificationId: z.string(),
+  userId: z.string(),
+  category: z.enum(['MESSAGE', 'WORKFLOW', 'DOCUMENT', 'FILE', 'SYSTEM']),
+  classification: ClassificationSchema,
+}).strict()
+
+export const NotificationReadDataSchema = z.object({
+  notificationId: z.string(),
+  userId: z.string(),
+}).strict()
+
+export const WorkflowInstanceStartedDataSchema = EntityRefSchema.extend({
+  instanceId: z.string(),
+  definitionId: z.string(),
+  requestedById: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const WorkflowTaskAssignedDataSchema = EntityRefSchema.extend({
+  taskId: z.string(),
+  instanceId: z.string(),
+  stepKey: z.string().max(80),
+  assigneeId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const WorkflowCompletedDataSchema = EntityRefSchema.extend({
+  instanceId: z.string(),
+  definitionId: z.string(),
+  decision: z.enum(['APPROVED', 'REJECTED']),
+  requestedById: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const DocumentGeneratedDataSchema = z.object({
+  documentId: z.string(),
+  kind: z.string().max(40),
+  status: z.enum(['DRAFT', 'ISSUED', 'VOID']),
+  createdById: z.string().nullable().optional(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const DocumentIssuedDataSchema = DocumentGeneratedDataSchema
+
+export const SearchIndexUpdatedDataSchema = EntityRefSchema.extend({
+  classification: ClassificationSchema,
+}).strict()
+
 export const DomainEventSchemas = {
   MessageSent: MessageSentDataSchema,
   ThreadAssigned: ThreadAssignedDataSchema,
@@ -108,6 +181,16 @@ export const DomainEventSchemas = {
   SessionRevoked: SessionRevokedDataSchema,
   BranchCreated: BranchCreatedDataSchema,
   DepartmentCreated: DepartmentCreatedDataSchema,
+  FileUploaded: FileUploadedDataSchema,
+  FileScanned: FileScannedDataSchema,
+  NotificationCreated: NotificationCreatedDataSchema,
+  NotificationRead: NotificationReadDataSchema,
+  WorkflowInstanceStarted: WorkflowInstanceStartedDataSchema,
+  WorkflowTaskAssigned: WorkflowTaskAssignedDataSchema,
+  WorkflowCompleted: WorkflowCompletedDataSchema,
+  DocumentGenerated: DocumentGeneratedDataSchema,
+  DocumentIssued: DocumentIssuedDataSchema,
+  SearchIndexUpdated: SearchIndexUpdatedDataSchema,
 }
 
 export function parseEventEnvelope(input) {

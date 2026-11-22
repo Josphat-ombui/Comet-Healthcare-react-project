@@ -31,7 +31,7 @@ npm run db:seed       # tenant, branches, departments, inboxes, demo data
 npm run dev           # API on :4000 + Vite on :5173 (Vite proxies /api -> :4000)
 npm run dev:erp       # internal ERP shell on :5174
 npm run dev:realtime  # Socket.IO server on :4001 (loads Redis if available)
-npm run dev:workers   # outbox → Redis Streams publisher
+npm run dev:workers   # outbox publisher + BullMQ job workers
 ```
 
 Open http://localhost:5173. The API runs as the non-owner `comet_app` role from
@@ -46,6 +46,8 @@ service is not running.
 | Admin | admin@comethealthcare.local    | `ChangeMe123!` (or `SEED_ADMIN_PASSWORD`) |
 | Staff | staff@comethealthcare.local    | `StaffPass123!` |
 | Client| client@comethealthcare.local   | `ClientPass123!` |
+
+Phase 5 does not change the seed accounts or their passwords.
 
 ## What's implemented
 
@@ -72,6 +74,26 @@ service is not running.
 - **ERP shell (Phase 4)** — login, sessions, user directory and branches plus a
   working inbox (thread list, composer, internal-note toggle, reactions, recall,
   assign/resolve, presence/typing, offline queue) at http://localhost:5174.
+- **Shared services (Phase 5)** — tenant-scoped `FileObject`/`FileVersion` with
+  R2 presigned uploads and an AES-256-GCM encrypted local fallback, scan quarantine,
+  versions and short-lived download tickets; linear workflow definitions, instances
+  and tasks with approve/delegate; in-app-only notifications with user preferences;
+  permission-aware PostgreSQL full-text search; queued business document generation
+  (quotation, invoice, proforma, SLA, NDA, COA) with PDF storage. All Phase 5 tables
+  are RLS-protected and all new events carry IDs/classification only.
+  Contract: `docs/openapi/openapi.yaml` (`0.5.0-phase.5`); decision: `docs/decisions/ADR-0010-shared-services.md`.
+
+### API namespaces
+
+| Namespace | Phase 5 endpoints (summary) |
+| --- | --- |
+| `/api/files` | `POST /uploads`, `POST /uploads/:id/confirm`, `GET /?purpose&status&limit`, `GET /:id`, `GET /:id/download`, `POST /:id/versions`, `DELETE /:id`. Local fallback ticket URLs: `/local-upload/:token`, `/local-download/:token`. |
+| `/api/workflow` | `GET|POST /definitions`, `GET|POST /instances`, `GET /tasks?mine=1`, `POST /tasks/:id/decide`, `POST /tasks/:id/delegate`. |
+| `/api/notifications` | `GET /?unreadOnly&category&limit`, `GET|PUT /preferences`, `POST /:id/read`, `POST /read-all`. |
+| `/api/search` | `GET /?q&types&limit` (permission-aware FTS over files, documents, workflows, users). |
+| `/api/documents` | `GET /kinds`, `GET /`, `POST /generate`, `GET /jobs/:id`, `GET /:code/download`, `GET /:code`, `GET /:code/pdf`. |
+
+`Idempotency-Key` is required only for Phase 4 messaging sends; Phase 5 writes do not use it.
 
 ## Commands
 
@@ -82,7 +104,7 @@ service is not running.
 | `npm run dev:api`        | Express only (watch)                                |
 | `npm run dev:erp`        | ERP shell + inbox on `:5174`                        |
 | `npm run dev:realtime`   | Socket.IO + Redis adapter on `:4001`                |
-| `npm run dev:workers`    | Outbox → Redis Streams publisher                    |
+| `npm run dev:workers`    | Outbox publisher + BullMQ workers (scans, notifications, documents, search, retention) |
 | `npm run build`          | Production build to `packages/web/dist/`            |
 | `npm start`              | Production server (serves the web build too)        |
 | `npm run lint`           | Oxlint                                              |
@@ -104,6 +126,23 @@ Phase 3 also adds `OBJECT_ENCRYPTION_KEY`, `PASSWORD_BREACH_ENFORCE`,
 `REALTIME_TOKEN_TTL`, `REALTIME_CORS_ORIGINS`, `REALTIME_CONSUMER_GROUP`,
 `REDIS_EVENT_STREAM`, `OUTBOX_POLL_MS`, `OUTBOX_MAX_ATTEMPTS`, and `DLP_MODE`
 (`block` by default; use `flag` only for supervised rollout).
+Phase 5 uses the R2 settings already listed in `.env.example` plus
+`MAX_UPLOAD_BYTES` (default 25 MB), `SIGNED_URL_TTL_SECONDS` (default 900),
+`LOCAL_OBJECT_DIR` (default `storage/objects`), optional `FILE_SCAN_HOOK_URL` with
+`FILE_SCAN_TIMEOUT_MS`, and the worker controls `QUEUES_ENABLED`, `BULLMQ_PREFIX`,
+`RETENTION_SWEEP_CRON`, `OUTBOX_POLL_MS` and `OUTBOX_MAX_ATTEMPTS`.
+
+### Object storage (Phase 5)
+
+- With all four R2 connection values set, uploads return a signed R2 `PUT` URL and
+  downloads a signed `GET` URL. Create an R2 bucket and an API token
+  with object read/write/delete permissions, then set `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
+  `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` and optionally `R2_PUBLIC_BASE_URL`. Do not commit these values.
+- Without R2 configuration the API uses the encrypted local fallback. Files are written beneath
+  `storage/objects/` relative to the repo root (or `LOCAL_OBJECT_DIR` if overridden) with
+  `OBJECT_ENCRYPTION_KEY`; keep this path on persistent storage and back up the key separately.
+- Confirm ODPC data-location review before storing real personal data in R2 (see
+  `docs/architecture/07-compliance-kenya.md`).
 
 ## Project layout
 
@@ -115,15 +154,15 @@ packages/
   cms/                Content Studio workspace scaffold
   erp/                Internal suite: ERP shell + messaging UI (public/, static server)
   realtime/           Socket.IO server, Redis adapter and stream relay (Phase 4)
-  workers/            Outbox publisher; BullMQ jobs planned for Phase 5
+  workers/            Outbox publisher + BullMQ job processors (Phase 5)
 prisma/
-  schema.prisma       PostgreSQL 16 schema (identity, org, messaging, legacy)
+  schema.prisma       PostgreSQL 16 schema (identity, org, messaging, shared services, legacy)
   migrations/         Versioned SQL + RLS/role/audit rules
   seed.js             Tenant, branches, departments, inboxes, demo data
 docs/
   architecture/       Phase 1 architecture + Phase 3 ERD
-  decisions/          ADRs (0001-0009)
-  openapi/            Phase 4 API contract
+  decisions/          ADRs (0001-0010)
+  openapi/            Phase 5 API contract (0.5.0-phase.5)
 ```
 
 ## Production-readiness notes

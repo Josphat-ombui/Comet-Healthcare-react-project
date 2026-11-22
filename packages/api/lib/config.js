@@ -27,6 +27,25 @@ export const config = {
   resetTokenTtlSeconds: int(process.env.RESET_TOKEN_TTL_SECONDS, 60 * 60 * 4),
   objectEncryptionKey: process.env.OBJECT_ENCRYPTION_KEY || '',
 
+  // Phase 5 shared services. R2 is used when all four connection values are
+  // present; otherwise uploads fall back to encrypted local object storage.
+  objects: {
+    r2AccountId: process.env.R2_ACCOUNT_ID || '',
+    r2AccessKeyId: process.env.R2_ACCESS_KEY_ID || '',
+    r2SecretAccessKey: process.env.R2_SECRET_ACCESS_KEY || '',
+    r2Bucket: process.env.R2_BUCKET || '',
+    publicBaseUrl: process.env.R2_PUBLIC_BASE_URL || '',
+    maxUploadBytes: int(process.env.MAX_UPLOAD_BYTES, 25 * 1024 * 1024),
+    signedUrlTtlSeconds: int(process.env.SIGNED_URL_TTL_SECONDS, 15 * 60),
+    localDir: process.env.LOCAL_OBJECT_DIR || 'storage/objects',
+    scanHookUrl: process.env.FILE_SCAN_HOOK_URL || '',
+  },
+  queues: {
+    enabled: process.env.QUEUES_ENABLED !== 'false',
+    prefix: process.env.BULLMQ_PREFIX || 'comet',
+    retentionSweepCron: process.env.RETENTION_SWEEP_CRON || '0 2 * * *',
+  },
+
   password: {
     enforceBreach: process.env.PASSWORD_BREACH_ENFORCE === 'true',
   },

@@ -70,3 +70,32 @@ th { color: #66758a; font-weight: 600; font-size: 12px; text-transform: uppercas
 .typing { min-height: 18px; margin: 0 0 4px; font-size: 12px; }
 @media (max-width: 980px) { .inbox { grid-template-columns: 1fr; } .thread-panel, .message-panel { min-height: auto; } }
 @media (max-width: 780px) { .grid { grid-template-columns: 1fr; } .span-2 { grid-column: auto; } }
+
+/* Phase 5 platform views */
+[hidden] { display: none !important; }
+.header-actions { display: flex; align-items: center; gap: 12px; }
+button.unread-badge { cursor: pointer; }
+.pill.unread-badge { background: #dbeafe; color: #1d4ed8; }
+.tabs { flex-wrap: wrap; }
+.inline-check { display: flex; align-items: center; gap: 8px; margin: 10px 0; font-size: 14px; font-weight: 500; }
+.inline-check input { width: auto; margin: 0; accent-color: #2563eb; }
+.form-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 12px; }
+.table-scroll { overflow-x: auto; }
+.table-scroll table { min-width: 600px; }
+.row-input, .row-select { width: 100%; min-width: 140px; margin: 0; padding: 7px 8px; font-size: 13px; }
+.actions-cell { white-space: nowrap; }
+.actions-cell > * + * { margin-left: 8px; }
+.link.danger { color: #b91c1c; }
+.version-panel { margin-top: 16px; padding-top: 12px; border-top: 1px solid #eef1f5; }
+.type-filters { display: flex; flex-wrap: wrap; gap: 14px; margin: 12px 0; padding: 10px 14px; border: 1px solid #e3e8ef; border-radius: 10px; }
+.type-filters legend { padding: 0 4px; color: #66758a; font-size: 12px; font-weight: 600; text-transform: uppercase; }
+.type-filters .inline-check { margin: 0; }
+.field-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.item-rows { display: flex; flex-direction: column; gap: 8px; }
+.item-row { display: grid; grid-template-columns: minmax(120px, 1fr) 80px 110px 40px; gap: 8px; align-items: center; }
+.item-row input { margin: 0; padding: 8px; }
+.item-row button { padding: 7px 8px; }
+@media (max-width: 780px) {
+  .field-row { grid-template-columns: 1fr; }
+  .item-row { grid-template-columns: 1fr 1fr; }
+}

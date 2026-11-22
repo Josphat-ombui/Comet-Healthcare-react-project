@@ -181,6 +181,56 @@ enum DocumentStatus {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 5 shared services enums
+// ---------------------------------------------------------------------------
+
+enum FileStatus {
+  PENDING
+  CLEAN
+  INFECTED
+  QUARANTINED
+}
+
+enum StorageProvider {
+  R2
+  LOCAL
+}
+
+enum NotificationCategory {
+  MESSAGE
+  WORKFLOW
+  DOCUMENT
+  FILE
+  SYSTEM
+}
+
+enum NotificationChannel {
+  IN_APP
+}
+
+enum WorkflowStatus {
+  RUNNING
+  COMPLETED
+  REJECTED
+  CANCELLED
+}
+
+enum WorkflowTaskStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  DELEGATED
+  CANCELLED
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+// ---------------------------------------------------------------------------
 // Organisation
 // ---------------------------------------------------------------------------
 
@@ -233,6 +283,16 @@ model Company {
   outboxEvents       OutboxEvent[]
   auditLogs          AuditLog[]
   passwordHistories  PasswordHistory[]
+  fileObjects        FileObject[]
+  fileVersions       FileVersion[]
+  notifications      Notification[]
+  notificationPreferences NotificationPreference[]
+  notificationDeliveries NotificationDelivery[]
+  workflowDefinitions WorkflowDefinition[]
+  workflowInstances  WorkflowInstance[]
+  workflowTasks      WorkflowTask[]
+  searchDocuments    SearchDocument[]
+  jobs               JobRecord[]
 }
 
 model Branch {
@@ -258,6 +318,8 @@ model Branch {
   messages     Message[]     @relation("MessageBranch")
   channels     Channel[]     @relation("ChannelBranch")
   routingRules RoutingRule[] @relation("RoutingBranch")
+  files        FileObject[]  @relation("FileBranch")
+  workflows    WorkflowInstance[] @relation("WorkflowBranch")
 
   @@unique([companyId, code])
   @@index([companyId, isActive])
@@ -374,6 +436,14 @@ model User {
   legalHolds           LegalHold[]         @relation("LegalHoldCreator")
   routingRulesAssigned RoutingRule[]       @relation("RoutingAssignee")
   auditLogs            AuditLog[]          @relation("AuditActor")
+  filesUploaded        FileObject[]        @relation("FileUploader")
+  fileVersionsCreated  FileVersion[]       @relation("FileVersionCreator")
+  notifications        Notification[]      @relation("NotificationRecipient")
+  notificationPreferences NotificationPreference[] @relation("NotificationPreferenceUser")
+  workflowDefinitions  WorkflowDefinition[] @relation("WorkflowDefinitionCreator")
+  workflowRequests     WorkflowInstance[]  @relation("WorkflowRequester")
+  workflowAssignments  WorkflowTask[]      @relation("WorkflowAssignee")
+  workflowDelegationsFrom WorkflowTask[]   @relation("WorkflowDelegatedFrom")
 
   @@unique([companyId, email])
   @@unique([companyId, identityProvider, externalId])
@@ -724,6 +794,7 @@ model MessageRecipient {
 
   @@index([companyId, userId, status])
   @@index([companyId, inboxId, status])
+  @@index([messageId])
 }
 
 model MessageEdit {
@@ -840,6 +911,215 @@ model RoutingRule {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 5 shared services: files, notifications, workflow, search, jobs
+// ---------------------------------------------------------------------------
+
+model FileObject {
+  id              String          @id @default(cuid())
+  companyId       String          @default("cmp_comet")
+  tenant          Company         @relation(fields: [companyId], references: [id])
+  branchId        String?
+  branch          Branch?         @relation("FileBranch", fields: [branchId], references: [id])
+  uploadedById    String
+  uploadedBy      User            @relation("FileUploader", fields: [uploadedById], references: [id])
+  name            String
+  objectKey       String          @unique
+  mimeType        String
+  size            Int
+  checksum        String?
+  classification  DataClassification @default(INTERNAL)
+  status          FileStatus      @default(PENDING)
+  storageProvider StorageProvider @default(LOCAL)
+  version         Int             @default(1)
+  folder          String?
+  purpose         String          @default("GENERAL")
+  deletedAt       DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  versions FileVersion[] @relation("FileVersions")
+
+  @@index([companyId, status])
+  @@index([companyId, uploadedById])
+  @@index([companyId, purpose])
+}
+
+model FileVersion {
+  id          String      @id @default(cuid())
+  companyId   String      @default("cmp_comet")
+  tenant      Company     @relation(fields: [companyId], references: [id])
+  fileId      String
+  file        FileObject  @relation("FileVersions", fields: [fileId], references: [id], onDelete: Cascade)
+  version     Int
+  objectKey   String      @unique
+  size        Int
+  checksum    String?
+  createdById String
+  createdBy   User        @relation("FileVersionCreator", fields: [createdById], references: [id])
+  createdAt   DateTime    @default(now())
+
+  @@unique([fileId, version])
+}
+
+model Notification {
+  id            String              @id @default(cuid())
+  companyId     String              @default("cmp_comet")
+  tenant        Company             @relation(fields: [companyId], references: [id])
+  userId        String
+  user          User                @relation("NotificationRecipient", fields: [userId], references: [id], onDelete: Cascade)
+  category      NotificationCategory @default(SYSTEM)
+  title         String
+  message       String
+  classification DataClassification  @default(INTERNAL)
+  entityType    String?
+  entityId      String?
+  readAt        DateTime?
+  deliveredAt   DateTime?
+  expiresAt     DateTime?
+  createdAt     DateTime            @default(now())
+
+  deliveries NotificationDelivery[]
+
+  @@index([companyId, userId, readAt])
+  @@index([companyId, category])
+}
+
+model NotificationPreference {
+  id            String              @id @default(cuid())
+  companyId     String              @default("cmp_comet")
+  tenant        Company             @relation(fields: [companyId], references: [id])
+  userId        String
+  user          User                @relation("NotificationPreferenceUser", fields: [userId], references: [id], onDelete: Cascade)
+  channel       NotificationChannel @default(IN_APP)
+  enabled       Boolean             @default(true)
+  digestMinutes Int                 @default(0)
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  @@unique([companyId, userId, channel])
+}
+
+model NotificationDelivery {
+  id             String              @id @default(cuid())
+  companyId      String              @default("cmp_comet")
+  tenant         Company             @relation(fields: [companyId], references: [id])
+  notificationId String
+  notification   Notification        @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  channel        NotificationChannel @default(IN_APP)
+  status         String              @default("PENDING")
+  attempts       Int                 @default(0)
+  sentAt         DateTime?
+  createdAt      DateTime            @default(now())
+
+  @@index([companyId, notificationId])
+}
+
+model WorkflowDefinition {
+  id            String             @id @default(cuid())
+  companyId     String             @default("cmp_comet")
+  tenant        Company            @relation(fields: [companyId], references: [id])
+  code          String
+  name          String
+  description   String?
+  version       Int                @default(1)
+  // Ordered steps: [{ key, label, assigneeRole | assigneeUserId, requireReason }]
+  steps         Json
+  active        Boolean            @default(true)
+  classification DataClassification @default(INTERNAL)
+  createdById   String?
+  createdBy     User?              @relation("WorkflowDefinitionCreator", fields: [createdById], references: [id])
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  instances WorkflowInstance[]
+
+  @@unique([companyId, code, version])
+}
+
+model WorkflowInstance {
+  id            String         @id @default(cuid())
+  companyId     String         @default("cmp_comet")
+  tenant        Company        @relation(fields: [companyId], references: [id])
+  branchId      String?
+  branch        Branch?        @relation("WorkflowBranch", fields: [branchId], references: [id])
+  definitionId  String
+  definition    WorkflowDefinition @relation(fields: [definitionId], references: [id])
+  entityType    String
+  entityId      String?
+  status        WorkflowStatus @default(RUNNING)
+  currentStep   String?
+  context       Json?
+  requestedById String
+  requestedBy   User           @relation("WorkflowRequester", fields: [requestedById], references: [id])
+  createdAt     DateTime       @default(now())
+  completedAt   DateTime?
+
+  tasks WorkflowTask[]
+
+  @@index([companyId, status])
+  @@index([companyId, entityType, entityId])
+}
+
+model WorkflowTask {
+  id              String             @id @default(cuid())
+  companyId       String             @default("cmp_comet")
+  tenant          Company            @relation(fields: [companyId], references: [id])
+  instanceId      String
+  instance        WorkflowInstance   @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  stepKey         String
+  title           String
+  assigneeId      String?
+  assignee        User?              @relation("WorkflowAssignee", fields: [assigneeId], references: [id])
+  delegatedFromId String?
+  delegatedFrom   User?              @relation("WorkflowDelegatedFrom", fields: [delegatedFromId], references: [id])
+  status          WorkflowTaskStatus @default(PENDING)
+  decision        String?
+  comment         String?
+  dueAt           DateTime?
+  actedAt         DateTime?
+  createdAt       DateTime           @default(now())
+
+  @@index([companyId, assigneeId, status])
+  @@index([companyId, instanceId])
+}
+
+model SearchDocument {
+  id              String             @id @default(cuid())
+  companyId       String             @default("cmp_comet")
+  tenant          Company            @relation(fields: [companyId], references: [id])
+  entityType      String
+  entityId        String
+  title           String
+  summary         String?
+  classification  DataClassification @default(INTERNAL)
+  branchId        String?
+  allowedUserIds  Json?
+  allowedRoleCodes Json?
+  updatedAt       DateTime           @updatedAt
+
+  @@unique([companyId, entityType, entityId])
+  @@index([companyId, entityType])
+}
+
+model JobRecord {
+  id        String    @id @default(cuid())
+  companyId String    @default("cmp_comet")
+  tenant    Company   @relation(fields: [companyId], references: [id])
+  queue     String
+  jobId     String?
+  type      String
+  status    JobStatus @default(QUEUED)
+  payload   Json?
+  result    Json?
+  error     String?
+  attempts  Int       @default(0)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([companyId, queue, status])
+}
+
+// ---------------------------------------------------------------------------
 // Platform: event outbox and immutable audit
 // ---------------------------------------------------------------------------
 
@@ -861,6 +1141,7 @@ model OutboxEvent {
   createdAt     DateTime     @default(now())
 
   @@index([companyId, status, availableAt])
+  @@index([status, availableAt, id])
 }
 
 model AuditLog {

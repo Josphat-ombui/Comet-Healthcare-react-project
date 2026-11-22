@@ -8,6 +8,11 @@
 //   /api/admin/*       admin-only management surface
 //   /api/documents/*   generated business documents + branded PDFs
 //   /api/messaging/*   internal inboxes, threads, messages, channels (Phase 4)
+//   /api/files/*       encrypted object uploads, versions and scan status (Phase 5)
+//   /api/workflow/*    definitions, instances and approval tasks (Phase 5)
+//   /api/notifications/* in-app notification centre (Phase 5)
+//   /api/search/*      permission-aware global search (Phase 5)
+//   /api/documents/*   generation queue and existing branded PDFs (Phase 5)
 //
 // Run with `npm run dev` (auto-restarts) or `npm start`.
 
@@ -32,6 +37,11 @@ import { inquiryRouter } from './routes/inquiries.routes.js'
 import { adminRouter } from './routes/admin.routes.js'
 import { contentRouter } from './routes/content.routes.js'
 import { documentsRouter } from './routes/documents.routes.js'
+import { filesRouter } from './routes/files.routes.js'
+import { workflowRouter } from './routes/workflow.routes.js'
+import { notificationsRouter } from './routes/notifications.routes.js'
+import { searchRouter } from './routes/search.routes.js'
+import { storageMode } from './lib/object-storage.js'
 import { requireAuth } from './lib/auth.js'
 import { resolvePrincipal } from './lib/authorize.js'
 import { tenantContextMiddleware } from './lib/tenant.js'
@@ -73,7 +83,11 @@ app.get('/api/health/live', (_req, res) => res.json({ status: 'ok', service: 'co
 app.get('/api/health/ready', (_req, res) => res.json({
   status: 'ok',
   service: 'comet-api',
-  checks: { postgres: 'ok', redis: 'not-configured', objectStorage: 'not-configured' },
+  checks: {
+    postgres: 'ok',
+    redis: config.events.redisUrl ? 'configured' : 'not-configured',
+    objectStorage: storageMode() === 'R2' ? 'r2' : 'local-encrypted',
+  },
 }))
 
 // Slow down the write endpoints a little for public internet deployments.
@@ -94,6 +108,10 @@ app.use('/api/appointments', appointmentRouter)
 app.use('/api/inquiries', inquiryRouter)
 app.use('/api/content', contentRouter)
 app.use('/api/documents', documentsRouter)
+app.use('/api/files', filesRouter)
+app.use('/api/workflow', workflowRouter)
+app.use('/api/notifications', notificationsRouter)
+app.use('/api/search', searchRouter)
 app.use('/api/admin', requireAuth, adminRouter)
 
 // ---- production: serve the built frontend from dist/ and SPA-fallback ----

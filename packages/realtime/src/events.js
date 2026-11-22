@@ -36,6 +36,27 @@ function eventRooms(event) {
   if (event.type === 'ReactionAdded') {
     return unique([threadRoom])
   }
+
+  // ------------------------------------------------ phase 5 shared services
+  const userRoom = (id) => (id ? `${prefix}:user:${id}` : null)
+  if (event.type === 'NotificationCreated' || event.type === 'NotificationRead') {
+    return unique([userRoom(data.userId)])
+  }
+  if (event.type === 'WorkflowTaskAssigned') {
+    return unique([userRoom(data.assigneeId)])
+  }
+  if (event.type === 'WorkflowInstanceStarted') {
+    return unique([userRoom(data.requestedById)])
+  }
+  if (event.type === 'WorkflowCompleted') {
+    return unique([prefix, userRoom(data.requestedById)])
+  }
+  if (event.type === 'FileUploaded' || event.type === 'FileScanned') {
+    return unique([prefix, userRoom(data.uploadedById)])
+  }
+  if (event.type === 'DocumentGenerated' || event.type === 'DocumentIssued') {
+    return unique([prefix, userRoom(data.createdById)])
+  }
   return []
 }
 
@@ -46,6 +67,15 @@ function socketEventFor(type) {
     ThreadAssigned: 'thread:assigned',
     ThreadResolved: 'thread:resolved',
     ReactionAdded: 'reaction:added',
+    NotificationCreated: 'notification:new',
+    NotificationRead: 'notification:read',
+    WorkflowInstanceStarted: 'workflow:started',
+    WorkflowTaskAssigned: 'workflow:task',
+    WorkflowCompleted: 'workflow:completed',
+    FileUploaded: 'file:new',
+    FileScanned: 'file:scanned',
+    DocumentGenerated: 'document:generated',
+    DocumentIssued: 'document:issued',
   }[type] || null
 }
 

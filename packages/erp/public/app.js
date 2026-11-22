@@ -1,12 +1,15 @@
-// Phase 4 ERP shell: identity, directory and the internal messaging inbox.
-// Uses the same JSON API as the storefront; no external dependencies. The
-// Socket.IO client is served by the realtime service itself, and the inbox
-// falls back to authenticated polling when sockets are unavailable.
+// Phase 5 ERP shell: identity, directory, messaging and platform views
+// (notifications, files, workflow, search, documents). Uses the same JSON API
+// as the storefront; no external dependencies. The Socket.IO client is served
+// by the realtime service itself, and the inbox falls back to authenticated
+// polling when sockets are unavailable.
 
 const API = window.ERP_API_URL || 'http://localhost:4000/api'
+const API_ORIGIN = API.replace(/\/api\/?$/, '')
 const REALTIME = window.ERP_REALTIME_URL || 'http://localhost:4001'
 const POLL_MS = 6000
 const QUEUE_KEY = 'comet_erp_message_queue'
+const VIEWS = ['inbox', 'directory', 'notifications', 'files', 'workflow', 'search', 'documents']
 const $ = (id) => document.getElementById(id)
 
 let token = sessionStorage.getItem('comet_erp_token') || ''
@@ -23,6 +26,18 @@ const state = {
   presence: new Set(),
   typing: null,
   read: new Set(),
+  view: 'inbox',
+  unread: 0,
+  versionTarget: null,
+  notifications: [],
+  files: [],
+  definitions: [],
+  instances: [],
+  tasks: [],
+  searchResults: [],
+  searchTotal: 0,
+  documents: [],
+  documentKinds: [],
 }
 
 function escapeHtml(value) {
@@ -33,6 +48,49 @@ function escapeHtml(value) {
 
 function idempotencyKey() {
   return globalThis.crypto?.randomUUID?.() || `key_${Date.now()}_${Math.random().toString(36).slice(2)}`
+}
+
+function titleCase(value) {
+  return value.charAt(0).toUpperCase() + value.slice(1)
+}
+
+function listFrom(payload, ...keys) {
+  for (const key of keys) {
+    if (Array.isArray(payload?.[key])) return payload[key]
+  }
+  return []
+}
+
+function formatDate(value) {
+  if (!value) return '—'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString()
+}
+
+function formatBytes(value) {
+  const bytes = Number(value) || 0
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function setError(id, message) {
+  const element = $(id)
+  if (element) element.textContent = message || ''
+}
+
+function resolveApiUrl(url) {
+  if (!url) return ''
+  if (/^https?:\/\//i.test(url)) return url
+  return `${API_ORIGIN}${String(url).startsWith('/') ? url : `/${url}`}`
+}
+
+function handleUnauthorized() {
+  if (!token) return
+  token = ''
+  sessionStorage.removeItem('comet_erp_token')
+  disconnectRealtime()
+  showLogin('Your session expired. Please sign in again.')
 }
 
 async function request(path, options = {}) {
@@ -52,6 +110,7 @@ async function request(path, options = {}) {
     throw error
   }
   const body = await response.json().catch(() => ({}))
+  if (response.status === 401 && token && !path.startsWith('/auth/')) handleUnauthorized()
   if (!response.ok) {
     const error = new Error(body.error || `Request failed (${response.status})`)
     error.status = response.status
@@ -72,6 +131,7 @@ function setConnection(label, isLive = false) {
 function showLogin(message = '') {
   $('loginPanel').hidden = false
   $('dashboard').hidden = true
+  $('unreadBadge').hidden = true
   $('mfaForm').hidden = !mfaChallenge
   $('loginForm').hidden = Boolean(mfaChallenge)
   $('authError').textContent = message
@@ -82,6 +142,7 @@ function showDashboard(profile) {
   me = profile
   $('loginPanel').hidden = true
   $('dashboard').hidden = false
+  setUnreadBadge(state.unread)
   const name = `${profile.user.firstName} ${profile.user.lastName}`
   $('identity').innerHTML = `<span>${escapeHtml(name)} · ${escapeHtml(profile.user.role)}</span><button id="logout" class="secondary" type="button">Sign out</button>`
   $('logout').onclick = () => {
@@ -95,6 +156,15 @@ function showDashboard(profile) {
     state.thread = null
     state.messages = []
     state.read.clear()
+    state.notifications = []
+    state.files = []
+    state.definitions = []
+    state.instances = []
+    state.tasks = []
+    state.documents = []
+    state.versionTarget = null
+    setUnreadBadge(0)
+    $('versionPanel').hidden = true
     localStorage.removeItem(QUEUE_KEY)
     sessionStorage.removeItem('comet_erp_token')
     showLogin()
@@ -438,6 +508,678 @@ $('newThreadForm').onsubmit = async (event) => {
   }
 }
 
+// ---------------------------------------------------------- notifications
+
+function setUnreadBadge(count) {
+  state.unread = Math.max(0, Number(count) || 0)
+  const badge = $('unreadBadge')
+  badge.textContent = String(state.unread)
+  badge.hidden = false
+}
+
+async function refreshUnreadBadge() {
+  if (!token) {
+    state.unread = 0
+    $('unreadBadge').hidden = true
+    return
+  }
+  try {
+    const result = await request('/notifications?unreadOnly=true&limit=200')
+    setUnreadBadge(listFrom(result, 'items', 'notifications').length)
+  } catch {
+    // Keep the last known count if the user cannot read notifications.
+  }
+}
+
+function renderNotifications() {
+  const body = $('notificationRows')
+  if (!state.notifications.length) {
+    body.innerHTML = `<tr><td colspan="5" class="muted">${$('notificationUnreadOnly').checked ? 'No unread notifications.' : 'No notifications yet.'}</td></tr>`
+    return
+  }
+  body.innerHTML = state.notifications.map((item) => `
+    <tr>
+      <td><strong>${escapeHtml(item.title)}</strong><br /><span class="muted">${escapeHtml(item.message)}</span></td>
+      <td>${escapeHtml(item.category)}</td>
+      <td>${escapeHtml(formatDate(item.createdAt))}</td>
+      <td>${item.readAt ? '<span class="pill">Read</span>' : '<span class="pill unread-badge">Unread</span>'}</td>
+      <td>${item.readAt ? '' : `<button class="secondary" data-notification-read="${escapeHtml(item.id)}" type="button">Mark read</button>`}</td>
+    </tr>`).join('')
+  body.querySelectorAll('[data-notification-read]').forEach((button) => {
+    button.onclick = () => markNotificationRead(button.dataset.notificationRead)
+  })
+}
+
+async function refreshNotifications() {
+  if (!token) return
+  try {
+    const unreadOnly = $('notificationUnreadOnly').checked ? 'true' : 'false'
+    const result = await request(`/notifications?unreadOnly=${unreadOnly}&limit=50`)
+    state.notifications = listFrom(result, 'items', 'notifications')
+    renderNotifications()
+    setError('notificationsError', '')
+  } catch (error) {
+    setError('notificationsError', error.message)
+  }
+}
+
+async function markNotificationRead(id) {
+  try {
+    await request(`/notifications/${encodeURIComponent(id)}/read`, { method: 'POST' })
+    await Promise.all([refreshNotifications(), refreshUnreadBadge()])
+  } catch (error) {
+    setError('notificationsError', error.message)
+  }
+}
+
+async function loadPreferences() {
+  if (!token) return
+  try {
+    const { preferences } = await request('/notifications/preferences')
+    $('prefEnabled').checked = Boolean(preferences.enabled)
+    $('prefDigest').value = String(preferences.digestMinutes ?? 0)
+    $('preferencesStatus').textContent = ''
+  } catch (error) {
+    $('preferencesStatus').textContent = error.message
+  }
+}
+
+$('unreadBadge').onclick = () => showView('notifications')
+$('notificationUnreadOnly').onchange = () => refreshNotifications()
+$('markAllRead').onclick = async () => {
+  try {
+    await request('/notifications/read-all', { method: 'POST' })
+    await Promise.all([refreshNotifications(), refreshUnreadBadge()])
+  } catch (error) {
+    setError('notificationsError', error.message)
+  }
+}
+$('preferencesForm').onsubmit = async (event) => {
+  event.preventDefault()
+  $('preferencesStatus').textContent = 'Saving…'
+  try {
+    const { preferences } = await request('/notifications/preferences', {
+      method: 'PUT',
+      body: JSON.stringify({
+        channel: 'IN_APP',
+        enabled: $('prefEnabled').checked,
+        digestMinutes: Number($('prefDigest').value) || 0,
+      }),
+    })
+    $('preferencesStatus').textContent = `Saved${preferences.enabled ? '' : ' (disabled)'}`
+  } catch (error) {
+    $('preferencesStatus').textContent = error.message
+  }
+}
+
+// -------------------------------------------------------------------- files
+
+function renderFiles() {
+  const body = $('fileRows')
+  if (!state.files.length) {
+    body.innerHTML = '<tr><td colspan="7" class="muted">No files yet.</td></tr>'
+    return
+  }
+  body.innerHTML = state.files.map((file) => `
+    <tr>
+      <td><strong>${escapeHtml(file.name)}</strong><br /><span class="muted">${escapeHtml(file.purpose)}</span></td>
+      <td>${escapeHtml(formatBytes(file.size))}</td>
+      <td>${escapeHtml(file.status)}</td>
+      <td>v${escapeHtml(file.version ?? 1)}</td>
+      <td>${escapeHtml(file.classification)}</td>
+      <td>${escapeHtml(formatDate(file.updatedAt || file.createdAt))}</td>
+      <td class="actions-cell">
+        <button class="link" data-file-download="${escapeHtml(file.id)}" data-name="${escapeHtml(file.name)}" type="button">Download</button>
+        <button class="link" data-file-version="${escapeHtml(file.id)}" data-name="${escapeHtml(file.name)}" type="button">New version</button>
+        <button class="link danger" data-file-delete="${escapeHtml(file.id)}" type="button">Delete</button>
+      </td>
+    </tr>`).join('')
+  body.querySelectorAll('[data-file-download]').forEach((button) => {
+    button.onclick = () => downloadFile(button.dataset.fileDownload, button.dataset.name)
+  })
+  body.querySelectorAll('[data-file-version]').forEach((button) => {
+    button.onclick = () => startVersion(button.dataset.fileVersion, button.dataset.name)
+  })
+  body.querySelectorAll('[data-file-delete]').forEach((button) => {
+    button.onclick = () => deleteFile(button.dataset.fileDelete)
+  })
+}
+
+async function refreshFiles() {
+  if (!token) return
+  try {
+    const result = await request('/files?limit=50')
+    // Some deployments return { files }, others { items }; accept either.
+    state.files = listFrom(result, 'files', 'items')
+    renderFiles()
+    setError('filesError', '')
+  } catch (error) {
+    setError('filesError', error.message)
+  }
+}
+
+async function fileChecksum(file) {
+  if (!globalThis.crypto?.subtle || !file.arrayBuffer) return ''
+  try {
+    const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
+    return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('')
+  } catch {
+    return ''
+  }
+}
+
+async function uploadSelectedFile(file, versionId = null) {
+  if (!file) return
+  const statusEl = versionId ? $('versionStatus') : $('uploadStatus')
+  $('uploadButton').disabled = true
+  try {
+    statusEl.textContent = 'Preparing…'
+    const checksum = await fileChecksum(file)
+    const body = {
+      name: file.name,
+      mimeType: file.type || 'application/octet-stream',
+      size: file.size,
+      classification: $('uploadClassification').value,
+      purpose: $('uploadPurpose').value,
+      folder: $('uploadFolder').value.trim(),
+      checksum,
+    }
+    statusEl.textContent = 'Requesting signed upload…'
+    const result = versionId
+      ? await request(`/files/${encodeURIComponent(versionId)}/versions`, { method: 'POST', body: JSON.stringify(body) })
+      : await request('/files/uploads', { method: 'POST', body: JSON.stringify(body) })
+    const record = result.file || {}
+    const upload = result.upload || {}
+    const method = String(upload.method || (upload.provider === 'R2' ? 'PUT' : 'POST')).toUpperCase()
+    const headers = { ...(upload.headers || {}) }
+    if (upload.provider === 'LOCAL' && token) headers.Authorization = `Bearer ${token}`
+    statusEl.textContent = 'Uploading…'
+    const response = await fetch(resolveApiUrl(upload.url), {
+      method,
+      headers,
+      body: file,
+      credentials: upload.provider === 'LOCAL' ? 'include' : 'omit',
+    })
+    if (response.status === 401 && token) {
+      handleUnauthorized()
+      throw new Error('Session expired. Please sign in again.')
+    }
+    if (!response.ok) throw new Error(`Upload failed (${response.status})`)
+    statusEl.textContent = 'Confirming…'
+    await request(`/files/uploads/${encodeURIComponent(record.id)}/confirm`, {
+      method: 'POST', body: JSON.stringify({ checksum }),
+    })
+    statusEl.textContent = `Uploaded ${file.name}`
+    if (versionId) $('versionFile').value = ''
+    else $('uploadFile').value = ''
+    await refreshFiles()
+  } catch (error) {
+    statusEl.textContent = error.message
+  } finally {
+    $('uploadButton').disabled = false
+  }
+}
+
+function startVersion(fileId, name) {
+  state.versionTarget = fileId
+  $('versionPanel').hidden = false
+  $('versionLabel').textContent = `New version for ${name}`
+  $('versionFile').value = ''
+  $('versionStatus').textContent = ''
+  $('versionFile').click()
+}
+
+async function deleteFile(fileId) {
+  if (!window.confirm('Delete this file and all of its versions?')) return
+  try {
+    await request(`/files/${encodeURIComponent(fileId)}`, { method: 'DELETE' })
+    await refreshFiles()
+  } catch (error) {
+    setError('filesError', error.message)
+  }
+}
+
+async function openDownload(download, fallbackUrl, suggestedName) {
+  const info = download || {}
+  const url = resolveApiUrl(info.url || fallbackUrl)
+  if (!url) throw new Error('No download URL was returned')
+  const isAbsolute = /^https?:\/\//i.test(url)
+  if (isAbsolute && !url.startsWith(API_ORIGIN)) {
+    // R2 presigned URLs are public for their short lifetime.
+    window.open(url, '_blank', 'noopener,noreferrer')
+    return
+  }
+  // Local signed URLs still require the bearer token, so fetch and save a blob.
+  const response = await fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    credentials: 'include',
+  })
+  if (response.status === 401 && token) {
+    handleUnauthorized()
+    throw new Error('Session expired. Please sign in again.')
+  }
+  if (!response.ok) throw new Error(`Download failed (${response.status})`)
+  const objectUrl = URL.createObjectURL(await response.blob())
+  const anchor = document.createElement('a')
+  anchor.href = objectUrl
+  anchor.download = suggestedName || info.fileName || 'download'
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
+}
+
+async function downloadFile(fileId, name) {
+  try {
+    const result = await request(`/files/${encodeURIComponent(fileId)}/download`)
+    await openDownload(result.download || result, result.url, name)
+  } catch (error) {
+    setError('filesError', error.message)
+  }
+}
+
+$('fileUploadForm').onsubmit = async (event) => {
+  event.preventDefault()
+  await uploadSelectedFile($('uploadFile').files[0])
+}
+$('versionFile').onchange = () => uploadSelectedFile($('versionFile').files[0], state.versionTarget)
+$('cancelVersion').onclick = () => {
+  state.versionTarget = null
+  $('versionPanel').hidden = true
+  $('versionFile').value = ''
+  $('versionStatus').textContent = ''
+}
+$('refreshFiles').onclick = () => refreshFiles()
+
+// ----------------------------------------------------------------- workflow
+
+function renderDefinitions() {
+  const body = $('definitionRows')
+  $('definitionCount').textContent = `${state.definitions.length} definitions`
+  body.innerHTML = state.definitions.length
+    ? state.definitions.map((definition) => `
+      <tr>
+        <td><code>${escapeHtml(definition.code)}</code></td>
+        <td>${escapeHtml(definition.name)}<br /><span class="muted">${escapeHtml(definition.description)}</span></td>
+        <td>${escapeHtml((definition.steps || []).length)}</td>
+        <td>${escapeHtml(definition.classification)}</td>
+        <td>${definition.active ? 'Active' : 'Inactive'}</td>
+        <td>v${escapeHtml(definition.version ?? 1)}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="6" class="muted">No workflow definitions yet.</td></tr>'
+}
+
+function renderInstances() {
+  const body = $('instanceRows')
+  $('instanceCount').textContent = `${state.instances.length} instances`
+  body.innerHTML = state.instances.length
+    ? state.instances.map((instance) => `
+      <tr>
+        <td>${escapeHtml(instance.definition?.name || instance.definition?.code || instance.definitionId)}</td>
+        <td>${escapeHtml(instance.entityType)} ${escapeHtml(instance.entityId || '')}</td>
+        <td>${escapeHtml(instance.status)}</td>
+        <td>${escapeHtml(instance.currentStep || '—')}</td>
+        <td>${escapeHtml(formatDate(instance.createdAt))}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="5" class="muted">No workflow instances yet.</td></tr>'
+}
+
+function rowValue(taskId, attribute) {
+  const element = $('taskRows').querySelector(`[${attribute}="${taskId}"]`)
+  return element ? element.value.trim() : ''
+}
+
+function renderTasks() {
+  const body = $('taskRows')
+  $('taskCount').textContent = `${state.tasks.length} tasks`
+  if (!state.tasks.length) {
+    body.innerHTML = '<tr><td colspan="6" class="muted">No tasks assigned to you.</td></tr>'
+    return
+  }
+  const options = users.length
+    ? users.map((user) => `<option value="${escapeHtml(user.id)}">${escapeHtml(user.firstName)} ${escapeHtml(user.lastName)}</option>`).join('')
+    : '<option value="">No users available</option>'
+  body.innerHTML = state.tasks.map((task) => {
+    const instance = task.instance || {}
+    const definition = instance.definition || {}
+    const actionable = task.status === 'PENDING'
+    return `
+      <tr>
+        <td><strong>${escapeHtml(task.title || task.stepKey)}</strong><br /><span class="muted">${escapeHtml(task.stepKey)}</span></td>
+        <td>${escapeHtml(definition.name || instance.entityType || task.instanceId)}<br /><span class="muted">${escapeHtml(instance.entityType || '')} ${escapeHtml(instance.entityId || '')}</span></td>
+        <td>${escapeHtml(task.status)}${task.decision ? ` · ${escapeHtml(task.decision)}` : ''}</td>
+        <td><input class="row-input" data-comment="${escapeHtml(task.id)}" placeholder="Optional comment" maxlength="1000" /></td>
+        <td><select class="row-select" data-delegate="${escapeHtml(task.id)}">${options}</select></td>
+        <td class="actions-cell">${actionable
+          ? `<button class="secondary" data-decide="${escapeHtml(task.id)}" data-decision="APPROVED" type="button">Approve</button>
+             <button class="secondary" data-decide="${escapeHtml(task.id)}" data-decision="REJECTED" type="button">Reject</button>
+             <button class="link" data-delegate-submit="${escapeHtml(task.id)}" type="button">Delegate</button>`
+          : '<span class="muted">Actioned</span>'}</td>
+      </tr>`
+  }).join('')
+  body.querySelectorAll('[data-decide]').forEach((button) => {
+    button.onclick = () => decideTask(button.dataset.decide, button.dataset.decision)
+  })
+  body.querySelectorAll('[data-delegate-submit]').forEach((button) => {
+    button.onclick = () => delegateTask(button.dataset.delegateSubmit)
+  })
+}
+
+async function refreshDefinitions() {
+  if (!token) return
+  try {
+    const result = await request('/workflow/definitions')
+    state.definitions = listFrom(result, 'definitions', 'items')
+    renderDefinitions()
+  } catch (error) {
+    setError('workflowError', error.message)
+  }
+}
+
+async function refreshInstances() {
+  if (!token) return
+  try {
+    const result = await request('/workflow/instances?limit=50')
+    state.instances = listFrom(result, 'instances', 'items')
+    renderInstances()
+  } catch (error) {
+    setError('workflowError', error.message)
+  }
+}
+
+async function refreshTasks() {
+  if (!token) return
+  try {
+    if (!users.length) {
+      try {
+        const result = await request('/identity/users')
+        users = result.users || []
+        renderAssignOptions()
+      } catch {
+        // Delegate dropdown may stay empty when directory access is denied.
+      }
+    }
+    const result = await request('/workflow/tasks?mine=1&limit=50')
+    state.tasks = listFrom(result, 'tasks', 'items')
+    renderTasks()
+    setError('workflowError', '')
+  } catch (error) {
+    setError('workflowError', error.message)
+  }
+}
+
+async function refreshWorkflow() {
+  await Promise.all([refreshDefinitions(), refreshInstances(), refreshTasks()])
+}
+
+async function decideTask(taskId, decision) {
+  try {
+    await request(`/workflow/tasks/${encodeURIComponent(taskId)}/decide`, {
+      method: 'POST',
+      body: JSON.stringify({ decision, comment: rowValue(taskId, 'data-comment') }),
+    })
+    await Promise.all([refreshTasks(), refreshInstances()])
+  } catch (error) {
+    setError('workflowError', error.message)
+  }
+}
+
+async function delegateTask(taskId) {
+  const toUserId = rowValue(taskId, 'data-delegate')
+  if (!toUserId) {
+    setError('workflowError', 'Choose a user to delegate to.')
+    return
+  }
+  try {
+    await request(`/workflow/tasks/${encodeURIComponent(taskId)}/delegate`, {
+      method: 'POST',
+      body: JSON.stringify({ toUserId, comment: rowValue(taskId, 'data-comment') }),
+    })
+    await Promise.all([refreshTasks(), refreshInstances()])
+  } catch (error) {
+    setError('workflowError', error.message)
+  }
+}
+
+$('definitionForm').onsubmit = async (event) => {
+  event.preventDefault()
+  let steps
+  try {
+    steps = JSON.parse($('definitionSteps').value)
+  } catch {
+    setError('workflowError', 'Steps must be a valid JSON array.')
+    return
+  }
+  if (!Array.isArray(steps)) {
+    setError('workflowError', 'Steps must be a valid JSON array.')
+    return
+  }
+  try {
+    await request('/workflow/definitions', {
+      method: 'POST',
+      body: JSON.stringify({
+        code: $('definitionCode').value.trim(),
+        name: $('definitionName').value.trim(),
+        description: $('definitionDescription').value.trim(),
+        steps,
+        classification: $('definitionClassification').value,
+        active: $('definitionActive').checked,
+      }),
+    })
+    $('definitionForm').reset()
+    await refreshDefinitions()
+    setError('workflowError', '')
+  } catch (error) {
+    setError('workflowError', error.message)
+  }
+}
+
+$('instanceForm').onsubmit = async (event) => {
+  event.preventDefault()
+  let context = {}
+  try {
+    context = JSON.parse($('instanceContext').value || '{}')
+  } catch {
+    setError('workflowError', 'Context must be a valid JSON object.')
+    return
+  }
+  try {
+    await request('/workflow/instances', {
+      method: 'POST',
+      body: JSON.stringify({
+        definitionCode: $('instanceDefinition').value.trim(),
+        entityType: $('instanceEntityType').value.trim(),
+        entityId: $('instanceEntityId').value.trim(),
+        branchId: $('instanceBranchId').value.trim() || null,
+        context,
+      }),
+    })
+    await Promise.all([refreshInstances(), refreshTasks()])
+    setError('workflowError', '')
+  } catch (error) {
+    setError('workflowError', error.message)
+  }
+}
+
+// ------------------------------------------------------------------- search
+
+function renderSearch() {
+  const body = $('searchRows')
+  $('searchCount').textContent = `${state.searchTotal} result${state.searchTotal === 1 ? '' : 's'}`
+  body.innerHTML = state.searchResults.length
+    ? state.searchResults.map((item) => `
+      <tr>
+        <td>${escapeHtml(item.entityType)}</td>
+        <td><strong>${escapeHtml(item.title)}</strong></td>
+        <td><span class="muted">${escapeHtml(item.summary)}</span></td>
+        <td>${escapeHtml(item.classification)}</td>
+        <td>${escapeHtml(formatDate(item.updatedAt))}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="5" class="muted">Enter a search term to find records.</td></tr>'
+}
+
+async function refreshSearch() {
+  if (!token) return
+  const query = $('searchQuery').value.trim()
+  if (!query) {
+    state.searchResults = []
+    state.searchTotal = 0
+    renderSearch()
+    return
+  }
+  const types = [...document.querySelectorAll('[data-search-type]:checked')].map((input) => input.value)
+  const params = new URLSearchParams({ q: query, limit: '30' })
+  if (types.length) params.set('types', types.join(','))
+  try {
+    const result = await request(`/search?${params}`)
+    state.searchResults = listFrom(result, 'items')
+    state.searchTotal = Number(result.total ?? state.searchResults.length)
+    renderSearch()
+    setError('searchError', '')
+  } catch (error) {
+    setError('searchError', error.message)
+  }
+}
+
+$('searchForm').onsubmit = (event) => {
+  event.preventDefault()
+  refreshSearch()
+}
+
+// ---------------------------------------------------------------- documents
+
+function renderDocuments() {
+  const body = $('documentRows')
+  body.innerHTML = state.documents.length
+    ? state.documents.map((doc) => `
+      <tr>
+        <td><code>${escapeHtml(doc.number)}</code></td>
+        <td>${escapeHtml(doc.kind)}</td>
+        <td>${escapeHtml(doc.title)}</td>
+        <td>${escapeHtml(doc.status)}</td>
+        <td>${escapeHtml(doc.clientCompany || doc.clientName)}</td>
+        <td>${escapeHtml(doc.total ?? 0)}</td>
+        <td class="actions-cell"><button class="link" data-document-download="${escapeHtml(doc.number)}" type="button">Download</button></td>
+      </tr>`).join('')
+    : '<tr><td colspan="7" class="muted">No documents yet.</td></tr>'
+  body.querySelectorAll('[data-document-download]').forEach((button) => {
+    button.onclick = () => downloadDocument(button.dataset.documentDownload)
+  })
+}
+
+async function refreshDocuments() {
+  if (!token) return
+  try {
+    const result = await request('/documents?all=1')
+    state.documents = listFrom(result, 'items', 'documents')
+    renderDocuments()
+    setError('documentsError', '')
+  } catch (error) {
+    setError('documentsError', error.message)
+  }
+}
+
+async function loadDocumentKinds() {
+  if (state.documentKinds.length) return
+  try {
+    const { kinds } = await request('/documents/kinds')
+    state.documentKinds = kinds || []
+    $('generateKind').innerHTML = state.documentKinds.map((kind) =>
+      `<option value="${escapeHtml(kind.kind)}">${escapeHtml(kind.label || kind.kind)}</option>`).join('')
+  } catch (error) {
+    setError('documentsError', error.message)
+  }
+}
+
+async function downloadDocument(code) {
+  try {
+    const result = await request(`/documents/${encodeURIComponent(code)}/download`)
+    await openDownload(result.download || result, result.url, result.fileName || `${code}.pdf`)
+  } catch (error) {
+    setError('documentsError', error.message)
+  }
+}
+
+async function checkJob(jobId) {
+  if (!jobId) return
+  try {
+    const { job } = await request(`/documents/jobs/${encodeURIComponent(jobId)}`)
+    $('jobStatus').textContent = `Status: ${job?.status || 'UNKNOWN'}${job?.failedReason ? ` · ${job.failedReason}` : ''}`
+  } catch (error) {
+    $('jobStatus').textContent = error.message
+  }
+}
+
+function collectItems() {
+  return [...$('itemRows').querySelectorAll('.item-row')].map((row) => {
+    const values = {}
+    row.querySelectorAll('[data-item]').forEach((input) => { values[input.dataset.item] = input.value.trim() })
+    if (!values.description) return null
+    return {
+      description: values.description,
+      qty: Number(values.qty) || 0,
+      unitPrice: Number(values.unitPrice) || 0,
+    }
+  }).filter(Boolean)
+}
+
+function createItemRow() {
+  const row = document.createElement('div')
+  row.className = 'item-row'
+  row.innerHTML = `
+    <input data-item="description" placeholder="Description" maxlength="240" />
+    <input data-item="qty" type="number" min="0" step="1" placeholder="Qty" />
+    <input data-item="unitPrice" type="number" min="0" step="0.01" placeholder="Unit price" />
+    <button class="secondary remove-item" type="button" title="Remove item">×</button>`
+  return row
+}
+
+$('addItem').onclick = () => $('itemRows').appendChild(createItemRow())
+$('itemRows').onclick = (event) => {
+  const button = event.target.closest('.remove-item')
+  if (!button) return
+  const row = button.closest('.item-row')
+  const rows = $('itemRows').querySelectorAll('.item-row')
+  if (rows.length > 1) row.remove()
+  else row.querySelectorAll('input').forEach((input) => { input.value = '' })
+}
+$('refreshDocuments').onclick = () => refreshDocuments()
+$('jobForm').onsubmit = (event) => {
+  event.preventDefault()
+  checkJob($('jobIdInput').value.trim())
+}
+$('generateForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const payload = {
+    kind: $('generateKind').value,
+    title: $('generateTitle').value.trim(),
+    clientName: $('generateClientName').value.trim(),
+    clientCompany: $('generateClientCompany').value.trim(),
+    clientEmail: $('generateClientEmail').value.trim(),
+    clientPhone: $('generateClientPhone').value.trim(),
+    issueDate: $('generateIssueDate').value,
+    dueDate: $('generateDueDate').value,
+    validUntil: $('generateValidUntil').value,
+    notes: $('generateNotes').value.trim(),
+    items: collectItems(),
+  }
+  $('generateButton').disabled = true
+  $('generateStatus').textContent = 'Queueing…'
+  try {
+    const result = await request('/documents/generate', { method: 'POST', body: JSON.stringify(payload) })
+    $('generateStatus').textContent = `Queued · ${result.jobId || 'unknown job'}`
+    if (result.jobId) {
+      $('jobIdInput').value = result.jobId
+      await checkJob(result.jobId)
+    }
+    await refreshDocuments()
+  } catch (error) {
+    $('generateStatus').textContent = error.message
+  } finally {
+    $('generateButton').disabled = false
+  }
+}
+
 // ---------------------------------------------------------------- realtime
 
 function loadSocketClient() {
@@ -452,6 +1194,7 @@ function loadSocketClient() {
 }
 
 function startPolling(label = 'Polling') {
+  if (!token) return
   setConnection(label)
   if (pollTimer) return
   pollTimer = setInterval(() => {
@@ -525,6 +1268,23 @@ function connectRealtime() {
       }
       $('typing').textContent = state.typing || ''
     })
+    // Phase 5 events carry IDs only: never render payload data as content,
+    // always re-fetch the authoritative record over the authenticated API.
+    socket.on('notification:new', () => {
+      setUnreadBadge(state.unread + 1)
+      if (state.view === 'notifications') refreshNotifications()
+      setTimeout(() => refreshUnreadBadge(), 800)
+    })
+    socket.on('notification:read', () => {
+      if (state.view === 'notifications') refreshNotifications()
+      refreshUnreadBadge()
+    })
+    socket.on('workflow:task', () => refreshTasks())
+    socket.on('workflow:completed', () => refreshInstances())
+    socket.on('file:new', () => refreshFiles())
+    socket.on('file:scanned', () => refreshFiles())
+    socket.on('document:generated', () => refreshDocuments())
+    socket.on('document:issued', () => refreshDocuments())
   })
 }
 
@@ -535,15 +1295,32 @@ window.addEventListener('online', () => {
 // ------------------------------------------------------------------ views
 
 function showView(view) {
-  const inbox = view === 'inbox'
-  $('inboxView').hidden = !inbox
-  $('directoryView').hidden = inbox
-  $('tabInbox').classList.toggle('active', inbox)
-  $('tabDirectory').classList.toggle('active', !inbox)
+  state.view = view
+  for (const name of VIEWS) {
+    $(`${name}View`).hidden = name !== view
+    $(`tab${titleCase(name)}`).classList.toggle('active', name === view)
+  }
+  if (view === 'inbox') refreshInbox()
+  else if (view === 'directory') loadDirectory()
+  else if (view === 'notifications') {
+    refreshNotifications()
+    loadPreferences()
+  } else if (view === 'files') refreshFiles()
+  else if (view === 'workflow') refreshWorkflow()
+  else if (view === 'search') refreshSearch()
+  else if (view === 'documents') {
+    loadDocumentKinds()
+    refreshDocuments()
+  }
 }
 
 $('tabInbox').onclick = () => showView('inbox')
 $('tabDirectory').onclick = () => showView('directory')
+$('tabNotifications').onclick = () => showView('notifications')
+$('tabFiles').onclick = () => showView('files')
+$('tabWorkflow').onclick = () => showView('workflow')
+$('tabSearch').onclick = () => showView('search')
+$('tabDocuments').onclick = () => showView('documents')
 
 // ------------------------------------------------------------------- boot
 
@@ -551,7 +1328,7 @@ async function start() {
   try {
     const profile = await request('/auth/me')
     showDashboard(profile)
-    await Promise.all([refreshInbox(), loadDirectory()])
+    await Promise.all([refreshInbox(), loadDirectory(), refreshUnreadBadge()])
     connectRealtime()
     if (queueCount()) $('composeStatus').textContent = `${queueCount()} queued message(s)`
   } catch {

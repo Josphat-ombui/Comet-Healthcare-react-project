@@ -1,10 +1,12 @@
-// Outbox publisher (Phase 4). Moves committed domain events into a Redis
-// Stream so the realtime service can fan them out to authorised rooms.
-// BullMQ remains scheduled for Phase 5; this relay needs no job queue.
+// Comet workers. The Phase 4 outbox publisher keeps moving committed domain
+// events into Redis Streams; Phase 5 adds BullMQ queues for scans, notification
+// delivery, document generation, search projection and retention sweeps.
 
 import { PrismaClient } from '@prisma/client'
 import { createClient } from 'redis'
+import { Queue, Worker } from 'bullmq'
 import '../../api/lib/env.js'
+import { createProcessors, recordJobFailure } from './jobs.js'
 
 const int = (value, fallback) => {
   const parsed = Number.parseInt(value, 10)
@@ -17,6 +19,20 @@ const config = {
   stream: process.env.REDIS_EVENT_STREAM || 'comet.events',
   pollMs: int(process.env.OUTBOX_POLL_MS, 1000),
   maxAttempts: int(process.env.OUTBOX_MAX_ATTEMPTS, 10),
+  prefix: process.env.BULLMQ_PREFIX || 'comet',
+  retentionCron: process.env.RETENTION_SWEEP_CRON || '0 2 * * *',
+  queuesEnabled: process.env.QUEUES_ENABLED !== 'false',
+}
+
+function redisConnection() {
+  const url = new URL(config.redisUrl)
+  return {
+    host: url.hostname || 'localhost',
+    port: Number(url.port || 6379),
+    username: url.username || undefined,
+    password: url.password || undefined,
+    db: url.pathname && url.pathname !== '/' ? Number(url.pathname.slice(1)) : 0,
+  }
 }
 
 // The publisher is a trusted internal service and reads across tenants, so it
@@ -76,11 +92,51 @@ async function loop() {
   setTimeout(loop, config.pollMs)
 }
 
+const QUEUE_NAMES = ['files.scan', 'notifications.dispatch', 'documents.generate', 'search.index', 'retention.sweep']
+
+let queueWorkers = []
+
+async function startQueues() {
+  if (!config.queuesEnabled) {
+    console.log('BullMQ workers disabled (QUEUES_ENABLED=false)')
+    return
+  }
+  const connection = redisConnection()
+  const processors = createProcessors(prisma)
+  queueWorkers = QUEUE_NAMES.map((name) => new Worker(
+    name,
+    async (job) => {
+      const processor = processors[name]
+      if (!processor) throw new Error(`No processor for queue ${name}`)
+      try {
+        return await processor(job)
+      } catch (error) {
+        await recordJobFailure(prisma, job, error)
+        throw error
+      }
+    },
+    { connection, prefix: config.prefix, concurrency: name === 'files.scan' ? 2 : 5 }
+  ))
+
+  for (const worker of queueWorkers) {
+    worker.on('error', (error) => console.error(`Queue worker ${worker.name} error:`, error.message))
+    worker.on('failed', (job, error) => console.error(`Job ${job?.id} failed in ${worker.name}:`, error.message))
+  }
+
+  const scheduler = new Queue('retention.sweep', { connection, prefix: config.prefix })
+  await scheduler.add('run', {}, {
+    jobId: 'retention-sweep-schedule',
+    repeat: { pattern: config.retentionCron },
+  })
+  console.log(`BullMQ workers registered: ${QUEUE_NAMES.join(', ')}`)
+}
+
 async function start() {
   await redis.connect()
   running = true
   console.log(`Comet outbox publisher → ${config.stream} (${config.pollMs}ms)`)
   loop()
+  await startQueues().catch((error) => console.error('Queue startup failed:', error.message))
 }
 
 start().catch((error) => {

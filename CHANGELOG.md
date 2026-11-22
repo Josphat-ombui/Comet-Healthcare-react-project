@@ -8,6 +8,64 @@ The format follows a phase-gate model: each enterprise phase ends with passing t
 
 ## [Unreleased]
 
+### Phase 5 — Shared Services
+
+**Added**
+
+- Ten new Prisma models with tenant/branch RLS in migration `20261122000500_phase5_shared_services`:
+  `FileObject`, `FileVersion`, `Notification`, `NotificationPreference`, `NotificationDelivery`,
+  `WorkflowDefinition`, `WorkflowInstance`, `WorkflowTask`, `SearchDocument` and `JobRecord`.
+  The migration also adds a GIN full-text index on `SearchDocument`.
+- Shared permissions (`files.object.read/write/delete`, `workflow.definition.read/write`,
+  `workflow.instance.read`, `workflow.task.approve/delegate`, `notifications.read/manage`,
+  `search.read`, `documents.read/write/issue`) and strict ID-only event contracts: `FileUploaded`,
+  `FileScanned`, `NotificationCreated`, `NotificationRead`, `WorkflowInstanceStarted`,
+  `WorkflowTaskAssigned`, `WorkflowCompleted`, `DocumentGenerated`, `DocumentIssued` and
+  `SearchIndexUpdated`.
+- Object storage service with R2 SigV4 presigned uploads/downloads and an AES-256-GCM encrypted
+  local fallback (`storage/objects` by default), MIME/magic-byte checks, size limits, confirmation,
+  versions, scan statuses and short-lived capability tickets. Public DTOs never expose object keys,
+  checksums or tenant IDs.
+- `/api/files` (upload tickets, confirm, list, detail, download, versions, soft delete),
+  `/api/workflow` (definitions, instances, tasks, decide/delegate), `/api/notifications`
+  (inbox, preferences, read/read-all), `/api/search` (permission-aware PostgreSQL FTS with
+  bound parameters and a second ACL check) and queued `/api/documents/generate` with job status
+  and stored-PDF download; existing document kinds/list/metadata/PDF endpoints remain.
+- BullMQ workers for `files.scan` (fail-closed quarantine on hook failure),
+  `notifications.dispatch` (in-app only), `documents.generate`, `search.index` and a scheduled
+  `retention.sweep`; `JobRecord` rows track queued work. The Phase 4 outbox → Redis Streams
+  publisher continues alongside them.
+- Phase 5 Socket.IO fan-out: `notification:new`, `notification:read`, `workflow:started`,
+  `workflow:task`, `workflow:completed`, `file:new`, `file:scanned`, `document:generated` and
+  `document:issued`, all carrying IDs/classification only.
+- Phase 5 OpenAPI paths/schemas (`0.5.0-phase.5`), ADR-0010, README and `.env.example` updates.
+- Backend phase5 contract tests for file DTO redaction/access rules and generated-document naming;
+  the Phase 4 ERP inbox UI is unchanged.
+
+**Changed**
+
+- `Idempotency-Key` remains scoped to messaging sends; no Phase 5 endpoint requires it and Phase 5
+  writes are not de-duplicated by the server.
+- DLP stays fail-closed (`DLP_MODE=block`); shared services add no path around messaging DLP,
+  RLS, visibility checks or the audit trail.
+- Existing `/api/documents` endpoints now coexist with queued generation and signed PDF downloads;
+  a download requested before generation completes returns 409.
+
+**New dependencies / licences**
+
+- No new first-party dependency. `bullmq` (MIT) and `pdfkit` (MIT) are used from the root workspace;
+  R2 signing uses Node `crypto` only.
+
+**Verification**
+
+- Baseline: `npm test` — 36 passed at Phase 4 (29 Phase 1–3 + 7 Phase 4); this phase adds Phase 5
+  contract tests, with the final count to be recorded at the phase-gate review.
+- OpenAPI YAML parsed successfully with a YAML 1.2 loader; all Phase 3/4 paths retained.
+- R2 fallback, worker queues and retention cron are configurable entirely from `.env` with safe
+  defaults; local development needs no cloud credentials.
+
+---
+
 ### Phase 4 — Messaging and Realtime
 
 **Added**

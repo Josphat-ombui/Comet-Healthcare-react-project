@@ -297,6 +297,82 @@ export const documentPatchSchema = z.object({
   validUntil: optionalIsoDate.optional(),
 })
 
+// ------------------------------------------------------------ phase 5 platform
+
+export const fileUploadRequestSchema = z.object({
+  name: z.string().trim().min(1).max(240),
+  mimeType: z.string().trim().min(3).max(120),
+  size: z.number().int().positive().max(25 * 1024 * 1024, 'Files are limited to 25 MB'),
+  classification: classificationSchema.default('INTERNAL'),
+  purpose: z.enum(['GENERAL', 'MESSAGE_ATTACHMENT', 'DOCUMENT', 'PROFILE']).default('GENERAL'),
+  folder: z.string().trim().max(120).optional().or(z.literal('')),
+  checksum: z.string().trim().max(128).optional().or(z.literal('')),
+})
+
+export const fileConfirmSchema = z.object({
+  checksum: z.string().trim().max(128).optional().or(z.literal('')),
+  status: z.enum(['PENDING', 'CLEAN', 'INFECTED', 'QUARANTINED']).default('PENDING'),
+})
+
+export const fileListQuerySchema = z.object({
+  purpose: z.string().trim().max(40).optional(),
+  status: z.enum(['PENDING', 'CLEAN', 'INFECTED', 'QUARANTINED']).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+})
+
+export const notificationQuerySchema = z.object({
+  unreadOnly: z.enum(['true', 'false']).optional(),
+  category: z.enum(['MESSAGE', 'WORKFLOW', 'DOCUMENT', 'FILE', 'SYSTEM']).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+})
+
+export const notificationPreferenceSchema = z.object({
+  channel: z.enum(['IN_APP']).default('IN_APP'),
+  enabled: z.boolean(),
+  digestMinutes: z.number().int().min(0).max(1440).default(0),
+})
+
+export const workflowStepSchema = z.object({
+  key: z.string().trim().min(2).max(80).regex(/^[a-z0-9_-]+$/),
+  label: z.string().trim().min(2).max(160),
+  assigneeRole: z.enum(['ADMIN', 'MANAGER', 'STAFF', 'COMPLIANCE']).optional(),
+  assigneeUserId: z.string().max(80).optional(),
+  requireReason: z.boolean().default(false),
+})
+
+export const workflowDefinitionSchema = z.object({
+  code: z.string().trim().min(2).max(60).regex(/^[a-z0-9_-]+$/),
+  name: z.string().trim().min(2).max(160),
+  description: z.string().trim().max(500).optional().or(z.literal('')),
+  steps: z.array(workflowStepSchema).min(1).max(12),
+  classification: classificationSchema.default('INTERNAL'),
+  active: z.boolean().default(true),
+})
+
+export const workflowStartSchema = z.object({
+  definitionCode: z.string().trim().min(2).max(60),
+  entityType: z.string().trim().min(2).max(40),
+  entityId: z.string().trim().max(80).optional(),
+  branchId: z.string().max(60).nullable().optional(),
+  context: z.record(z.string(), z.unknown()).optional(),
+})
+
+export const workflowTaskDecisionSchema = z.object({
+  decision: z.enum(['APPROVED', 'REJECTED']),
+  comment: z.string().trim().max(1000).optional().or(z.literal('')),
+})
+
+export const workflowDelegateSchema = z.object({
+  toUserId: z.string().trim().min(2).max(80),
+  comment: z.string().trim().max(1000).optional().or(z.literal('')),
+})
+
+export const searchQuerySchema = z.object({
+  q: z.string().trim().min(1, 'Enter a search term').max(200),
+  types: z.array(z.enum(['MESSAGE', 'THREAD', 'DOCUMENT', 'FILE', 'WORKFLOW', 'USER'])).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(30),
+})
+
 export const companyProfileSchema = z.object({
   name: z.string().trim().min(1, 'Company name is required').max(160),
   legalName: z.string().trim().min(1, 'Legal name is required').max(200),

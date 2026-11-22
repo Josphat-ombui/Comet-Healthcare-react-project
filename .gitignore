@@ -23,6 +23,9 @@ photos/
 server/prisma/*.db
 server/prisma/*.db-journal
 
+# Encrypted local object storage (Phase 5 fallback — runtime data, never source)
+storage/objects/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

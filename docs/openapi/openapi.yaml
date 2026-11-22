@@ -1,11 +1,14 @@
 openapi: 3.1.0
 info:
   title: Comet Healthcare Enterprise API
-  version: 0.4.0-phase.4
+  version: 0.5.0-phase.5
   summary: REST and webhook contract for the Comet Healthcare enterprise platform.
   description: |
     Phase 3 adds local identity, sessions, MFA, OIDC, organisation directory and audit.
     Phase 4 adds tenant-scoped internal messaging, channels, DLP, and realtime events.
+    Phase 5 adds shared services: encrypted file objects with short-lived upload/download
+    tickets, linear workflow definitions/instances/tasks, in-app-only notifications,
+    permission-aware PostgreSQL full-text search, and queued business document generation.
     Tenant and branch context are derived from the authenticated principal; clients must
     never supply companyId directly. Refresh tokens are HttpOnly cookies, never response bodies.
 
@@ -17,9 +20,17 @@ info:
 
     Every `POST /api/messaging/threads/{id}/messages` requires an `Idempotency-Key`
     header; safe replays return 200 with `replay: true` instead of creating duplicates.
-    Domain events and Socket.IO payloads carry message/thread IDs and classification
-    only — no subject or body. Clients fetch content through authenticated endpoints
-    so visibility is always rechecked.
+    `Idempotency-Key` is not required for Phase 5 endpoints — it is scoped only to
+    messaging sends, and clients must not assume Phase 5 writes are replay-safe.
+    Domain events and Socket.IO payloads carry IDs and classification only — no subject,
+    body, title, notification text, checksum, object key, or file content. Clients fetch
+    content through authenticated endpoints so visibility is always rechecked. Phase 5
+    event payload schemas are strict: an extra content field is a contract violation.
+
+    New shared permissions: `files.object.read/write/delete`, `workflow.definition.read/write`,
+    `workflow.instance.read`, `workflow.task.approve/delegate`, `notifications.read/manage`,
+    `search.read`, and `documents.read/write/issue`. All new endpoints require the bearer
+    access token and enforce tenant/branch scope in addition to RLS.
   contact:
     name: Comet Healthcare Platform Team
   license:
@@ -46,9 +57,9 @@ x-phase-roadmap:
   phase1: Architecture and this skeleton only
   phase2: ERD, migrations, workspace split, shared contracts
   phase3: /api/auth, /api/identity, /api/org, /api/audit
-  phase4: /api/messaging and realtime events
-  phase5: /api/files, /api/workflow, /api/notifications, /api/search, /api/documents
-  phase6: /api/finance
+  phase4: Complete - /api/messaging and realtime events
+  phase5: Complete - /api/files, /api/workflow, /api/notifications, /api/search, /api/documents
+  phase6: Next - /api/finance
   phase7: /api/sales
   phase8: /api/inventory
   phase9: /api/procurement
@@ -82,6 +93,15 @@ x-realtime:
     reaction:added: 'A reaction was added.'
     presence:update: '{ userId, online } for a tenant member.'
     typing:update: '{ threadId, userId, isTyping }.'
+    notification:new: 'NotificationCreated; refetch GET /api/notifications.'
+    notification:read: 'NotificationRead; refetch GET /api/notifications.'
+    workflow:started: 'WorkflowInstanceStarted; refetch GET /api/workflow/instances.'
+    workflow:task: 'WorkflowTaskAssigned; refetch GET /api/workflow/tasks.'
+    workflow:completed: 'WorkflowCompleted; refetch GET /api/workflow/instances.'
+    file:new: 'FileUploaded; refetch GET /api/files/{id}.'
+    file:scanned: 'FileScanned; refetch GET /api/files/{id} for the scan status.'
+    document:generated: 'DocumentGenerated; poll GET /api/documents/jobs/{id} or refetch /api/documents.'
+    document:issued: 'DocumentIssued; refetch GET /api/documents/{code}.'
   eventPayload:
     eventId: string
     type: string
@@ -89,6 +109,30 @@ x-realtime:
     correlationId: string
     data: IDs and classification only; no body or subject.
   fallback: Authenticated polling of /api/messaging/threads and messages when sockets are unavailable.
+  phase5EventMap:
+    FileUploaded: file:new
+    FileScanned: file:scanned
+    NotificationCreated: notification:new
+    NotificationRead: notification:read
+    WorkflowInstanceStarted: workflow:started
+    WorkflowTaskAssigned: workflow:task
+    WorkflowCompleted: workflow:completed
+    DocumentGenerated: document:generated
+    DocumentIssued: document:issued
+    SearchIndexUpdated: 'none (index maintenance only; no socket frame)'
+  phase5Rooms:
+    - company:{companyId} (file and document events, workflow completion)
+    - company:{companyId}:user:{userId} (notification, workflow task, uploader/creator events)
+  phase5Fallback: |
+    Authenticated polling of /api/notifications, /api/workflow/tasks, /api/files and
+    /api/documents when sockets are unavailable. Socket frames carry IDs only; clients
+    always refetch through the authenticated API.
+x-idempotency:
+  requiredFor:
+    - POST /api/messaging/threads/{id}/messages
+  phase5: |
+    Not required. No Phase 5 endpoint consumes an Idempotency-Key, and retries of
+    Phase 5 writes are not de-duplicated by the server.
 paths:
   /api/health/live:
     get:
@@ -813,6 +857,866 @@ paths:
                   rooms:
                     type: array
                     items: { type: string }
+  /api/files/uploads:
+    post:
+      tags: [Platform]
+      summary: Request a file upload ticket and create a PENDING file object
+      description: |
+        Returns a short-lived ticket. With R2 configured the client PUTs the bytes
+        directly to the absolute signed `upload.url`. Otherwise the encrypted local
+        fallback returns `provider=LOCAL`, `method=POST` and a relative ticket URL
+        under `/api/files/local-upload/`. Confirm the upload after transferring bytes.
+        `Idempotency-Key` is not required.
+      operationId: requestFileUpload
+      x-permission: files.object.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FileUploadRequest'
+      responses:
+        '201':
+          description: File record and upload ticket.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [file, upload]
+                properties:
+                  file: { $ref: '#/components/schemas/FileDto' }
+                  upload: { $ref: '#/components/schemas/UploadTicket' }
+        '400':
+          description: Invalid payload, disallowed MIME type, or declared size above the upload limit.
+  /api/files/uploads/{id}/confirm:
+    post:
+      tags: [Platform]
+      summary: Confirm a completed upload and enqueue a file scan
+      description: |
+        Verifies the stored size and optional SHA-256 checksum in local mode, moves
+        the file out of `PENDING`, and enqueues `files.scan`. Poll `GET /api/files/{id}`
+        for the resulting `CLEAN`, `INFECTED` or `QUARANTINED` status.
+      operationId: confirmFileUpload
+      x-permission: files.object.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FileConfirmRequest'
+      responses:
+        '200':
+          description: Confirmed file.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [file]
+                properties:
+                  file: { $ref: '#/components/schemas/FileDto' }
+        '403':
+          description: Caller is not the uploader or an administrator.
+        '409':
+          description: Upload was already confirmed.
+        '422':
+          description: Uploaded size or checksum does not match the request.
+  /api/files:
+    get:
+      tags: [Platform]
+      summary: List file objects visible to the principal
+      description: Returns the caller's and same-branch files; administrators and compliance see all tenant files.
+      operationId: listFiles
+      x-permission: files.object.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: purpose
+          in: query
+          schema: { type: string, maxLength: 40 }
+        - name: status
+          in: query
+          schema: { type: string, enum: [PENDING, CLEAN, INFECTED, QUARANTINED] }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Matching file DTOs.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [files]
+                properties:
+                  files:
+                    type: array
+                    items: { $ref: '#/components/schemas/FileDto' }
+  /api/files/{id}:
+    get:
+      tags: [Platform]
+      summary: Get a file object by ID
+      operationId: getFile
+      x-permission: files.object.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: File DTO.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [file]
+                properties:
+                  file: { $ref: '#/components/schemas/FileDto' }
+        '403':
+          description: Caller cannot access this file or branch.
+        '404':
+          description: File not found.
+    delete:
+      tags: [Platform]
+      summary: Soft-delete a file and best-effort remove its object
+      operationId: deleteFile
+      x-permission: files.object.delete
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Soft-deleted file. Object cleanup failures are logged, not returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [file]
+                properties:
+                  file: { $ref: '#/components/schemas/FileDto' }
+        '403':
+          description: Caller is not the uploader or an administrator.
+        '404':
+          description: File not found.
+  /api/files/{id}/download:
+    get:
+      tags: [Platform]
+      summary: Issue a short-lived download ticket
+      operationId: getFileDownload
+      x-permission: files.object.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Download ticket. `url` is repeated at the top level for existing clients.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [download, url]
+                properties:
+                  download: { $ref: '#/components/schemas/DownloadTicket' }
+                  url: { type: string, format: uri-reference }
+        '403':
+          description: Caller cannot access this file.
+        '404':
+          description: File not found.
+  /api/files/{id}/versions:
+    post:
+      tags: [Platform]
+      summary: Create a new version of a file object
+      description: Increments `version`, resets `status` to PENDING, and returns a fresh upload ticket.
+      operationId: createFileVersion
+      x-permission: files.object.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FileUploadRequest'
+      responses:
+        '201':
+          description: New file version and upload ticket.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [file, upload]
+                properties:
+                  file: { $ref: '#/components/schemas/FileDto' }
+                  upload: { $ref: '#/components/schemas/UploadTicket' }
+        '403':
+          description: Caller is not the uploader or an administrator.
+        '404':
+          description: File not found.
+  /api/files/local-upload/{token}:
+    post:
+      tags: [Platform]
+      summary: Write bytes for a local encrypted upload ticket
+      description: |
+        Internal capability URL returned when `upload.provider=LOCAL`. The signed
+        token in the path identifies the object key and expiry; an authenticated
+        bearer token is optional but, when present, must match the uploader/tenant.
+        Body is the raw file bytes, not JSON. Not used when R2 is configured.
+      operationId: localFileUpload
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        '200':
+          description: Stored file DTO.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [file]
+                properties:
+                  file: { $ref: '#/components/schemas/FileDto' }
+        '400':
+          description: Invalid or expired ticket, or empty body.
+        '403':
+          description: Bearer principal does not own the object.
+        '409':
+          description: Upload already confirmed.
+        '413':
+          description: Body exceeds `MAX_UPLOAD_BYTES`.
+        '415':
+          description: MIME mismatch or disallowed file type.
+  /api/files/local-download/{token}:
+    get:
+      tags: [Platform]
+      summary: Read bytes for a local encrypted download ticket
+      description: Internal capability URL returned by `GET /api/files/{id}/download` when `provider=LOCAL`.
+      operationId: localFileDownload
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: 'Raw file bytes with a sanitised `Content-Disposition` and `Cache-Control: no-store`.'
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '400':
+          description: Invalid or expired ticket.
+        '401':
+          description: Authentication required.
+        '403':
+          description: Caller cannot access the file.
+        '404':
+          description: File not found.
+  /api/workflow/definitions:
+    get:
+      tags: [Platform]
+      summary: List workflow definitions for the tenant
+      operationId: listWorkflowDefinitions
+      x-permission: workflow.definition.read
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Definitions ordered by code and version.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [definitions]
+                properties:
+                  definitions:
+                    type: array
+                    items: { $ref: '#/components/schemas/WorkflowDefinition' }
+    post:
+      tags: [Platform]
+      summary: Create a new version of a workflow definition
+      description: Steps are ordered and resolved at instance start; the version number is server-assigned.
+      operationId: createWorkflowDefinition
+      x-permission: workflow.definition.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowDefinitionRequest'
+      responses:
+        '201':
+          description: Created definition.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [definition]
+                properties:
+                  definition: { $ref: '#/components/schemas/WorkflowDefinition' }
+        '400':
+          description: Invalid step list or definition payload.
+  /api/workflow/instances:
+    get:
+      tags: [Platform]
+      summary: List workflow instances visible to the principal
+      description: Rows outside the caller's branch scope are filtered out rather than rejected.
+      operationId: listWorkflowInstances
+      x-permission: workflow.instance.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [RUNNING, COMPLETED, REJECTED] }
+        - name: entityType
+          in: query
+          schema: { type: string, maxLength: 40 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Matching instances with their tasks.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [instances]
+                properties:
+                  instances:
+                    type: array
+                    items: { $ref: '#/components/schemas/WorkflowInstance' }
+    post:
+      tags: [Platform]
+      summary: Start a workflow instance from an active definition
+      description: |
+        Resolves assignees for the first step and creates one PENDING task per
+        assignee. Emits `WorkflowInstanceStarted` and `WorkflowTaskAssigned` with
+        ID-only payloads.
+      operationId: startWorkflowInstance
+      x-permission: workflow.definition.read
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowStartRequest'
+      responses:
+        '201':
+          description: Started instance and initial tasks.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [instance, tasks]
+                properties:
+                  instance: { $ref: '#/components/schemas/WorkflowInstance' }
+                  tasks:
+                    type: array
+                    items: { $ref: '#/components/schemas/WorkflowTask' }
+        '403':
+          description: Caller cannot access the requested branch.
+        '404':
+          description: No active definition with that code.
+        '422':
+          description: Definition has no first step or no assignee can be resolved.
+  /api/workflow/tasks:
+    get:
+      tags: [Platform]
+      summary: List workflow tasks
+      description: Assignees and delegates see their own tasks; administrators see all unless `mine=1` is set.
+      operationId: listWorkflowTasks
+      x-permission: workflow.task.approve
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: mine
+          in: query
+          description: Accepts `1` or `true` to restrict the list to the caller.
+          schema: { type: string, enum: ['1', 'true', '0', 'false'] }
+        - name: status
+          in: query
+          schema: { type: string, enum: [PENDING, APPROVED, REJECTED, CANCELLED, DELEGATED] }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Matching tasks with their instances.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tasks]
+                properties:
+                  tasks:
+                    type: array
+                    items: { $ref: '#/components/schemas/WorkflowTask' }
+  /api/workflow/tasks/{id}/decide:
+    post:
+      tags: [Platform]
+      summary: Approve or reject a workflow task
+      description: |
+        Approval advances to the next step or completes the instance; rejection
+        cancels outstanding tasks. Creates a generic in-app notice for the requester
+        and emits `WorkflowTaskAssigned` / `WorkflowCompleted` ID-only events.
+      operationId: decideWorkflowTask
+      x-permission: workflow.task.approve
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowTaskDecisionRequest'
+      responses:
+        '200':
+          description: Actioned task, resulting instance and any newly assigned tasks.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [task, instance]
+                properties:
+                  task: { $ref: '#/components/schemas/WorkflowTask' }
+                  instance: { $ref: '#/components/schemas/WorkflowInstance' }
+                  tasks:
+                    type: array
+                    items: { $ref: '#/components/schemas/WorkflowTask' }
+        '403':
+          description: Caller is neither the assignee nor an administrator.
+        '404':
+          description: Task not found or not visible to the caller.
+        '409':
+          description: Task has already been actioned.
+        '422':
+          description: No assignee can be resolved for the next step.
+  /api/workflow/tasks/{id}/delegate:
+    post:
+      tags: [Platform]
+      summary: Delegate a pending task to another active tenant user
+      operationId: delegateWorkflowTask
+      x-permission: workflow.task.delegate
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowDelegateRequest'
+      responses:
+        '200':
+          description: Original task marked DELEGATED and the replacement PENDING task.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [task, delegatedTask]
+                properties:
+                  task: { $ref: '#/components/schemas/WorkflowTask' }
+                  delegatedTask: { $ref: '#/components/schemas/WorkflowTask' }
+        '403':
+          description: Caller is neither the assignee nor an administrator.
+        '404':
+          description: Task or delegatee not found.
+        '409':
+          description: Only pending tasks can be delegated.
+        '422':
+          description: Delegatee is the current assignee.
+  /api/notifications:
+    get:
+      tags: [Platform]
+      summary: List the caller's in-app notifications
+      description: Expired notifications are excluded. Titles and messages are only available from this authenticated endpoint.
+      operationId: listNotifications
+      x-permission: notifications.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: unreadOnly
+          in: query
+          schema: { type: string, enum: ['true', 'false'] }
+        - name: category
+          in: query
+          schema: { type: string, enum: [MESSAGE, WORKFLOW, DOCUMENT, FILE, SYSTEM] }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Notifications for the current user.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [notifications]
+                properties:
+                  notifications:
+                    type: array
+                    items: { $ref: '#/components/schemas/NotificationDto' }
+  /api/notifications/preferences:
+    get:
+      tags: [Platform]
+      summary: Get the caller's in-app notification preference
+      operationId: getNotificationPreferences
+      x-permission: notifications.manage
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Preference (defaults to IN_APP enabled with no digest).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [preferences]
+                properties:
+                  preferences: { $ref: '#/components/schemas/NotificationPreference' }
+    put:
+      tags: [Platform]
+      summary: Update or create the caller's in-app notification preference
+      description: Only the `IN_APP` channel exists; disabling it suppresses new notifications entirely.
+      operationId: updateNotificationPreferences
+      x-permission: notifications.manage
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationPreference'
+      responses:
+        '200':
+          description: Saved preference.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [preferences]
+                properties:
+                  preferences: { $ref: '#/components/schemas/NotificationPreference' }
+        '400':
+          description: Invalid channel or digest value.
+  /api/notifications/{id}/read:
+    post:
+      tags: [Platform]
+      summary: Mark one notification read
+      description: Ownership is enforced in the lookup, so another user's ID returns 404.
+      operationId: markNotificationRead
+      x-permission: notifications.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Notification with `readAt` set.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [notification]
+                properties:
+                  notification: { $ref: '#/components/schemas/NotificationDto' }
+        '404':
+          description: Notification not found for this user.
+  /api/notifications/read-all:
+    post:
+      tags: [Platform]
+      summary: Mark all of the caller's unread notifications read
+      operationId: markAllNotificationsRead
+      x-permission: notifications.read
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Number of notifications changed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [count]
+                properties:
+                  count: { type: integer, minimum: 0 }
+  /api/search:
+    get:
+      tags: [Platform]
+      summary: Permission-aware full-text search
+      description: |
+        PostgreSQL full-text search over tenant-scoped `SearchDocument` projections.
+        Results are filtered by classification, branch scope and per-document user/role
+        allow lists. `types` accepts repeated values or a comma-separated string.
+        The raw query text is never audited.
+      operationId: searchPlatform
+      x-permission: search.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 200 }
+        - name: types
+          in: query
+          description: Optional entity types; repeated or comma-separated.
+          schema:
+            type: array
+            items: { type: string, enum: [MESSAGE, THREAD, DOCUMENT, FILE, WORKFLOW, USER] }
+          style: form
+          explode: true
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 30 }
+      responses:
+        '200':
+          description: Visible results and total matching count.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '400':
+          description: Missing or invalid query.
+  /api/documents/kinds:
+    get:
+      tags: [Platform]
+      summary: List supported business document kinds
+      operationId: listDocumentKinds
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Kind metadata for generation forms.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [kinds]
+                properties:
+                  kinds:
+                    type: array
+                    items: { $ref: '#/components/schemas/DocumentKind' }
+  /api/documents:
+    get:
+      tags: [Platform]
+      summary: List business documents visible to the caller
+      description: Non-admins see documents matching their email; administrators may pass `all=1`.
+      operationId: listDocuments
+      x-permission: documents.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: all
+          in: query
+          description: Administrator-only flag to include all tenant documents.
+          schema: { type: string, enum: ['1'] }
+      responses:
+        '200':
+          description: Matching documents.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/BusinessDocument' }
+  /api/documents/generate:
+    post:
+      tags: [Platform]
+      summary: Queue business document generation
+      description: |
+        Returns immediately with a BullMQ job ID. Poll `GET /api/documents/jobs/{id}`
+        until the job completes, then use `GET /api/documents/{code}/download`.
+        Only the document kind is audited; client contact details are not.
+        `Idempotency-Key` is not required, so do not blindly retry this write.
+      operationId: generateDocument
+      x-permission: documents.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DocumentGenerateRequest'
+      responses:
+        '202':
+          description: Generation queued.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [jobId, status]
+                properties:
+                  jobId: { type: string, nullable: true }
+                  status: { type: string, enum: [QUEUED] }
+        '400':
+          description: Invalid payload or kind-specific fields missing.
+  /api/documents/jobs/{id}:
+    get:
+      tags: [Platform]
+      summary: Get the state of a document generation job
+      description: Returns 404 when the job ID is unknown or has been removed by BullMQ retention.
+      operationId: getDocumentJob
+      x-permission: documents.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Job status.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job]
+                properties:
+                  job: { $ref: '#/components/schemas/DocumentJobStatus' }
+        '404':
+          description: Job not found.
+  /api/documents/{code}/download:
+    get:
+      tags: [Platform]
+      summary: Issue a short-lived download ticket for a generated PDF
+      operationId: downloadGeneratedDocument
+      x-permission: documents.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: code
+          in: path
+          required: true
+          description: Business document number, for example `QUO-2026-0001`.
+          schema: { type: string }
+      responses:
+        '200':
+          description: Download ticket and safe file name.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [download, url, fileName]
+                properties:
+                  download: { $ref: '#/components/schemas/DownloadTicket' }
+                  url: { type: string, format: uri-reference }
+                  fileName: { type: string }
+        '403':
+          description: Caller cannot view this document.
+        '404':
+          description: Document not found.
+        '409':
+          description: Generation is still queued or in progress.
+  /api/documents/{code}:
+    get:
+      tags: [Platform]
+      summary: Get business document metadata
+      operationId: getDocument
+      x-permission: documents.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Document metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [document]
+                properties:
+                  document: { $ref: '#/components/schemas/BusinessDocument' }
+        '403':
+          description: Caller cannot view this document.
+        '404':
+          description: Document not found.
+  /api/documents/{code}/pdf:
+    get:
+      tags: [Platform]
+      summary: Render the branded PDF inline
+      description: Draft documents are visible to administrators only; issued documents render for permitted viewers.
+      operationId: renderDocumentPdf
+      x-permission: documents.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: 'PDF bytes with `Content-Disposition: inline` and `Cache-Control: no-store`.'
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        '403':
+          description: Document is a draft or caller cannot view it.
+        '404':
+          description: Document not found.
 components:
   securitySchemes:
     bearerAuth:
@@ -847,7 +1751,8 @@ components:
     IdempotencyKey:
       description: |
         Client-generated unique key for a message send. Reusing the same key replays
-        the original message instead of creating a duplicate.
+        the original message instead of creating a duplicate. Required only for
+        `POST /api/messaging/threads/{id}/messages`; Phase 5 endpoints do not use it.
       schema:
         type: string
         maxLength: 200
@@ -866,7 +1771,7 @@ components:
       name: Idempotency-Key
       in: header
       required: true
-      description: Client-generated key; safe replays return the original message.
+      description: Client-generated key for messaging sends only; safe replays return the original message. Not used by Phase 5 endpoints.
       schema: { type: string, minLength: 1, maxLength: 200 }
   schemas:
     Inbox:
@@ -1005,6 +1910,324 @@ components:
             postgres: ok
             redis: ok
             objectStorage: ok
+    Classification:
+      type: string
+      enum: [PUBLIC, INTERNAL, CONFIDENTIAL, RESTRICTED]
+      description: Shared classification vocabulary used by Phase 4 and Phase 5 payloads.
+    FileDto:
+      type: object
+      description: Public file projection. Object keys, checksums and tenant identifiers are never returned.
+      required: [id, name, mimeType, size, classification, status, version, purpose, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        mimeType: { type: string }
+        size: { type: integer, format: int64, minimum: 1 }
+        classification: { $ref: '#/components/schemas/Classification' }
+        status: { type: string, enum: [PENDING, CLEAN, INFECTED, QUARANTINED] }
+        version: { type: integer, minimum: 1 }
+        purpose: { type: string, enum: [GENERAL, MESSAGE_ATTACHMENT, DOCUMENT, PROFILE] }
+        folder: { type: string, nullable: true }
+        uploadedBy: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    FileUploadRequest:
+      type: object
+      required: [name, mimeType, size]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 240 }
+        mimeType: { type: string, minLength: 3, maxLength: 120 }
+        size: { type: integer, format: int64, minimum: 1 }
+        classification:
+          allOf:
+            - $ref: '#/components/schemas/Classification'
+          default: INTERNAL
+        purpose: { type: string, enum: [GENERAL, MESSAGE_ATTACHMENT, DOCUMENT, PROFILE], default: GENERAL }
+        folder: { type: string, maxLength: 120 }
+        checksum: { type: string, maxLength: 128, description: Optional SHA-256 hex digest. }
+    FileConfirmRequest:
+      type: object
+      properties:
+        checksum: { type: string, maxLength: 128 }
+        status: { type: string, enum: [PENDING, CLEAN, INFECTED, QUARANTINED], default: PENDING }
+    UploadTicket:
+      type: object
+      required: [provider, method, url, expiresIn]
+      properties:
+        provider: { type: string, enum: [R2, LOCAL] }
+        method: { type: string, enum: [PUT, POST], description: PUT for R2, POST for the encrypted local fallback. }
+        url: { type: string, format: uri-reference, description: Absolute signed R2 URL or relative local upload ticket URL. }
+        headers:
+          type: object
+          additionalProperties: { type: string }
+          example: { Content-Type: application/octet-stream }
+        expiresIn: { type: integer, description: Ticket lifetime in seconds (`SIGNED_URL_TTL_SECONDS`). }
+    DownloadTicket:
+      type: object
+      required: [provider, method, url, expiresIn]
+      properties:
+        provider: { type: string, enum: [R2, LOCAL] }
+        method: { type: string, enum: [GET] }
+        url: { type: string, format: uri-reference }
+        expiresIn: { type: integer, description: Ticket lifetime in seconds. }
+    WorkflowStep:
+      type: object
+      required: [key, label]
+      properties:
+        key: { type: string, minLength: 2, maxLength: 80, pattern: '^[a-z0-9_-]+$' }
+        label: { type: string, minLength: 2, maxLength: 160 }
+        assigneeRole: { type: string, enum: [ADMIN, MANAGER, STAFF, COMPLIANCE] }
+        assigneeUserId: { type: string, maxLength: 80 }
+        requireReason: { type: boolean, default: false }
+    WorkflowDefinition:
+      type: object
+      required: [id, code, name, version, steps, active, classification]
+      properties:
+        id: { type: string }
+        code: { type: string }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        version: { type: integer, minimum: 1 }
+        steps:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/WorkflowStep' }
+        active: { type: boolean }
+        classification: { $ref: '#/components/schemas/Classification' }
+        createdById: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    WorkflowDefinitionRequest:
+      type: object
+      required: [code, name, steps]
+      properties:
+        code: { type: string, minLength: 2, maxLength: 60, pattern: '^[a-z0-9_-]+$' }
+        name: { type: string, minLength: 2, maxLength: 160 }
+        description: { type: string, maxLength: 500 }
+        steps:
+          type: array
+          minItems: 1
+          maxItems: 12
+          items: { $ref: '#/components/schemas/WorkflowStep' }
+        classification:
+          allOf:
+            - $ref: '#/components/schemas/Classification'
+          default: INTERNAL
+        active: { type: boolean, default: true }
+    WorkflowInstance:
+      type: object
+      required: [id, definitionId, entityType, status, requestedById]
+      properties:
+        id: { type: string }
+        branchId: { type: string, nullable: true }
+        definitionId: { type: string }
+        definition:
+          type: object
+          properties:
+            id: { type: string }
+            code: { type: string }
+            name: { type: string }
+        entityType: { type: string }
+        entityId: { type: string, nullable: true }
+        status: { type: string, enum: [RUNNING, COMPLETED, REJECTED] }
+        currentStep: { type: string, nullable: true }
+        context: { type: object, nullable: true }
+        requestedById: { type: string }
+        createdAt: { type: string, format: date-time, nullable: true }
+        completedAt: { type: string, format: date-time, nullable: true }
+        tasks:
+          type: array
+          items: { $ref: '#/components/schemas/WorkflowTask' }
+    WorkflowTask:
+      type: object
+      required: [id, instanceId, stepKey, title, status]
+      properties:
+        id: { type: string }
+        instanceId: { type: string }
+        stepKey: { type: string }
+        title: { type: string }
+        assigneeId: { type: string, nullable: true }
+        delegatedFromId: { type: string, nullable: true }
+        status: { type: string, enum: [PENDING, APPROVED, REJECTED, CANCELLED, DELEGATED] }
+        decision: { type: string, enum: [APPROVED, REJECTED], nullable: true }
+        comment: { type: string, nullable: true }
+        dueAt: { type: string, format: date-time, nullable: true }
+        actedAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time, nullable: true }
+        instance: { $ref: '#/components/schemas/WorkflowInstance' }
+    WorkflowStartRequest:
+      type: object
+      required: [definitionCode, entityType]
+      properties:
+        definitionCode: { type: string, minLength: 2, maxLength: 60 }
+        entityType: { type: string, minLength: 2, maxLength: 40 }
+        entityId: { type: string, maxLength: 80 }
+        branchId: { type: string, nullable: true }
+        context: { type: object, additionalProperties: true }
+    WorkflowTaskDecisionRequest:
+      type: object
+      required: [decision]
+      properties:
+        decision: { type: string, enum: [APPROVED, REJECTED] }
+        comment: { type: string, maxLength: 1000 }
+    WorkflowDelegateRequest:
+      type: object
+      required: [toUserId]
+      properties:
+        toUserId: { type: string, minLength: 2, maxLength: 80 }
+        comment: { type: string, maxLength: 1000 }
+    NotificationDto:
+      type: object
+      description: In-app notification content; only the authenticated owner can read it.
+      required: [id, userId, category, title, message, classification]
+      properties:
+        id: { type: string }
+        userId: { type: string }
+        category: { type: string, enum: [MESSAGE, WORKFLOW, DOCUMENT, FILE, SYSTEM] }
+        title: { type: string }
+        message: { type: string }
+        classification: { $ref: '#/components/schemas/Classification' }
+        entityType: { type: string, nullable: true }
+        entityId: { type: string, nullable: true }
+        readAt: { type: string, format: date-time, nullable: true }
+        deliveredAt: { type: string, format: date-time, nullable: true }
+        expiresAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time, nullable: true }
+    NotificationPreference:
+      type: object
+      required: [enabled]
+      properties:
+        channel: { type: string, enum: [IN_APP], default: IN_APP }
+        enabled: { type: boolean }
+        digestMinutes: { type: integer, minimum: 0, maximum: 1440, default: 0 }
+    SearchResult:
+      type: object
+      required: [id, entityType, entityId, title, classification]
+      properties:
+        id: { type: string }
+        entityType: { type: string, enum: [MESSAGE, THREAD, DOCUMENT, FILE, WORKFLOW, USER] }
+        entityId: { type: string }
+        title: { type: string }
+        summary: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        branchId: { type: string, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+        score: { type: number, description: PostgreSQL `ts_rank` score. }
+    SearchResponse:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/SearchResult' }
+        total: { type: integer, minimum: 0 }
+    DocumentKind:
+      type: object
+      required: [kind, label, financial]
+      properties:
+        kind: { type: string, enum: [QUOTATION, PROFORMA_INVOICE, INVOICE, ORDER_CONFIRMATION, CDMO_SLA, NDA, COA] }
+        label: { type: string }
+        financial: { type: boolean }
+        days: { type: integer, description: Default validity in days for financial documents. }
+        defaultTitle: { type: string }
+    DocumentGenerateRequest:
+      type: object
+      required: [kind, clientName, clientCompany, clientEmail]
+      properties:
+        kind: { type: string, enum: [QUOTATION, PROFORMA_INVOICE, INVOICE, ORDER_CONFIRMATION, CDMO_SLA, NDA, COA] }
+        title: { type: string, maxLength: 220 }
+        clientName: { type: string, minLength: 2, maxLength: 120 }
+        clientCompany: { type: string, minLength: 2, maxLength: 180 }
+        clientEmail: { type: string, format: email }
+        clientPhone: { type: string, maxLength: 40 }
+        issueDate: { type: string, description: ISO date (`YYYY-MM-DD`). }
+        dueDate: { type: string, description: ISO date (`YYYY-MM-DD`). }
+        validUntil: { type: string, description: ISO date (`YYYY-MM-DD`). }
+        notes: { type: string, maxLength: 3000 }
+        items:
+          type: array
+          maxItems: 60
+          items:
+            type: object
+            required: [description, qty, unitPrice]
+            properties:
+              description: { type: string, maxLength: 240 }
+              qty: { type: number, minimum: 0 }
+              unitPrice: { type: number, minimum: 0 }
+        clauses:
+          type: array
+          maxItems: 40
+          items:
+            type: object
+            required: [title, body]
+            properties:
+              title: { type: string, maxLength: 200 }
+              body: { type: string, maxLength: 6000 }
+        productInfo:
+          type: object
+          required: [product]
+          properties:
+            product: { type: string, maxLength: 200 }
+            batch: { type: string, maxLength: 80 }
+            dosageForm: { type: string, maxLength: 120 }
+            manufacturingDate: { type: string }
+            expiryDate: { type: string }
+            storage: { type: string, maxLength: 160 }
+        params:
+          type: array
+          maxItems: 60
+          items:
+            type: object
+            required: [parameter, result, limit]
+            properties:
+              parameter: { type: string, maxLength: 120 }
+              method: { type: string, maxLength: 160 }
+              result: { type: string, maxLength: 160 }
+              limit: { type: string, maxLength: 200 }
+              status: { type: string, enum: [PASS, FAIL, N/A], default: PASS }
+    BusinessDocument:
+      type: object
+      required: [id, number, kind, title, status, currency]
+      properties:
+        id: { type: string }
+        number: { type: string, description: Human-readable document code used as the `code` path parameter. }
+        kind: { type: string, enum: [QUOTATION, PROFORMA_INVOICE, INVOICE, ORDER_CONFIRMATION, CDMO_SLA, NDA, COA] }
+        title: { type: string }
+        status: { type: string, enum: [DRAFT, ISSUED, VOID] }
+        currency: { type: string }
+        taxRate: { type: number }
+        issueDate: { type: string }
+        dueDate: { type: string, nullable: true }
+        validUntil: { type: string, nullable: true }
+        clientName: { type: string }
+        clientCompany: { type: string }
+        clientEmail: { type: string, format: email }
+        clientPhone: { type: string, nullable: true }
+        notes: { type: string, nullable: true }
+        subtotal: { type: number }
+        tax: { type: number }
+        total: { type: number }
+        data: { type: object, description: Rendered line items, clauses and COA parameters. }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        createdBy:
+          type: object
+          nullable: true
+          properties:
+            id: { type: string }
+            firstName: { type: string }
+            lastName: { type: string }
+    DocumentJobStatus:
+      type: object
+      required: [id, name, state, createdAt]
+      properties:
+        id: { type: string }
+        name: { type: string, example: documents.generate }
+        state: { type: string, description: BullMQ job state such as waiting, active, completed, failed or delayed. }
+        progress: { description: BullMQ-reported progress value or object. }
+        failedReason: { type: string, nullable: true }
+        returnvalue: { description: Job result containing documentId, number and fileId. }
+        createdAt: { type: string, format: date-time }
     Problem:
       type: object
       required:
