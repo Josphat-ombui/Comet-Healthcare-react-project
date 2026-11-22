@@ -5,6 +5,7 @@ import crypto from 'node:crypto'
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
 import { config } from './config.js'
+import { DEFAULT_COMPANY_ID } from '../../shared/src/constants.js'
 
 export const SALT_ROUNDS = 12
 
@@ -39,6 +40,9 @@ export function sha256(value) {
 
 /** Parse the "Authorization: Bearer <token>" header and verify it. */
 export function requireAuth(req, res, next) {
+  // Phase 3: resolvePrincipal already validated the token and checked the
+  // session/account status. Preserve its richer auth object.
+  if (req.auth?.userId) return next()
   const header = req.headers.authorization || ''
   const token = header.startsWith('Bearer ') ? header.slice(7) : null
   if (!token) {
@@ -46,7 +50,15 @@ export function requireAuth(req, res, next) {
   }
   try {
     const payload = jwt.verify(token, config.jwtSecret)
-    req.auth = { userId: payload.sub, role: payload.role }
+    req.auth = {
+      userId: payload.sub,
+      role: payload.role,
+      roles: payload.roles || (payload.role ? [payload.role] : []),
+      companyId: payload.companyId || DEFAULT_COMPANY_ID,
+      branchId: payload.branchId || null,
+      branchIds: payload.branchIds || [],
+      sessionId: payload.sessionId || null,
+    }
     return next()
   } catch {
     return res.status(401).json({ error: 'Session expired or invalid' })
@@ -58,10 +70,18 @@ export function requireAuth(req, res, next) {
 export function optionalAuth(req, _res, next) {
   const header = req.headers.authorization || ''
   const token = header.startsWith('Bearer ') ? header.slice(7) : null
-  if (token) {
+  if (token && !req.auth?.userId) {
     try {
       const payload = jwt.verify(token, config.jwtSecret)
-      req.auth = { userId: payload.sub, role: payload.role }
+      req.auth = {
+        userId: payload.sub,
+        role: payload.role,
+        roles: payload.roles || (payload.role ? [payload.role] : []),
+        companyId: payload.companyId || DEFAULT_COMPANY_ID,
+        branchId: payload.branchId || null,
+        branchIds: payload.branchIds || [],
+        sessionId: payload.sessionId || null,
+      }
     } catch {
       // Ignore invalid/expired tokens on optional routes.
     }

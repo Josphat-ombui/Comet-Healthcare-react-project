@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node src/index.js",
-    "build": "node src/index.js",
-    "start": "node src/index.js"
+    "dev": "node src/server.js",
+    "build": "node src/server.js",
+    "start": "node src/server.js"
   }
 }

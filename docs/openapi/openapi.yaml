@@ -1,12 +1,12 @@
 openapi: 3.1.0
 info:
   title: Comet Healthcare Enterprise API
-  version: 0.1.0-phase.1
+  version: 0.3.0-phase.3
   summary: REST and webhook contract for the Comet Healthcare enterprise platform.
   description: |
-    Phase 1 skeleton. Business endpoints are added by the phase that implements them.
+    Phase 3 adds local identity, sessions, MFA, OIDC, organisation directory and audit.
     Tenant and branch context are derived from the authenticated principal; clients must
-    never supply companyId directly.
+    never supply companyId directly. Refresh tokens are HttpOnly cookies, never response bodies.
   contact:
     name: Comet Healthcare Platform Team
   license:
@@ -20,7 +20,11 @@ tags:
   - name: Health
     description: Liveness and readiness checks.
   - name: Identity
-    description: Users, sessions, MFA, and policies. Added in Phase 3.
+    description: Login, users, sessions, MFA, and roles. Added in Phase 3.
+  - name: Organisation
+    description: Branches and departments. Added in Phase 3.
+  - name: Audit
+    description: Append-only audit trail and hash verification. Added in Phase 3.
   - name: Messaging
     description: Inboxes, threads, channels, and files. Added in Phase 4.
   - name: Platform
@@ -87,6 +91,402 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+  /api/auth/register:
+    post:
+      tags:
+        - Identity
+      summary: Create a storefront account (public)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [firstName, lastName, email, password]
+              properties:
+                firstName: { type: string }
+                lastName: { type: string }
+                email: { type: string, format: email }
+                password: { type: string, format: password, minLength: 12 }
+                phone: { type: string }
+                company: { type: string }
+      responses:
+        '201':
+          description: Account created; returns an access token and refresh cookie.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignInResponse'
+        '400':
+          description: Password policy violation.
+        '409':
+          description: Email already registered in this tenant.
+  /api/auth/login:
+    post:
+      tags:
+        - Identity
+      summary: Sign in with email and password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+      responses:
+        '200':
+          description: Signed in, or MFA challenge issued when MFA is enabled.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SignInResponse'
+                  - $ref: '#/components/schemas/MfaChallengeResponse'
+        '401':
+          description: Invalid credentials.
+        '423':
+          description: Account temporarily locked after repeated failures.
+  /api/auth/mfa/verify:
+    post:
+      tags:
+        - Identity
+      summary: Complete an MFA challenge
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [challenge, code]
+              properties:
+                challenge: { type: string }
+                code: { type: string, description: TOTP code or unused recovery code }
+      responses:
+        '200':
+          description: Signed in; access token and refresh cookie returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignInResponse'
+        '401':
+          description: Invalid code.
+  /api/auth/mfa/enrol:
+    post:
+      tags:
+        - Identity
+      summary: Begin TOTP enrolment
+      responses:
+        '200':
+          description: Secret, otpauth URI, and one-time recovery codes.
+  /api/auth/mfa/confirm:
+    post:
+      tags:
+        - Identity
+      summary: Confirm TOTP enrolment with a valid code
+      responses:
+        '200':
+          description: MFA enabled.
+  /api/auth/me:
+    get:
+      tags:
+        - Identity
+      summary: Current user and roles
+      responses:
+        '200':
+          description: Current principal.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: '#/components/schemas/User' }
+                  roles: { type: array, items: { type: string } }
+                  sessionId: { type: string }
+  /api/auth/refresh:
+    post:
+      tags:
+        - Identity
+      summary: Rotate the refresh cookie and issue a new access token
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: New access token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignInResponse'
+        '401':
+          description: Refresh token invalid, reused, or expired.
+  /api/auth/logout:
+    post:
+      tags:
+        - Identity
+      summary: Revoke the current session
+      responses:
+        '200':
+          description: Signed out.
+  /api/auth/sessions:
+    get:
+      tags:
+        - Identity
+      summary: List active sessions for the current user
+      responses:
+        '200':
+          description: Active sessions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Session'
+  /api/auth/sessions/{id}/revoke:
+    post:
+      tags:
+        - Identity
+      summary: Revoke one of the current user's sessions
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Session revoked.
+        '404':
+          description: Session not found.
+  /api/auth/sessions/revoke-others:
+    post:
+      tags:
+        - Identity
+      summary: Revoke all other sessions for the current user
+      responses:
+        '200':
+          description: Other sessions revoked.
+  /api/auth/change-password:
+    post:
+      tags:
+        - Identity
+      summary: Change password (revokes all sessions)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string, format: password }
+                newPassword: { type: string, format: password, minLength: 12 }
+      responses:
+        '200':
+          description: Password changed; sign in again.
+  /api/auth/forgot-password:
+    post:
+      tags:
+        - Identity
+      summary: Send a password reset link to an external email address
+      security: []
+      responses:
+        '200':
+          description: Always returned, whether or not the account exists.
+  /api/auth/reset-password:
+    post:
+      tags:
+        - Identity
+      summary: Set a new password using a reset token
+      security: []
+      responses:
+        '200':
+          description: Password updated.
+        '400':
+          description: Invalid or expired token, or policy violation.
+  /api/auth/oidc/start:
+    get:
+      tags:
+        - Identity
+      summary: Begin the OIDC authorization-code flow
+      responses:
+        '302':
+          description: Redirect to the configured identity provider.
+        '503':
+          description: No OIDC provider configured.
+  /api/auth/oidc/callback:
+    post:
+      tags:
+        - Identity
+      summary: Exchange an OIDC code and sign in
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, state]
+              properties:
+                code: { type: string }
+                state: { type: string }
+      responses:
+        '200':
+          description: Signed in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignInResponse'
+        '502':
+          description: Provider verification failed.
+  /api/identity/users:
+    get:
+      tags:
+        - Identity
+      summary: List users in the current tenant
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: User directory.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/User'
+    post:
+      tags:
+        - Identity
+      summary: Invite a user
+      responses:
+        '201':
+          description: Invited; external email contains a one-time setup link.
+        '409':
+          description: Email already exists in this tenant.
+  /api/identity/users/{id}:
+    get:
+      tags:
+        - Identity
+      summary: Get a user
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: User and assigned roles.
+  /api/identity/users/{id}/disable:
+    post:
+      tags:
+        - Identity
+      summary: Disable a user and revoke all sessions
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: User disabled.
+  /api/identity/users/{id}/roles:
+    post:
+      tags:
+        - Identity
+      summary: Assign an access role
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '201':
+          description: Role assigned.
+  /api/identity/roles:
+    get:
+      tags:
+        - Identity
+      summary: List roles and their permissions
+      responses:
+        '200':
+          description: Role catalogue.
+  /api/identity/permissions:
+    get:
+      tags:
+        - Identity
+      summary: List permissions
+      responses:
+        '200':
+          description: Permission catalogue.
+  /api/org/branches:
+    get:
+      tags:
+        - Organisation
+      summary: List branches
+      responses:
+        '200':
+          description: Branches in the current tenant.
+    post:
+      tags:
+        - Organisation
+      summary: Create a branch
+      responses:
+        '201':
+          description: Branch created.
+  /api/org/departments:
+    get:
+      tags:
+        - Organisation
+      summary: List departments
+      responses:
+        '200':
+          description: Departments in the current tenant.
+    post:
+      tags:
+        - Organisation
+      summary: Create a department
+      responses:
+        '201':
+          description: Department created.
+  /api/audit/logs:
+    get:
+      tags:
+        - Audit
+      summary: Query the append-only audit log
+      parameters:
+        - name: action
+          in: query
+          schema: { type: string }
+        - name: actorId
+          in: query
+          schema: { type: string }
+        - name: resourceType
+          in: query
+          schema: { type: string }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Matching audit entries.
+  /api/audit/verify:
+    get:
+      tags:
+        - Audit
+      summary: Verify the SHA-256 audit hash chain
+      responses:
+        '200':
+          description: Verification result.
 components:
   securitySchemes:
     bearerAuth:
@@ -118,7 +518,59 @@ components:
       schema:
         type: string
         example: cor_01JQ8Z3M9K2P7YV4
+  parameters:
+    UserId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
   schemas:
+    User:
+      type: object
+      required: [id, email, firstName, lastName, role]
+      properties:
+        id: { type: string }
+        email: { type: string, format: email }
+        firstName: { type: string }
+        lastName: { type: string }
+        phone: { type: string, nullable: true }
+        role: { type: string, enum: [ADMIN, MANAGER, STAFF, COMPLIANCE, PATIENT, PROVIDER] }
+        status: { type: string, enum: [ACTIVE, INVITED, SUSPENDED, DISABLED] }
+        branchId: { type: string, nullable: true }
+        mfaEnabled: { type: boolean }
+        lastLoginAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+    Session:
+      type: object
+      properties:
+        id: { type: string }
+        current: { type: boolean }
+        userAgent: { type: string, nullable: true }
+        ipAddress: { type: string, nullable: true }
+        lastSeenAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+    SignInResponse:
+      type: object
+      required: [token, user]
+      properties:
+        token: { type: string, description: Access JWT. }
+        user: { $ref: '#/components/schemas/User' }
+        sessionId: { type: string }
+        expiresIn: { type: string }
+        mfaRequired: { type: boolean, default: false }
+    MfaChallengeResponse:
+      type: object
+      required: [mfaRequired, challenge]
+      properties:
+        mfaRequired: { type: boolean, enum: [true] }
+        challenge: { type: string, description: Short-lived MFA JWT. }
+        token: { type: string, nullable: true }
+        user: { $ref: '#/components/schemas/User' }
     HealthStatus:
       type: object
       required:

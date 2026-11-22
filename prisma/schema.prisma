@@ -140,6 +140,9 @@ enum Role {
   PATIENT
   PROVIDER
   ADMIN
+  STAFF
+  MANAGER
+  COMPLIANCE
 }
 
 enum AppointmentStatus {
@@ -182,71 +185,72 @@ enum DocumentStatus {
 // ---------------------------------------------------------------------------
 
 model Company {
-  id          String        @id @default(cuid())
-  code        String        @unique
-  name        String
-  country     String        @default("KE")
-  locale      String        @default("en-KE")
-  currency    String        @default("KES")
-  status      CompanyStatus @default(ACTIVE)
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
-  deletedAt   DateTime?
+  id        String        @id @default(cuid())
+  code      String        @unique
+  name      String
+  country   String        @default("KE")
+  locale    String        @default("en-KE")
+  currency  String        @default("KES")
+  status    CompanyStatus @default(ACTIVE)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+  deletedAt DateTime?
 
-  settings            Setting[]
-  users               User[]
-  providers           Provider[]
-  providerSchedules   ProviderSchedule[]
-  appointments        Appointment[]
-  inquiries           Inquiry[]
-  testimonials        Testimonial[]
-  documents           BusinessDocument[]
-  branches            Branch[]
-  departments         Department[]
-  jobTitles           JobTitle[]
-  groups              UserGroup[]
-  groupMembers        GroupMember[]
-  accessRoles         AccessRole[]
-  permissions         Permission[]
-  rolePermissions     RolePermission[]
-  userRoles           UserRole[]
-  sessions            Session[]
-  mfaCredentials      MfaCredential[]
-  recoveryCodes       RecoveryCode[]
-  apiKeys             ApiKey[]
-  inboxes             Inbox[]
-  inboxMemberships    InboxMembership[]
-  threads             Thread[]
-  messages            Message[]
-  messageRecipients   MessageRecipient[]
-  messageEdits        MessageEdit[]
-  reactions           MessageReaction[]
-  attachments         Attachment[]
-  channels            Channel[]
-  channelMemberships  ChannelMembership[]
-  routingRules        RoutingRule[]
-  retentionPolicies   RetentionPolicy[]
-  legalHolds          LegalHold[]
-  outboxEvents        OutboxEvent[]
-  auditLogs           AuditLog[]
+  settings           Setting[]
+  users              User[]
+  providers          Provider[]
+  providerSchedules  ProviderSchedule[]
+  appointments       Appointment[]
+  inquiries          Inquiry[]
+  testimonials       Testimonial[]
+  documents          BusinessDocument[]
+  branches           Branch[]
+  departments        Department[]
+  jobTitles          JobTitle[]
+  groups             UserGroup[]
+  groupMembers       GroupMember[]
+  accessRoles        AccessRole[]
+  permissions        Permission[]
+  rolePermissions    RolePermission[]
+  userRoles          UserRole[]
+  sessions           Session[]
+  mfaCredentials     MfaCredential[]
+  recoveryCodes      RecoveryCode[]
+  apiKeys            ApiKey[]
+  inboxes            Inbox[]
+  inboxMemberships   InboxMembership[]
+  threads            Thread[]
+  messages           Message[]
+  messageRecipients  MessageRecipient[]
+  messageEdits       MessageEdit[]
+  reactions          MessageReaction[]
+  attachments        Attachment[]
+  channels           Channel[]
+  channelMemberships ChannelMembership[]
+  routingRules       RoutingRule[]
+  retentionPolicies  RetentionPolicy[]
+  legalHolds         LegalHold[]
+  outboxEvents       OutboxEvent[]
+  auditLogs          AuditLog[]
+  passwordHistories  PasswordHistory[]
 }
 
 model Branch {
-  id            String     @id @default(cuid())
-  companyId     String     @default("cmp_comet")
-  tenant       Company    @relation(fields: [companyId], references: [id])
-  code          String
-  name          String
-  type          BranchType @default(OFFICE)
-  address       String?
-  city          String?
-  phone         String?
-  managerUserId String?
-  isActive      Boolean    @default(true)
+  id             String             @id @default(cuid())
+  companyId      String             @default("cmp_comet")
+  tenant         Company            @relation(fields: [companyId], references: [id])
+  code           String
+  name           String
+  type           BranchType         @default(OFFICE)
+  address        String?
+  city           String?
+  phone          String?
+  managerUserId  String?
+  isActive       Boolean            @default(true)
   classification DataClassification @default(INTERNAL)
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt
-  deletedAt     DateTime?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  deletedAt      DateTime?
 
   users        User[]        @relation("UserBranch")
   inboxes      Inbox[]       @relation("InboxBranch")
@@ -260,25 +264,25 @@ model Branch {
 }
 
 model Department {
-  id               String       @id @default(cuid())
-  companyId        String       @default("cmp_comet")
-  tenant          Company      @relation(fields: [companyId], references: [id])
-  code             String
-  name             String
-  internalAddress  String
-  parentId         String?
-  parent           Department?  @relation("DepartmentTree", fields: [parentId], references: [id])
-  children         Department[] @relation("DepartmentTree")
-  headUserId       String?
-  isActive         Boolean      @default(true)
-  classification   DataClassification @default(INTERNAL)
-  createdAt        DateTime     @default(now())
-  updatedAt        DateTime     @updatedAt
-  deletedAt        DateTime?
+  id              String             @id @default(cuid())
+  companyId       String             @default("cmp_comet")
+  tenant          Company            @relation(fields: [companyId], references: [id])
+  code            String
+  name            String
+  internalAddress String
+  parentId        String?
+  parent          Department?        @relation("DepartmentTree", fields: [parentId], references: [id])
+  children        Department[]       @relation("DepartmentTree")
+  headUserId      String?
+  isActive        Boolean            @default(true)
+  classification  DataClassification @default(INTERNAL)
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  deletedAt       DateTime?
 
-  users            User[]            @relation("UserDepartment")
-  inboxes          Inbox[]           @relation("InboxDepartment")
-  channels         Channel[]         @relation("ChannelDepartment")
+  users             User[]            @relation("UserDepartment")
+  inboxes           Inbox[]           @relation("InboxDepartment")
+  channels          Channel[]         @relation("ChannelDepartment")
   retentionPolicies RetentionPolicy[]
 
   @@unique([companyId, code])
@@ -286,15 +290,15 @@ model Department {
 }
 
 model JobTitle {
-  id            String   @id @default(cuid())
-  companyId     String   @default("cmp_comet")
-  tenant       Company  @relation(fields: [companyId], references: [id])
-  code          String
-  name          String
-  grade         String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  deletedAt     DateTime?
+  id        String    @id @default(cuid())
+  companyId String    @default("cmp_comet")
+  tenant    Company   @relation(fields: [companyId], references: [id])
+  code      String
+  name      String
+  grade     String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
 
   users User[] @relation("UserJobTitle")
 
@@ -306,75 +310,100 @@ model JobTitle {
 // ---------------------------------------------------------------------------
 
 model User {
-  id             String     @id @default(cuid())
-  companyId      String     @default("cmp_comet")
-  tenant        Company    @relation(fields: [companyId], references: [id])
-  email          String     @unique
-  passwordHash   String
-  firstName      String
-  lastName       String
-  phone          String?
-  company        String?
-  role           Role       @default(PATIENT)
-  status         UserStatus @default(ACTIVE)
-  branchId       String?
-  branch         Branch?    @relation("UserBranch", fields: [branchId], references: [id])
-  departmentId   String?
-  department     Department? @relation("UserDepartment", fields: [departmentId], references: [id])
-  jobTitleId     String?
-  jobTitle       JobTitle?  @relation("UserJobTitle", fields: [jobTitleId], references: [id])
-  managerId      String?
-  manager        User?      @relation("UserManager", fields: [managerId], references: [id])
-  reports        User[]     @relation("UserManager")
-  locale         String     @default("en-KE")
-  mfaEnabled     Boolean    @default(false)
-  lastLoginAt    DateTime?
-  resetTokenHash String?
-  resetTokenExp  DateTime?
-  providerId     String?    @unique
-  classification DataClassification @default(CONFIDENTIAL)
-  createdAt      DateTime   @default(now())
-  updatedAt      DateTime   @updatedAt
-  deletedAt      DateTime?
+  id                  String             @id @default(cuid())
+  companyId           String             @default("cmp_comet")
+  tenant              Company            @relation(fields: [companyId], references: [id])
+  // Phase 3: emails are unique per tenant because the same person may exist in
+  // separate tenant databases. Auth resolution always includes companyId.
+  email               String
+  passwordHash        String
+  firstName           String
+  lastName            String
+  phone               String?
+  company             String?
+  role                Role               @default(PATIENT)
+  status              UserStatus         @default(ACTIVE)
+  branchId            String?
+  branch              Branch?            @relation("UserBranch", fields: [branchId], references: [id])
+  departmentId        String?
+  department          Department?        @relation("UserDepartment", fields: [departmentId], references: [id])
+  jobTitleId          String?
+  jobTitle            JobTitle?          @relation("UserJobTitle", fields: [jobTitleId], references: [id])
+  managerId           String?
+  manager             User?              @relation("UserManager", fields: [managerId], references: [id])
+  reports             User[]             @relation("UserManager")
+  locale              String             @default("en-KE")
+  mfaEnabled          Boolean            @default(false)
+  lastLoginAt         DateTime?
+  resetTokenHash      String?
+  resetTokenExp       DateTime?
+  providerId          String?            @unique
+  classification      DataClassification @default(CONFIDENTIAL)
+  // Phase 3 identity fields.
+  identityProvider    String             @default("local")
+  externalId          String?
+  failedLoginAttempts Int                @default(0)
+  lastFailedLoginAt   DateTime?
+  lockoutUntil        DateTime?
+  passwordChangedAt   DateTime?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+  deletedAt           DateTime?
 
-  provider            Provider?          @relation(fields: [providerId], references: [id])
-  appointments        Appointment[]      @relation("PatientAppointments")
-  documents           BusinessDocument[]
-  sessions            Session[]
-  mfaCredentials      MfaCredential[]
-  recoveryCodes       RecoveryCode[]
-  apiKeys             ApiKey[]
-  groupMembers        GroupMember[]
-  userRoles           UserRole[]
-  inboxMemberships    InboxMembership[]
-  ownedInboxes        Inbox[]            @relation("InboxOwner")
-  threadsCreated      Thread[]           @relation("ThreadCreator")
-  threadsAssigned     Thread[]           @relation("ThreadAssignee")
-  messagesSent        Message[]          @relation("MessageSender")
-  messageRecipients   MessageRecipient[] @relation("RecipientUser")
-  messageEdits        MessageEdit[]      @relation("EditEditor")
-  reactions           MessageReaction[]
-  attachments         Attachment[]       @relation("AttachmentUploader")
-  channelsCreated     Channel[]          @relation("ChannelCreator")
-  channelMemberships  ChannelMembership[]
-  legalHolds          LegalHold[]        @relation("LegalHoldCreator")
-  routingRulesAssigned RoutingRule[]     @relation("RoutingAssignee")
-  auditLogs           AuditLog[]         @relation("AuditActor")
+  provider             Provider?           @relation(fields: [providerId], references: [id])
+  appointments         Appointment[]       @relation("PatientAppointments")
+  documents            BusinessDocument[]
+  sessions             Session[]
+  mfaCredentials       MfaCredential[]
+  recoveryCodes        RecoveryCode[]
+  apiKeys              ApiKey[]
+  passwordHistory      PasswordHistory[]
+  groupMembers         GroupMember[]
+  userRoles            UserRole[]
+  inboxMemberships     InboxMembership[]
+  ownedInboxes         Inbox[]             @relation("InboxOwner")
+  threadsCreated       Thread[]            @relation("ThreadCreator")
+  threadsAssigned      Thread[]            @relation("ThreadAssignee")
+  messagesSent         Message[]           @relation("MessageSender")
+  messageRecipients    MessageRecipient[]  @relation("RecipientUser")
+  messageEdits         MessageEdit[]       @relation("EditEditor")
+  reactions            MessageReaction[]
+  attachments          Attachment[]        @relation("AttachmentUploader")
+  channelsCreated      Channel[]           @relation("ChannelCreator")
+  channelMemberships   ChannelMembership[]
+  legalHolds           LegalHold[]         @relation("LegalHoldCreator")
+  routingRulesAssigned RoutingRule[]       @relation("RoutingAssignee")
+  auditLogs            AuditLog[]          @relation("AuditActor")
 
+  @@unique([companyId, email])
+  @@unique([companyId, identityProvider, externalId])
   @@index([companyId, status])
   @@index([companyId, branchId])
 }
 
+/// Password reuse history. Hashes only; never plaintext or reset tokens.
+model PasswordHistory {
+  id        String   @id @default(cuid())
+  companyId String   @default("cmp_comet")
+  tenant    Company  @relation(fields: [companyId], references: [id])
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  hash      String
+  createdAt DateTime @default(now())
+
+  @@index([companyId, userId, createdAt])
+}
+
 model UserGroup {
-  id            String        @id @default(cuid())
-  companyId     String        @default("cmp_comet")
-  tenant       Company       @relation(fields: [companyId], references: [id])
-  name          String
-  description   String?
-  isSystem      Boolean       @default(false)
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
-  deletedAt     DateTime?
+  id          String    @id @default(cuid())
+  companyId   String    @default("cmp_comet")
+  tenant      Company   @relation(fields: [companyId], references: [id])
+  name        String
+  description String?
+  isSystem    Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
 
   members GroupMember[]
 
@@ -382,15 +411,15 @@ model UserGroup {
 }
 
 model GroupMember {
-  id          String    @id @default(cuid())
-  companyId   String    @default("cmp_comet")
-  tenant     Company   @relation(fields: [companyId], references: [id])
-  groupId     String
-  group       UserGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  userId      String
-  user        User      @relation(fields: [userId], references: [id])
-  role        GroupRole @default(MEMBER)
-  joinedAt    DateTime  @default(now())
+  id        String    @id @default(cuid())
+  companyId String    @default("cmp_comet")
+  tenant    Company   @relation(fields: [companyId], references: [id])
+  groupId   String
+  group     UserGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  role      GroupRole @default(MEMBER)
+  joinedAt  DateTime  @default(now())
 
   @@unique([groupId, userId])
 }
@@ -398,7 +427,7 @@ model GroupMember {
 model AccessRole {
   id          String   @id @default(cuid())
   companyId   String   @default("cmp_comet")
-  tenant     Company  @relation(fields: [companyId], references: [id])
+  tenant      Company  @relation(fields: [companyId], references: [id])
   code        String
   name        String
   description String?
@@ -415,7 +444,7 @@ model AccessRole {
 model Permission {
   id          String   @id @default(cuid())
   companyId   String   @default("cmp_comet")
-  tenant     Company  @relation(fields: [companyId], references: [id])
+  tenant      Company  @relation(fields: [companyId], references: [id])
   code        String
   description String?
   createdAt   DateTime @default(now())
@@ -428,7 +457,7 @@ model Permission {
 model RolePermission {
   id           String     @id @default(cuid())
   companyId    String     @default("cmp_comet")
-  tenant      Company    @relation(fields: [companyId], references: [id])
+  tenant       Company    @relation(fields: [companyId], references: [id])
   roleId       String
   role         AccessRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
   permissionId String
@@ -438,49 +467,49 @@ model RolePermission {
 }
 
 model UserRole {
-  id               String     @id @default(cuid())
-  companyId        String     @default("cmp_comet")
-  tenant          Company    @relation(fields: [companyId], references: [id])
-  userId           String
-  user             User       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  roleId           String
-  role             AccessRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
-  scopeBranchId    String?
+  id                String     @id @default(cuid())
+  companyId         String     @default("cmp_comet")
+  tenant            Company    @relation(fields: [companyId], references: [id])
+  userId            String
+  user              User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roleId            String
+  role              AccessRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  scopeBranchId     String?
   scopeDepartmentId String?
-  grantedAt        DateTime   @default(now())
-  grantedBy        String?
+  grantedAt         DateTime   @default(now())
+  grantedBy         String?
 
   @@unique([userId, roleId, scopeBranchId, scopeDepartmentId])
 }
 
 model Session {
-  id              String    @id @default(cuid())
-  companyId       String    @default("cmp_comet")
-  tenant         Company   @relation(fields: [companyId], references: [id])
-  userId          String
-  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  refreshTokenHash String   @unique
-  userAgent       String?
-  ipAddress       String?
-  expiresAt       DateTime
-  lastSeenAt      DateTime?
-  revokedAt       DateTime?
-  createdAt       DateTime  @default(now())
+  id               String    @id @default(cuid())
+  companyId        String    @default("cmp_comet")
+  tenant           Company   @relation(fields: [companyId], references: [id])
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokenHash String    @unique
+  userAgent        String?
+  ipAddress        String?
+  expiresAt        DateTime
+  lastSeenAt       DateTime?
+  revokedAt        DateTime?
+  createdAt        DateTime  @default(now())
 
   @@index([companyId, userId])
 }
 
 model MfaCredential {
-  id             String    @id @default(cuid())
-  companyId      String    @default("cmp_comet")
-  tenant        Company   @relation(fields: [companyId], references: [id])
-  userId         String
-  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  type           MfaType
+  id              String    @id @default(cuid())
+  companyId       String    @default("cmp_comet")
+  tenant          Company   @relation(fields: [companyId], references: [id])
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type            MfaType
   secretEncrypted String
-  enabled        Boolean   @default(false)
-  confirmedAt    DateTime?
-  createdAt      DateTime  @default(now())
+  enabled         Boolean   @default(false)
+  confirmedAt     DateTime?
+  createdAt       DateTime  @default(now())
 
   @@unique([userId, type])
 }
@@ -488,7 +517,7 @@ model MfaCredential {
 model RecoveryCode {
   id        String    @id @default(cuid())
   companyId String    @default("cmp_comet")
-  tenant   Company   @relation(fields: [companyId], references: [id])
+  tenant    Company   @relation(fields: [companyId], references: [id])
   userId    String
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   codeHash  String    @unique
@@ -499,20 +528,20 @@ model RecoveryCode {
 }
 
 model ApiKey {
-  id          String    @id @default(cuid())
-  companyId   String    @default("cmp_comet")
+  id         String    @id @default(cuid())
+  companyId  String    @default("cmp_comet")
   tenant     Company   @relation(fields: [companyId], references: [id])
-  userId      String?
-  user        User?     @relation(fields: [userId], references: [id])
-  name        String
-  keyPrefix   String
-  keyHash     String    @unique
-  scopes      Json
-  rateLimit   Int       @default(60)
-  expiresAt   DateTime?
-  revokedAt   DateTime?
-  lastUsedAt  DateTime?
-  createdAt   DateTime  @default(now())
+  userId     String?
+  user       User?     @relation(fields: [userId], references: [id])
+  name       String
+  keyPrefix  String
+  keyHash    String    @unique
+  scopes     Json
+  rateLimit  Int       @default(60)
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
 
   @@index([companyId, keyPrefix])
 }
@@ -522,17 +551,17 @@ model ApiKey {
 // ---------------------------------------------------------------------------
 
 model RetentionPolicy {
-  id              String       @id @default(cuid())
-  companyId       String       @default("cmp_comet")
-  tenant         Company      @relation(fields: [companyId], references: [id])
+  id              String      @id @default(cuid())
+  companyId       String      @default("cmp_comet")
+  tenant          Company     @relation(fields: [companyId], references: [id])
   name            String
   departmentId    String?
-  department      Department?  @relation(fields: [departmentId], references: [id])
-  retentionDays   Int          @default(365)
-  action          String       @default("ARCHIVE")
-  legalHoldPauses Boolean      @default(true)
-  createdAt       DateTime     @default(now())
-  updatedAt       DateTime     @updatedAt
+  department      Department? @relation(fields: [departmentId], references: [id])
+  retentionDays   Int         @default(365)
+  action          String      @default("ARCHIVE")
+  legalHoldPauses Boolean     @default(true)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
 
   inboxes Inbox[]
 
@@ -542,7 +571,7 @@ model RetentionPolicy {
 model LegalHold {
   id              String          @id @default(cuid())
   companyId       String          @default("cmp_comet")
-  tenant         Company         @relation(fields: [companyId], references: [id])
+  tenant          Company         @relation(fields: [companyId], references: [id])
   name            String
   scopeType       String
   scopeId         String?
@@ -557,33 +586,33 @@ model LegalHold {
 }
 
 model Inbox {
-  id               String       @id @default(cuid())
-  companyId        String       @default("cmp_comet")
-  tenant          Company      @relation(fields: [companyId], references: [id])
-  branchId         String?
-  branch           Branch?      @relation("InboxBranch", fields: [branchId], references: [id])
-  departmentId     String?
-  department       Department?  @relation("InboxDepartment", fields: [departmentId], references: [id])
-  ownerUserId      String?
-  owner            User?        @relation("InboxOwner", fields: [ownerUserId], references: [id])
+  id                String             @id @default(cuid())
+  companyId         String             @default("cmp_comet")
+  tenant            Company            @relation(fields: [companyId], references: [id])
+  branchId          String?
+  branch            Branch?            @relation("InboxBranch", fields: [branchId], references: [id])
+  departmentId      String?
+  department        Department?        @relation("InboxDepartment", fields: [departmentId], references: [id])
+  ownerUserId       String?
+  owner             User?              @relation("InboxOwner", fields: [ownerUserId], references: [id])
   retentionPolicyId String?
-  retentionPolicy  RetentionPolicy? @relation(fields: [retentionPolicyId], references: [id])
-  kind             InboxKind
-  code             String
-  name             String
-  internalAddress  String
-  description      String?
-  classification   DataClassification @default(INTERNAL)
-  isActive         Boolean      @default(true)
-  createdAt        DateTime     @default(now())
-  updatedAt        DateTime     @updatedAt
-  deletedAt        DateTime?
+  retentionPolicy   RetentionPolicy?   @relation(fields: [retentionPolicyId], references: [id])
+  kind              InboxKind
+  code              String
+  name              String
+  internalAddress   String
+  description       String?
+  classification    DataClassification @default(INTERNAL)
+  isActive          Boolean            @default(true)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  deletedAt         DateTime?
 
-  memberships   InboxMembership[]
-  threads       Thread[]
-  sentMessages  Message[]          @relation("MessageSenderInbox")
-  recipients    MessageRecipient[] @relation("RecipientInbox")
-  routingRules  RoutingRule[]
+  memberships  InboxMembership[]
+  threads      Thread[]
+  sentMessages Message[]          @relation("MessageSenderInbox")
+  recipients   MessageRecipient[] @relation("RecipientInbox")
+  routingRules RoutingRule[]
 
   @@unique([companyId, internalAddress])
   @@unique([companyId, code])
@@ -591,45 +620,45 @@ model Inbox {
 }
 
 model InboxMembership {
-  id          String          @id @default(cuid())
-  companyId   String          @default("cmp_comet")
-  tenant     Company         @relation(fields: [companyId], references: [id])
-  inboxId     String
-  inbox       Inbox           @relation(fields: [inboxId], references: [id], onDelete: Cascade)
-  userId      String
-  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role        InboxMemberRole @default(MEMBER)
-  canAssign   Boolean         @default(false)
-  notify      Boolean         @default(true)
-  createdAt   DateTime        @default(now())
+  id        String          @id @default(cuid())
+  companyId String          @default("cmp_comet")
+  tenant    Company         @relation(fields: [companyId], references: [id])
+  inboxId   String
+  inbox     Inbox           @relation(fields: [inboxId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      InboxMemberRole @default(MEMBER)
+  canAssign Boolean         @default(false)
+  notify    Boolean         @default(true)
+  createdAt DateTime        @default(now())
 
   @@unique([inboxId, userId])
   @@index([companyId, userId])
 }
 
 model Thread {
-  id              String        @id @default(cuid())
-  companyId       String        @default("cmp_comet")
-  tenant         Company       @relation(fields: [companyId], references: [id])
-  branchId        String?
-  branch          Branch?       @relation("ThreadBranch", fields: [branchId], references: [id])
-  inboxId         String?
-  inbox           Inbox?        @relation(fields: [inboxId], references: [id])
-  subject         String
-  status          ThreadStatus  @default(OPEN)
-  priority        ThreadPriority @default(NORMAL)
-  dueDate         DateTime?
-  assignedToId    String?
-  assignedTo      User?         @relation("ThreadAssignee", fields: [assignedToId], references: [id])
-  createdById     String?
-  createdBy       User?         @relation("ThreadCreator", fields: [createdById], references: [id])
-  lastMessageAt   DateTime?
-  snoozedUntil    DateTime?
-  archived        Boolean       @default(false)
-  classification  DataClassification @default(INTERNAL)
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
-  deletedAt       DateTime?
+  id             String             @id @default(cuid())
+  companyId      String             @default("cmp_comet")
+  tenant         Company            @relation(fields: [companyId], references: [id])
+  branchId       String?
+  branch         Branch?            @relation("ThreadBranch", fields: [branchId], references: [id])
+  inboxId        String?
+  inbox          Inbox?             @relation(fields: [inboxId], references: [id])
+  subject        String
+  status         ThreadStatus       @default(OPEN)
+  priority       ThreadPriority     @default(NORMAL)
+  dueDate        DateTime?
+  assignedToId   String?
+  assignedTo     User?              @relation("ThreadAssignee", fields: [assignedToId], references: [id])
+  createdById    String?
+  createdBy      User?              @relation("ThreadCreator", fields: [createdById], references: [id])
+  lastMessageAt  DateTime?
+  snoozedUntil   DateTime?
+  archived       Boolean            @default(false)
+  classification DataClassification @default(INTERNAL)
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  deletedAt      DateTime?
 
   messages Message[]
 
@@ -638,28 +667,28 @@ model Thread {
 }
 
 model Message {
-  id              String            @id @default(cuid())
-  companyId       String            @default("cmp_comet")
-  tenant         Company           @relation(fields: [companyId], references: [id])
-  branchId        String?
-  branch          Branch?           @relation("MessageBranch", fields: [branchId], references: [id])
-  threadId        String
-  thread          Thread            @relation(fields: [threadId], references: [id], onDelete: Cascade)
-  senderId        String?
-  sender          User?             @relation("MessageSender", fields: [senderId], references: [id])
-  senderInboxId   String?
-  senderInbox     Inbox?            @relation("MessageSenderInbox", fields: [senderInboxId], references: [id])
-  body            String
-  bodyFormat      String            @default("MARKDOWN")
-  visibility      MessageVisibility @default(RECIPIENT)
-  priority        ThreadPriority    @default(NORMAL)
-  idempotencyKey  String            @unique
-  recalledAt      DateTime?
-  recalledBy      String?
-  editedAt        DateTime?
-  classification  DataClassification @default(INTERNAL)
-  createdAt       DateTime          @default(now())
-  deletedAt       DateTime?
+  id             String             @id @default(cuid())
+  companyId      String             @default("cmp_comet")
+  tenant         Company            @relation(fields: [companyId], references: [id])
+  branchId       String?
+  branch         Branch?            @relation("MessageBranch", fields: [branchId], references: [id])
+  threadId       String
+  thread         Thread             @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  senderId       String?
+  sender         User?              @relation("MessageSender", fields: [senderId], references: [id])
+  senderInboxId  String?
+  senderInbox    Inbox?             @relation("MessageSenderInbox", fields: [senderInboxId], references: [id])
+  body           String
+  bodyFormat     String             @default("MARKDOWN")
+  visibility     MessageVisibility  @default(RECIPIENT)
+  priority       ThreadPriority     @default(NORMAL)
+  idempotencyKey String             @unique
+  recalledAt     DateTime?
+  recalledBy     String?
+  editedAt       DateTime?
+  classification DataClassification @default(INTERNAL)
+  createdAt      DateTime           @default(now())
+  deletedAt      DateTime?
 
   recipients  MessageRecipient[]
   edits       MessageEdit[]
@@ -671,24 +700,24 @@ model Message {
 }
 
 model MessageRecipient {
-  id             String         @id @default(cuid())
-  companyId      String         @default("cmp_comet")
-  tenant        Company        @relation(fields: [companyId], references: [id])
-  messageId      String
-  message        Message        @relation(fields: [messageId], references: [id], onDelete: Cascade)
-  userId         String?
-  user           User?          @relation("RecipientUser", fields: [userId], references: [id])
-  inboxId        String?
-  inbox          Inbox?         @relation("RecipientInbox", fields: [inboxId], references: [id])
-  departmentId   String?
-  roleId         String?
-  branchId       String?
-  isCc           Boolean        @default(false)
-  isBcc          Boolean        @default(false)
-  status         DeliveryStatus @default(PENDING)
-  deliveredAt    DateTime?
-  readAt         DateTime?
-  createdAt      DateTime       @default(now())
+  id           String         @id @default(cuid())
+  companyId    String         @default("cmp_comet")
+  tenant       Company        @relation(fields: [companyId], references: [id])
+  messageId    String
+  message      Message        @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId       String?
+  user         User?          @relation("RecipientUser", fields: [userId], references: [id])
+  inboxId      String?
+  inbox        Inbox?         @relation("RecipientInbox", fields: [inboxId], references: [id])
+  departmentId String?
+  roleId       String?
+  branchId     String?
+  isCc         Boolean        @default(false)
+  isBcc        Boolean        @default(false)
+  status       DeliveryStatus @default(PENDING)
+  deliveredAt  DateTime?
+  readAt       DateTime?
+  createdAt    DateTime       @default(now())
 
   @@index([companyId, userId, status])
   @@index([companyId, inboxId, status])
@@ -697,7 +726,7 @@ model MessageRecipient {
 model MessageEdit {
   id           String   @id @default(cuid())
   companyId    String   @default("cmp_comet")
-  tenant      Company  @relation(fields: [companyId], references: [id])
+  tenant       Company  @relation(fields: [companyId], references: [id])
   messageId    String
   message      Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
   editedById   String
@@ -712,7 +741,7 @@ model MessageEdit {
 model MessageReaction {
   id        String   @id @default(cuid())
   companyId String   @default("cmp_comet")
-  tenant   Company  @relation(fields: [companyId], references: [id])
+  tenant    Company  @relation(fields: [companyId], references: [id])
   messageId String
   message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
   userId    String
@@ -724,23 +753,23 @@ model MessageReaction {
 }
 
 model Attachment {
-  id             String              @id @default(cuid())
-  companyId      String              @default("cmp_comet")
-  tenant        Company             @relation(fields: [companyId], references: [id])
+  id             String               @id @default(cuid())
+  companyId      String               @default("cmp_comet")
+  tenant         Company              @relation(fields: [companyId], references: [id])
   messageId      String?
-  message        Message?            @relation(fields: [messageId], references: [id])
+  message        Message?             @relation(fields: [messageId], references: [id])
   uploadedById   String
-  uploadedBy     User                @relation("AttachmentUploader", fields: [uploadedById], references: [id])
+  uploadedBy     User                 @relation("AttachmentUploader", fields: [uploadedById], references: [id])
   objectKey      String
   fileName       String
   mimeType       String
   size           Int
   checksum       String?
-  version        Int                 @default(1)
-  classification DataClassification  @default(INTERNAL)
+  version        Int                  @default(1)
+  classification DataClassification   @default(INTERNAL)
   scanStatus     AttachmentScanStatus @default(PENDING)
   previewUrl     String?
-  createdAt      DateTime            @default(now())
+  createdAt      DateTime             @default(now())
   deletedAt      DateTime?
 
   @@index([companyId, messageId])
@@ -748,22 +777,22 @@ model Attachment {
 }
 
 model Channel {
-  id             String            @id @default(cuid())
-  companyId      String            @default("cmp_comet")
-  tenant        Company           @relation(fields: [companyId], references: [id])
+  id             String             @id @default(cuid())
+  companyId      String             @default("cmp_comet")
+  tenant         Company            @relation(fields: [companyId], references: [id])
   branchId       String?
-  branch         Branch?           @relation("ChannelBranch", fields: [branchId], references: [id])
+  branch         Branch?            @relation("ChannelBranch", fields: [branchId], references: [id])
   departmentId   String?
-  department     Department?       @relation("ChannelDepartment", fields: [departmentId], references: [id])
+  department     Department?        @relation("ChannelDepartment", fields: [departmentId], references: [id])
   createdById    String?
-  createdBy      User?             @relation("ChannelCreator", fields: [createdById], references: [id])
+  createdBy      User?              @relation("ChannelCreator", fields: [createdById], references: [id])
   name           String
   description    String?
-  visibility     ChannelVisibility @default(PUBLIC)
+  visibility     ChannelVisibility  @default(PUBLIC)
   classification DataClassification @default(INTERNAL)
-  isArchived     Boolean           @default(false)
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
+  isArchived     Boolean            @default(false)
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
   deletedAt      DateTime?
 
   members ChannelMembership[]
@@ -772,15 +801,15 @@ model Channel {
 }
 
 model ChannelMembership {
-  id          String            @id @default(cuid())
-  companyId   String            @default("cmp_comet")
-  tenant     Company           @relation(fields: [companyId], references: [id])
-  channelId   String
-  channel     Channel           @relation(fields: [channelId], references: [id], onDelete: Cascade)
-  userId      String
-  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role        ChannelMemberRole @default(MEMBER)
-  joinedAt    DateTime          @default(now())
+  id        String            @id @default(cuid())
+  companyId String            @default("cmp_comet")
+  tenant    Company           @relation(fields: [companyId], references: [id])
+  channelId String
+  channel   Channel           @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      ChannelMemberRole @default(MEMBER)
+  joinedAt  DateTime          @default(now())
 
   @@unique([channelId, userId])
 }
@@ -788,7 +817,7 @@ model ChannelMembership {
 model RoutingRule {
   id            String           @id @default(cuid())
   companyId     String           @default("cmp_comet")
-  tenant       Company          @relation(fields: [companyId], references: [id])
+  tenant        Company          @relation(fields: [companyId], references: [id])
   branchId      String?
   branch        Branch?          @relation("RoutingBranch", fields: [branchId], references: [id])
   targetInboxId String
@@ -813,7 +842,7 @@ model RoutingRule {
 model OutboxEvent {
   id            String       @id @default(cuid())
   companyId     String       @default("cmp_comet")
-  tenant       Company      @relation(fields: [companyId], references: [id])
+  tenant        Company      @relation(fields: [companyId], references: [id])
   eventType     String
   version       Int          @default(1)
   aggregateType String
@@ -831,21 +860,21 @@ model OutboxEvent {
 }
 
 model AuditLog {
-  id           String   @id @default(cuid())
-  companyId    String   @default("cmp_comet")
-  tenant      Company  @relation(fields: [companyId], references: [id])
-  actorId      String?
-  actor        User?    @relation("AuditActor", fields: [actorId], references: [id])
-  action       String
-  resourceType String
-  resourceId   String
-  metadata     Json?
+  id            String   @id @default(cuid())
+  companyId     String   @default("cmp_comet")
+  tenant        Company  @relation(fields: [companyId], references: [id])
+  actorId       String?
+  actor         User?    @relation("AuditActor", fields: [actorId], references: [id])
+  action        String
+  resourceType  String
+  resourceId    String
+  metadata      Json?
   correlationId String
-  previousHash String
-  hash         String
-  ipAddress    String?
-  userAgent    String?
-  createdAt    DateTime @default(now())
+  previousHash  String
+  hash          String
+  ipAddress     String?
+  userAgent     String?
+  createdAt     DateTime @default(now())
 
   @@index([companyId, createdAt])
   @@index([companyId, actorId])
@@ -856,17 +885,17 @@ model AuditLog {
 // ---------------------------------------------------------------------------
 
 model Setting {
-  key       String   @id
-  companyId String   @default("cmp_comet")
-  tenant   Company  @relation(fields: [companyId], references: [id])
+  key       String  @id
+  companyId String  @default("cmp_comet")
+  tenant    Company @relation(fields: [companyId], references: [id])
   value     Json?
 }
 
 model Provider {
-  id              String            @id @default(cuid())
-  companyId       String            @default("cmp_comet")
-  tenant         Company           @relation(fields: [companyId], references: [id])
-  slug            String            @unique
+  id              String    @id @default(cuid())
+  companyId       String    @default("cmp_comet")
+  tenant          Company   @relation(fields: [companyId], references: [id])
+  slug            String    @unique
   user            User?
   name            String
   title           String
@@ -875,13 +904,13 @@ model Provider {
   bio             String
   image           String
   yearsExperience Int
-  rating          Decimal           @default(4.8)
-  reviewsCount    Int               @default(0)
+  rating          Decimal   @default(4.8)
+  reviewsCount    Int       @default(0)
   phone           String?
   email           String?
-  active          Boolean           @default(true)
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
+  active          Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
   deletedAt       DateTime?
 
   schedules    ProviderSchedule[]
@@ -893,7 +922,7 @@ model Provider {
 model ProviderSchedule {
   id          String   @id @default(cuid())
   companyId   String   @default("cmp_comet")
-  tenant     Company  @relation(fields: [companyId], references: [id])
+  tenant      Company  @relation(fields: [companyId], references: [id])
   provider    Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
   providerId  String
   dayOfWeek   Int
@@ -905,27 +934,27 @@ model ProviderSchedule {
 }
 
 model Appointment {
-  id            String            @id @default(cuid())
-  companyId     String            @default("cmp_comet")
+  id           String            @id @default(cuid())
+  companyId    String            @default("cmp_comet")
   tenant       Company           @relation(fields: [companyId], references: [id])
-  code          String            @unique
-  patient       User?             @relation("PatientAppointments", fields: [patientId], references: [id])
-  patientId     String?
-  patientName   String
-  patientEmail  String
-  patientPhone  String?
-  company       String?
-  provider      Provider          @relation(fields: [providerId], references: [id])
-  providerId    String
-  date          String
-  startTime     String
-  endTime       String
-  type          String            @default("Consultation")
-  status        AppointmentStatus @default(SCHEDULED)
-  notes         String?
-  createdAt     DateTime          @default(now())
-  updatedAt     DateTime          @updatedAt
-  deletedAt     DateTime?
+  code         String            @unique
+  patient      User?             @relation("PatientAppointments", fields: [patientId], references: [id])
+  patientId    String?
+  patientName  String
+  patientEmail String
+  patientPhone String?
+  company      String?
+  provider     Provider          @relation(fields: [providerId], references: [id])
+  providerId   String
+  date         String
+  startTime    String
+  endTime      String
+  type         String            @default("Consultation")
+  status       AppointmentStatus @default(SCHEDULED)
+  notes        String?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  deletedAt    DateTime?
 
   @@index([companyId, providerId, date, status])
   @@index([companyId, patientId])
@@ -934,7 +963,7 @@ model Appointment {
 model Inquiry {
   id        String        @id @default(cuid())
   companyId String        @default("cmp_comet")
-  tenant   Company       @relation(fields: [companyId], references: [id])
+  tenant    Company       @relation(fields: [companyId], references: [id])
   kind      InquiryKind
   name      String
   company   String?
@@ -950,22 +979,22 @@ model Inquiry {
 }
 
 model Testimonial {
-  id        String   @id @default(cuid())
-  companyId String   @default("cmp_comet")
-  tenant   Company  @relation(fields: [companyId], references: [id])
+  id        String    @id @default(cuid())
+  companyId String    @default("cmp_comet")
+  tenant    Company   @relation(fields: [companyId], references: [id])
   name      String
   role      String
   quote     String
-  rating    Int      @default(5)
-  approved  Boolean  @default(true)
-  createdAt DateTime @default(now())
+  rating    Int       @default(5)
+  approved  Boolean   @default(true)
+  createdAt DateTime  @default(now())
   deletedAt DateTime?
 }
 
 model BusinessDocument {
   id            String         @id @default(cuid())
   companyId     String         @default("cmp_comet")
-  tenant       Company        @relation(fields: [companyId], references: [id])
+  tenant        Company        @relation(fields: [companyId], references: [id])
   number        String         @unique
   kind          DocumentKind
   title         String

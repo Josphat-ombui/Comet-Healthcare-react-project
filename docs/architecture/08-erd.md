@@ -1,9 +1,9 @@
 # Entity Relationship Diagram
 
-Comet Healthcare Enterprise Platform — Phase 2  
-Version 1.0 · 2026-11-22 · Status: Draft for review
+Comet Healthcare Enterprise Platform — Phase 3  
+Version 1.1 · 2026-11-22 · Status: Draft for review
 
-The authoritative schema is `prisma/schema.prisma`. This diagram is a readable map of the Phase 2 domains: Organisation, Identity, Messaging, and Platform. Later modules add their own contexts without changing these ownership rules.
+The authoritative schema is `prisma/schema.prisma`. This diagram is a readable map of the Organisation, Identity, Messaging, and Platform domains. Phase 3 adds per-tenant email uniqueness, password history, lockout fields, and OIDC linkage. Later modules add their own contexts without changing these ownership rules.
 
 ---
 
@@ -23,6 +23,7 @@ erDiagram
     USER ||--o{ SESSION : has
     USER ||--o{ MFA_CREDENTIAL : has
     USER ||--o{ RECOVERY_CODE : has
+    USER ||--o{ PASSWORD_HISTORY : retains
     USER ||--o{ API_KEY : owns
     ACCESS_ROLE ||--o{ ROLE_PERMISSION : grants
     PERMISSION ||--o{ ROLE_PERMISSION : used_by
@@ -58,14 +59,27 @@ erDiagram
     USER {
       string id PK
       string company_id FK
-      string email UK
+      string email UK_per_tenant
       string password_hash
+      string identity_provider
+      string external_id
       string role
       string status
+      int failed_login_attempts
+      datetime lockout_until
+      datetime password_changed_at
+      boolean mfa_enabled
       string branch_id FK
       string department_id FK
       string manager_id FK
       string company
+    }
+    PASSWORD_HISTORY {
+      string id PK
+      string company_id FK
+      string user_id FK
+      string hash
+      datetime created_at
     }
 ```
 
@@ -205,6 +219,8 @@ erDiagram
 |---|---|
 | `20261122000000_init` | Full Phase 2 schema, app role, grants, audit immutability rules |
 | `20261122000100_fix_rls_column_names` | Corrective RLS policies using Prisma's camelCase `companyId`/`branchId` columns |
+| `20261122000200_identity_auth` | Per-tenant email uniqueness, OIDC/lockout columns, password history table and RLS |
+| `20261122000300_add_identity_roles` | Adds `STAFF`, `MANAGER`, `COMPLIANCE` values to the `Role` enum |
 
 The initial migration's RLS loop matched snake_case columns, so it created no tenant policies. The corrective migration detects `"companyId"`/`"branchId"` and applies the intended tenant/branch scope. RLS verification confirmed: default tenant (`cmp_comet`) sees 2 users, 1 thread, 10 inboxes; switching to `cmp_other` sees 0 of each.
 

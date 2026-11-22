@@ -34,6 +34,68 @@ export const resetPasswordSchema = z.object({
   password: passwordSchema,
 })
 
+// ------------------------------------------------------------ phase 3 identity
+
+export const mfaVerifySchema = z.object({
+  challenge: z.string().min(10, 'MFA challenge is required'),
+  code: z.string().trim().min(6, 'Enter the 6-digit code or a recovery code').max(40),
+})
+
+export const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1, 'Current password is required'),
+  newPassword: z.string().min(8, 'New password must be at least 8 characters').max(128),
+})
+
+export const oidcCallbackSchema = z.object({
+  code: z.string().min(1, 'Authorization code is required'),
+  state: z.string().min(1, 'State is required'),
+})
+
+export const createUserSchema = z.object({
+  email: emailSchema,
+  firstName: z.string().trim().min(2).max(80),
+  lastName: z.string().trim().min(2).max(80),
+  phone: z.string().trim().max(40).optional().or(z.literal('')),
+  role: z.enum(['ADMIN', 'MANAGER', 'STAFF', 'COMPLIANCE', 'PATIENT', 'PROVIDER']).default('STAFF'),
+  branchId: z.string().max(60).nullable().optional(),
+  departmentId: z.string().max(60).nullable().optional(),
+  locale: z.enum(['en-KE', 'sw-KE']).default('en-KE'),
+  sendInvite: z.boolean().default(true),
+})
+
+export const updateUserSchema = createUserSchema.partial().extend({
+  status: z.enum(['ACTIVE', 'INVITED', 'SUSPENDED', 'DISABLED']).optional(),
+  role: z.enum(['ADMIN', 'MANAGER', 'STAFF', 'COMPLIANCE', 'PATIENT', 'PROVIDER']).optional(),
+})
+
+export const assignRoleSchema = z.object({
+  roleCode: z.string().trim().min(2).max(60),
+  scopeBranchId: z.string().max(60).nullable().optional(),
+})
+
+export const createBranchSchema = z.object({
+  code: z.string().trim().min(2).max(60).regex(/^[a-z0-9_-]+$/, 'Use lowercase letters, numbers, _ or -'),
+  name: z.string().trim().min(2).max(120),
+  type: z.enum(['HQ', 'BRANCH', 'PLANT', 'WAREHOUSE', 'WORKSHOP', 'SHOWROOM', 'OFFICE']).default('BRANCH'),
+  city: z.string().trim().max(80).optional().or(z.literal('')),
+  address: z.string().trim().max(300).optional().or(z.literal('')),
+})
+
+export const createDepartmentSchema = z.object({
+  code: z.string().trim().min(2).max(60).regex(/^[a-z0-9_-]+$/, 'Use lowercase letters, numbers, _ or -'),
+  name: z.string().trim().min(2).max(120),
+  internalAddress: z.string().trim().max(120).optional().or(z.literal('')),
+})
+
+export const auditQuerySchema = z.object({
+  action: z.string().trim().max(80).optional(),
+  actorId: z.string().max(60).optional(),
+  resourceType: z.string().trim().max(80).optional(),
+  from: z.iso.datetime().optional(),
+  to: z.iso.datetime().optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+})
+
 export const visitDateSchema = z
   .string()
   .refine(isValidIsoDate, 'Choose a valid date')

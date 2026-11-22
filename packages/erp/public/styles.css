@@ -1,0 +1,31 @@
+:root { color-scheme: light; font-family: Inter, system-ui, -apple-system, sans-serif; background: #f5f7fa; color: #152033; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+.topbar { display: flex; align-items: center; justify-content: space-between; padding: 16px 28px; background: #0d2340; color: #fff; }
+.brand { font-size: 18px; font-weight: 700; letter-spacing: .2px; }
+.brand small { font-weight: 400; opacity: .65; margin-left: 8px; }
+.mark { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: #22c55e; color: #06210f; margin-right: 8px; }
+.identity { font-size: 14px; display: flex; gap: 12px; align-items: center; }
+main { max-width: 1180px; margin: 28px auto; padding: 0 20px; }
+.card { background: #fff; border: 1px solid #e3e8ef; border-radius: 14px; padding: 20px; box-shadow: 0 2px 10px rgba(15, 32, 58, .04); }
+.auth-card { max-width: 420px; margin: 80px auto; }
+h1 { margin: 0 0 6px; font-size: 24px; }
+h2 { margin: 0; font-size: 17px; }
+.muted { color: #66758a; font-size: 14px; }
+label { display: block; margin: 14px 0; font-size: 14px; font-weight: 600; }
+input { display: block; width: 100%; margin-top: 6px; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 8px; font: inherit; }
+button { background: #0d2340; color: #fff; border: 0; border-radius: 8px; padding: 10px 16px; font: inherit; font-weight: 600; cursor: pointer; }
+button.secondary { background: #e8eef6; color: #0d2340; margin-top: 10px; }
+button.link { background: none; color: #2563eb; padding: 0; font-size: 13px; }
+.error { color: #b91c1c; min-height: 20px; font-size: 14px; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.span-2 { grid-column: 1 / -1; }
+.card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.pill { background: #e8f5ec; color: #166534; border-radius: 999px; padding: 3px 10px; font-size: 12px; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid #eef1f5; }
+th { color: #66758a; font-weight: 600; font-size: 12px; text-transform: uppercase; }
+.list { list-style: none; padding: 0; margin: 0; font-size: 14px; }
+.list li { padding: 9px 0; border-bottom: 1px solid #eef1f5; display: flex; justify-content: space-between; gap: 12px; }
+.footer-note { margin-top: 18px; }
+@media (max-width: 780px) { .grid { grid-template-columns: 1fr; } .span-2 { grid-column: auto; } }

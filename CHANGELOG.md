@@ -8,6 +8,47 @@ The format follows a phase-gate model: each enterprise phase ends with passing t
 
 ## [Unreleased]
 
+### Phase 3 — Identity, Organisation, and Audit
+
+**Added**
+
+- `packages/shared/src/identity.js`: provider/MFA interfaces, password/session/MFA policies.
+- Expanded shared permissions and event contracts (`UserDisabled`, `RoleAssigned`, `SessionRevoked`, `BranchCreated`, `DepartmentCreated`).
+- API libraries: tenant context (`AsyncLocalStorage` + scoped Prisma proxy), AES-256-GCM encryption, TOTP/recovery codes, password policy + HIBP k-anonymity, rotating sessions, OIDC code flow, RBAC/ABAC authorizer, transactional outbox, hash-chained audit.
+- Routes: rewritten `auth.routes.js` plus new `identity.routes.js`, `org.routes.js`, `audit.routes.js`; mounted principal resolution and tenant context middleware globally in `packages/api/index.js`.
+- Migration `20261122000200_identity_auth`: per-tenant email uniqueness, OIDC/lockout/password-change columns, password history table with RLS.
+- Seed baseline: permissions, roles, role-permission links, admin assignment, demo staff account.
+- Minimal ERP shell (`packages/erp/public/`) with login, MFA challenge handling, active sessions, user directory, and branches.
+- Phase 3 OpenAPI paths/schemas, ADR-0007, ADR-0008, ERD and README updates.
+- Backend unit tests for TOTP, recovery codes, password policy, audit hash chain, OIDC state, and role permissions.
+
+**Changed**
+
+- `User.email` is unique per `(companyId, email)`; all auth lookups are tenant-scoped.
+- Login issues access JWT + rotating HttpOnly refresh cookie; `POST /api/auth/login` still returns `{ token, user }`.
+- Emails are globally unique no longer; OIDC endpoints return 503 until configured.
+- Default access-token TTL remains the legacy value; `JWT_ACCESS_TTL` opts into short tokens.
+
+**New dependencies / licences**
+
+- None. Uses Node `crypto`/`fetch` and existing Express, Prisma, Zod, bcryptjs, JWT, and Nodemailer.
+
+**Verification**
+
+- `npm test` — 29 passed.
+- `npm run test:smoke` — 31 passed (7 files).
+- `npm run lint` — warnings only (no errors).
+- `npm run build` — passed (`packages/web/dist/`).
+- OpenAPI YAML parsed successfully with a YAML 1.2 loader.
+- Migrations applied cleanly via `npm run db:deploy` (identity + role-enum corrective migration); seed idempotent via `npm run db:seed`.
+- RLS verified with the `comet_app` role: `cmp_comet` sees 3 users / 2 branches; `cmp_other` sees 0 / 0; password-history policy is scoped to the new table.
+- Runtime API smoke: admin login returns `{ token, user, sessionId }`; `/auth/me`, `/identity/users`, `/org/branches`, `/auth/sessions`, `/audit/logs`, and `/audit/verify` all return 200; audit chain reports `valid`.
+- Refresh rotation verified: a new cookie revokes the previous session hash and replay of the old cookie returns 401.
+- OIDC start returns 503 while unconfigured; staff token lacking `identity.user.write` receives 403.
+- Audit hashing canonicalises JSON before SHA-256 because PostgreSQL `jsonb` normalises key order; development entries created before the fix were cleared.
+
+---
+
 ### Phase 2 — Workspaces, PostgreSQL schema, ERD, and first migrations
 
 **Added**

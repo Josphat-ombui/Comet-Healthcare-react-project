@@ -14,6 +14,7 @@ import { addDays, localIsoDay } from '../packages/api/lib/slots.js'
 import { DEFAULT_COMPANY, computeLine, computeTotals } from '../packages/api/lib/documents.js'
 import { DEFAULT_SITE_CONTENT } from '../packages/api/lib/content.js'
 import { SEED_EXPERTS } from '../packages/web/src/lib/experts.js'
+import { PERMISSIONS, ROLE_PERMISSIONS } from '../packages/shared/src/permissions.js'
 
 const prisma = new PrismaClient()
 
@@ -128,8 +129,40 @@ async function main() {
     })
   }
 
-  await prisma.user.upsert({
-    where: { email: 'admin@comethealthcare.local' },
+  // ---- Phase 3 RBAC catalogue ----
+  for (const [code, description] of Object.entries(PERMISSIONS)) {
+    await prisma.permission.upsert({
+      where: { companyId_code: { companyId, code } },
+      update: { description },
+      create: { companyId, code, description },
+    })
+  }
+  for (const [code, permissions] of Object.entries(ROLE_PERMISSIONS)) {
+    const role = await prisma.accessRole.upsert({
+      where: { companyId_code: { companyId, code } },
+      update: { name: code, isSystem: true },
+      create: { companyId, code, name: code, isSystem: true },
+    })
+    for (const permissionCode of permissions) {
+      const permission = await prisma.permission.findUnique({
+        where: { companyId_code: { companyId, code: permissionCode } },
+      })
+      if (!permission) continue
+      await prisma.rolePermission.upsert({
+        where: { roleId_permissionId: { roleId: role.id, permissionId: permission.id } },
+        update: {},
+        create: { companyId, roleId: role.id, permissionId: permission.id },
+      })
+    }
+  }
+  console.log(`✓ RBAC catalogue: ${Object.keys(PERMISSIONS).length} permissions, ${Object.keys(ROLE_PERMISSIONS).length} roles`)
+
+  const hqBranch = await prisma.branch.findUnique({
+    where: { companyId_code: { companyId, code: 'br_nairobi_hq' } },
+  })
+
+  const adminUser = await prisma.user.upsert({
+    where: { companyId_email: { companyId, email: 'admin@comethealthcare.local' } },
     update: {},
     create: {
       companyId,
@@ -138,13 +171,24 @@ async function main() {
       firstName: 'Comet',
       lastName: 'Admin',
       role: 'ADMIN',
+      branchId: hqBranch?.id,
+      passwordChangedAt: new Date(),
       departmentId: (await prisma.department.findUnique({ where: { companyId_code: { companyId, code: 'management' } } }))?.id,
     },
   })
+  const adminRole = await prisma.accessRole.findUnique({ where: { companyId_code: { companyId, code: 'ADMIN' } } })
+  if (adminRole) {
+    const existingAssignment = await prisma.userRole.findFirst({
+      where: { companyId, userId: adminUser.id, roleId: adminRole.id },
+    })
+    if (!existingAssignment) {
+      await prisma.userRole.create({ data: { companyId, userId: adminUser.id, roleId: adminRole.id } })
+    }
+  }
   console.log(`✓ Admin: admin@comethealthcare.local (password: ${process.env.SEED_ADMIN_PASSWORD ? 'per SEED_ADMIN_PASSWORD' : 'ChangeMe123!'})`)
 
   await prisma.user.upsert({
-    where: { email: 'client@comethealthcare.local' },
+    where: { companyId_email: { companyId, email: 'client@comethealthcare.local' } },
     update: {},
     create: {
       companyId,
@@ -155,9 +199,26 @@ async function main() {
       company: 'Afya Generics Labs',
       phone: '+254 700 111 222',
       role: 'PATIENT',
+      passwordChangedAt: new Date(),
     },
   })
   console.log('✓ Demo client: client@comethealthcare.local (password: ClientPass123!)')
+
+  await prisma.user.upsert({
+    where: { companyId_email: { companyId, email: 'staff@comethealthcare.local' } },
+    update: {},
+    create: {
+      companyId,
+      email: 'staff@comethealthcare.local',
+      passwordHash: await bcrypt.hash('StaffPass123!', 12),
+      firstName: 'Wanjiku',
+      lastName: 'Staff',
+      role: 'STAFF',
+      branchId: hqBranch?.id,
+      passwordChangedAt: new Date(),
+    },
+  })
+  console.log('✓ Demo staff: staff@comethealthcare.local (password: StaffPass123!)')
 
   // ---- Experts (seeded once) ----
   if ((await prisma.provider.count()) === 0) {
@@ -204,7 +265,7 @@ async function main() {
   // ---- Sample appointments (a couple of days from now) ----
   if ((await prisma.appointment.count()) === 0) {
     const providers = await prisma.provider.findMany({ take: 3 })
-    const client = await prisma.user.findUnique({ where: { email: 'client@comethealthcare.local' } })
+    const client = await prisma.user.findUnique({ where: { companyId_email: { companyId, email: 'client@comethealthcare.local' } } })
     const date1 = addDays(localIsoDay(), 2)
     const date2 = addDays(localIsoDay(), 4)
     await prisma.appointment.createMany({
@@ -272,8 +333,10 @@ async function main() {
   }
 
   // ---- Sample business documents ----
-  const client = await prisma.user.findUnique({ where: { email: 'client@comethealthcare.local' } })
-  const admin = await prisma.user.findUnique({ where: { email: 'admin@comethealthcare.local' } })
+  const client = await prisma.user.findUnique({ where: { companyId_email: { companyId, email: 'client@comethealthcare.local' } } })
+  const admin = await prisma.user.findUnique({
+    where: { companyId_email: { companyId, email: 'admin@comethealthcare.local' } },
+  })
   const today = localIsoDay()
 
   const li = [

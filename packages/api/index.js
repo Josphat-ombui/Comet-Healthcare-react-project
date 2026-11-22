@@ -21,6 +21,9 @@ import { ZodError } from 'zod'
 import { config } from './lib/config.js'
 import { rateLimit } from './lib/util.js'
 import { authRouter } from './routes/auth.routes.js'
+import { identityRouter } from './routes/identity.routes.js'
+import { orgRouter } from './routes/org.routes.js'
+import { auditRouter } from './routes/audit.routes.js'
 import { providerRouter } from './routes/providers.routes.js'
 import { appointmentRouter } from './routes/appointments.routes.js'
 import { inquiryRouter } from './routes/inquiries.routes.js'
@@ -28,6 +31,9 @@ import { adminRouter } from './routes/admin.routes.js'
 import { contentRouter } from './routes/content.routes.js'
 import { documentsRouter } from './routes/documents.routes.js'
 import { requireAuth } from './lib/auth.js'
+import { resolvePrincipal } from './lib/authorize.js'
+import { tenantContextMiddleware } from './lib/tenant.js'
+import { PasswordPolicyError } from './lib/password.js'
 import { webpForGalleryUrl } from './lib/media.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -71,7 +77,15 @@ app.get('/api/health/ready', (_req, res) => res.json({
 // Slow down the write endpoints a little for public internet deployments.
 app.use('/api', rateLimit({ windowMs: 60_000, max: 120 }))
 
+// Phase 3: resolve the bearer principal, then scope every query to its tenant
+// and branch. Public routes simply get the default tenant context.
+app.use('/api', resolvePrincipal)
+app.use('/api', tenantContextMiddleware)
+
 app.use('/api/auth', authRouter)
+app.use('/api/identity', identityRouter)
+app.use('/api/org', orgRouter)
+app.use('/api/audit', auditRouter)
 app.use('/api/providers', providerRouter)
 app.use('/api/appointments', appointmentRouter)
 app.use('/api/inquiries', inquiryRouter)
@@ -126,6 +140,9 @@ app.use((err, _req, res, _next) => {
   }
   if (err?.type === 'entity.parse.failed') {
     return res.status(400).json({ error: 'Invalid JSON body' })
+  }
+  if (err instanceof PasswordPolicyError) {
+    return res.status(err.status).json({ error: err.message })
   }
   // Do NOT leak internals (stack traces, query details) to clients.
   console.error('Unhandled error:', err)

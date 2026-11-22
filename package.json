@@ -16,6 +16,7 @@
     "dev": "concurrently -k -n api,web -c cyan,magenta \"npm:dev:api\" \"npm:dev:web\"",
     "dev:api": "npm run dev -w @comet/api",
     "dev:web": "npm run dev -w @comet/web",
+    "dev:erp": "npm run dev -w @comet/erp",
     "dev:server": "npm run dev:api",
     "dev:client": "npm run dev:web",
     "build": "npm run build -w @comet/web",
