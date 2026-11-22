@@ -92,7 +92,7 @@ async function loop() {
   setTimeout(loop, config.pollMs)
 }
 
-const QUEUE_NAMES = ['files.scan', 'notifications.dispatch', 'documents.generate', 'search.index', 'retention.sweep']
+const QUEUE_NAMES = ['files.scan', 'notifications.dispatch', 'documents.generate', 'search.index', 'retention.sweep', 'finance.etims.submit']
 
 let queueWorkers = []
 

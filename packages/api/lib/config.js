@@ -45,6 +45,12 @@ export const config = {
     prefix: process.env.BULLMQ_PREFIX || 'comet',
     retentionSweepCron: process.env.RETENTION_SWEEP_CRON || '0 2 * * *',
   },
+  // Phase 6 finance. eTIMS queue metadata only; provider credentials, if any,
+  // belong in a secret store and are never exposed through this config block.
+  finance: {
+    etimsPayloadVersion: process.env.ETIMS_PAYLOAD_VERSION || '1.0',
+    etimsProvider: process.env.ETIMS_PROVIDER || 'internal-queue',
+  },
 
   password: {
     enforceBreach: process.env.PASSWORD_BREACH_ENFORCE === 'true',

@@ -83,6 +83,46 @@ async function emit(prisma, companyId, type, data, options = {}) {
   })
 }
 
+// Phase 6 finance notifications are in-app only. Callers supply neutral copy
+// and IDs; payloads, amounts and credentials never reach a notification.
+async function notifyFinanceUsers(prisma, { companyId, branchId, title, message, entityId, correlationId }) {
+  // Accepted for parity with emit() options; IN_APP deliveries have no
+  // external channel metadata to store.
+  void branchId
+  void correlationId
+  const users = await prisma.user.findMany({
+    where: { companyId, role: { in: ['ADMIN', 'COMPLIANCE'] } },
+    select: { id: true },
+  })
+  if (!users.length) return
+  const now = new Date()
+  for (const user of users) {
+    const notification = await prisma.notification.create({
+      data: {
+        companyId,
+        userId: user.id,
+        category: 'SYSTEM',
+        title,
+        message,
+        classification: 'INTERNAL',
+        entityType: 'ETIMS_SUBMISSION',
+        entityId: entityId || null,
+        deliveredAt: now,
+      },
+    })
+    await prisma.notificationDelivery.create({
+      data: {
+        companyId,
+        notificationId: notification.id,
+        channel: 'IN_APP',
+        status: 'DELIVERED',
+        attempts: 1,
+        sentAt: now,
+      },
+    })
+  }
+}
+
 export function createProcessors(prisma) {
   // ------------------------------------------------------------ files.scan
   async function scanFile(job) {
@@ -387,11 +427,107 @@ export function createProcessors(prisma) {
     return { affected }
   }
 
+  // ------------------------------------------------- finance.etims.submit
+  async function submitEtims(job) {
+    const { companyId, invoiceId, submissionId, correlationId } = job.data
+    const submission = await prisma.etimsSubmission.findFirst({
+      where: { id: submissionId, companyId },
+    })
+    if (!submission) {
+      await updateJobRecord(prisma, job, 'COMPLETED', { skipped: true })
+      return { skipped: true }
+    }
+
+    // updateJobRecord increments attempts on every transition, as in the
+    // other processors.
+    await updateJobRecord(prisma, job, 'RUNNING')
+
+    const payload = submission.payload
+    const validPayload = Boolean(payload)
+      && typeof payload === 'object'
+      && !Array.isArray(payload)
+      && payload.schemaVersion != null
+      && typeof payload.documentType === 'string'
+      && payload.documentType.length > 0
+      && typeof payload.invoiceNumber === 'string'
+      && payload.invoiceNumber.length > 0
+      && typeof payload.currency === 'string'
+      && payload.currency.length > 0
+      && Array.isArray(payload.lines)
+      && typeof payload.totals === 'object'
+      && payload.totals !== null
+      && !Array.isArray(payload.totals)
+
+    const eventData = {
+      submissionId,
+      invoiceId,
+      classification: 'INTERNAL',
+      entityType: 'ETIMS_SUBMISSION',
+      entityId: submissionId,
+    }
+    const emitOptions = {
+      aggregateType: 'EtimsSubmission',
+      aggregateId: submissionId,
+      correlationId,
+    }
+
+    if (!validPayload) {
+      await prisma.etimsSubmission.update({
+        where: { id: submissionId },
+        data: { status: 'FAILED', lastError: 'INVALID_PAYLOAD' },
+      })
+      await emit(prisma, companyId, 'EtimsSubmissionFailed', {
+        ...eventData,
+        reasonCode: 'INVALID_PAYLOAD',
+      }, emitOptions)
+      await notifyFinanceUsers(prisma, {
+        companyId,
+        branchId: submission.branchId || null,
+        title: 'eTIMS submission failed validation',
+        message: `Submission ${submissionId} for invoice ${invoiceId} failed validation (INVALID_PAYLOAD).`,
+        entityId: submissionId,
+        correlationId,
+      })
+      await updateJobRecord(prisma, job, 'FAILED', null, new Error('Invalid eTIMS payload'))
+      throw new Error('Invalid eTIMS payload')
+    }
+
+    // Phase 6 queues work for a certified provider only: no external eTIMS
+    // endpoint is called, and no payload content enters an event or message.
+    await prisma.etimsSubmission.update({
+      where: { id: submissionId },
+      data: {
+        status: 'PENDING',
+        provider: typeof payload.provider === 'string' && payload.provider ? payload.provider : 'internal-queue',
+        submittedAt: null,
+        externalReference: null,
+        lastError: null,
+      },
+    })
+    await emit(prisma, companyId, 'EtimsSubmissionQueued', {
+      ...eventData,
+      status: 'PENDING',
+    }, emitOptions)
+    await notifyFinanceUsers(prisma, {
+      companyId,
+      branchId: submission.branchId || null,
+      title: 'eTIMS submission awaiting certified provider',
+      message: `Submission ${submissionId} for invoice ${invoiceId} is queued for a certified provider.`,
+      entityId: submissionId,
+      correlationId,
+    })
+
+    const result = { submissionId, status: 'PENDING' }
+    await updateJobRecord(prisma, job, 'COMPLETED', result)
+    return result
+  }
+
   return {
     'files.scan': scanFile,
     'notifications.dispatch': dispatchNotification,
     'documents.generate': generateDocument,
     'search.index': indexEntity,
     'retention.sweep': retentionSweep,
+    'finance.etims.submit': submitEtims,
   }
 }

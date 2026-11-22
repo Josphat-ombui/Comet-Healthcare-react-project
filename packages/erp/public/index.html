@@ -8,7 +8,7 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand"><span class="mark">C</span> Comet Healthcare <small>ERP · Phase 5</small></div>
+    <div class="brand"><span class="mark">C</span> Comet Healthcare <small>ERP · Phase 6</small></div>
     <div class="header-actions">
       <button id="unreadBadge" class="pill unread-badge" type="button" title="Unread notifications" aria-label="Unread notifications" hidden>0</button>
       <div id="identity" class="identity"></div>
@@ -41,6 +41,7 @@
         <button id="tabWorkflow" class="tab" type="button">Workflow</button>
         <button id="tabSearch" class="tab" type="button">Search</button>
         <button id="tabDocuments" class="tab" type="button">Documents</button>
+        <button id="tabFinance" class="tab" type="button">Finance</button>
         <span id="connection" class="pill connection" aria-live="polite">Connecting…</span>
       </nav>
 
@@ -318,6 +319,228 @@
               <button type="submit">Check status</button>
             </form>
             <p id="jobStatus" class="muted" aria-live="polite"></p>
+          </section>
+        </div>
+      </section>
+
+      <section id="financeView" hidden>
+        <p class="finance-banner" role="note">Verify statutory rates against current KRA/Government publications before use. Fixture rates are UNVERIFIED.</p>
+        <p id="financeError" class="error" role="alert"></p>
+        <div class="grid">
+          <section class="card span-2">
+            <div class="card-head"><h2>Statutory rates</h2><button id="refreshFinance" class="link" type="button">Refresh</button></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Code</th><th>Label</th><th>Rate (bps)</th><th>Status</th><th>Effective from</th><th>Source</th></tr></thead>
+                <tbody id="rateRows"></tbody>
+              </table>
+            </div>
+            <form id="rateVerifyForm">
+              <div class="field-row finance-field-row">
+                <label>Rate<select id="rateVerifyId" required><option value="">Select a rate to verify</option></select></label>
+                <label>Verified by<input id="rateVerifyBy" required maxlength="120" placeholder="Reviewer name or ID" /></label>
+              </div>
+              <label>Verification note<textarea id="rateVerifyNote" rows="2" maxlength="500" required placeholder="Publication/reference checked"></textarea></label>
+              <div class="form-actions"><button type="submit">Verify rate</button><span id="rateVerifyStatus" class="muted" aria-live="polite"></span></div>
+            </form>
+            <p class="muted">Only VERIFIED, effective rates may be used when issuing an invoice. Verification is a manual sign-off — this UI never auto-verifies a rate.</p>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Chart of accounts</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Code</th><th>Name</th><th>Type</th><th>System code</th><th>Active</th></tr></thead>
+                <tbody id="accountRows"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Parties</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Type</th><th>Name</th><th>Tax PIN</th><th>Email</th><th>Phone</th><th>Currency</th></tr></thead>
+                <tbody id="partyRows"></tbody>
+              </table>
+            </div>
+            <form id="partyForm">
+              <div class="field-row finance-field-row">
+                <label>Type
+                  <select id="partyType" required>
+                    <option value="CUSTOMER">Customer</option>
+                    <option value="SUPPLIER">Supplier</option>
+                  </select>
+                </label>
+                <label>Name<input id="partyName" required maxlength="160" /></label>
+              </div>
+              <div class="field-row finance-field-row">
+                <label>Tax PIN (encrypted at rest)<input id="partyTaxPin" maxlength="20" placeholder="Only a masked reference is returned" /></label>
+                <label>Email<input id="partyEmail" type="email" maxlength="180" /></label>
+                <label>Phone<input id="partyPhone" maxlength="40" /></label>
+              </div>
+              <div class="form-actions"><button type="submit">Create party</button><span id="partyStatus" class="muted" aria-live="polite"></span></div>
+            </form>
+            <p class="muted">Tax PINs are encrypted at rest; only masked references are ever displayed or emitted by the API.</p>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Invoices</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Direction</th><th>Type</th><th>Status</th><th>Party</th><th>Issue date</th><th>Due date</th><th>Total (cents)</th><th>Balance (cents)</th><th>Class</th><th></th></tr></thead>
+                <tbody id="invoiceRows"></tbody>
+              </table>
+            </div>
+            <form id="invoiceForm">
+              <div class="field-row finance-field-row">
+                <label>Direction
+                  <select id="invoiceDirection" required>
+                    <option value="SALES">Sales</option>
+                    <option value="PURCHASE">Purchase</option>
+                  </select>
+                </label>
+                <label>Type
+                  <select id="invoiceType" required>
+                    <option value="INVOICE">Invoice</option>
+                    <option value="CREDIT_NOTE">Credit note</option>
+                  </select>
+                </label>
+                <label>Party<select id="invoiceParty" required></select></label>
+              </div>
+              <div class="field-row finance-field-row">
+                <label>Issue date<input id="invoiceIssueDate" type="date" required /></label>
+                <label>Due date<input id="invoiceDueDate" type="date" /></label>
+                <label>Statutory rate (optional)<select id="invoiceTaxRateId"><option value="">No rate selected</option></select></label>
+              </div>
+              <label class="inline-check"><input id="invoiceTaxInclusive" type="checkbox" /> Prices include tax</label>
+              <div class="field-row finance-field-row">
+                <label>Line description<input id="invoiceLineDescription" maxlength="240" placeholder="e.g. Pharmaceutical supply" /></label>
+                <label>Qty<input id="invoiceLineQty" type="number" min="0" step="0.01" value="1" /></label>
+                <label>Unit price (cents)<input id="invoiceLineUnitPriceCents" type="number" min="1" step="1" /></label>
+              </div>
+              <div class="form-actions"><button type="submit">Create invoice</button><span id="invoiceStatus" class="muted" aria-live="polite"></span></div>
+              <p id="invoiceError" class="error" role="alert"></p>
+            </form>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Payments</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Direction</th><th>Party</th><th>Method</th><th>Amount (cents)</th><th>Paid at</th><th>Reference</th><th>Status</th></tr></thead>
+                <tbody id="paymentRows"></tbody>
+              </table>
+            </div>
+            <form id="paymentForm">
+              <div class="field-row finance-field-row">
+                <label>Direction
+                  <select id="paymentDirection" required>
+                    <option value="INCOMING">Incoming</option>
+                    <option value="OUTGOING">Outgoing</option>
+                  </select>
+                </label>
+                <label>Party<select id="paymentParty" required></select></label>
+                <label>Method
+                  <select id="paymentMethod" required>
+                    <option value="BANK_TRANSFER">Bank transfer</option>
+                    <option value="MPESA">M-Pesa</option>
+                    <option value="CASH">Cash</option>
+                    <option value="CHEQUE">Cheque</option>
+                    <option value="CARD_TOKEN">Card token</option>
+                    <option value="OTHER">Other</option>
+                  </select>
+                </label>
+              </div>
+              <div class="field-row finance-field-row">
+                <label>Amount (cents)<input id="paymentAmountCents" type="number" min="1" step="1" required /></label>
+                <label>Reference<input id="paymentReference" maxlength="120" /></label>
+              </div>
+              <div class="field-row finance-field-row">
+                <label>Invoice allocation<select id="paymentInvoiceId"><option value="">No invoice allocation</option></select></label>
+                <label>Allocation amount (cents)<input id="paymentAllocationAmountCents" type="number" min="0" step="1" value="0" /></label>
+              </div>
+              <div class="form-actions"><button type="submit">Record payment</button><span id="paymentStatus" class="muted" aria-live="polite"></span></div>
+              <p class="muted">PCI note: never enter card numbers or CVV. Use a token reference such as CARD_TOKEN with no PAN data.</p>
+            </form>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Budgets</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Code</th><th>Name</th><th>Period</th><th>Start</th><th>End</th><th>Status</th><th></th></tr></thead>
+                <tbody id="budgetRows"></tbody>
+              </table>
+            </div>
+            <form id="budgetForm">
+              <div class="field-row finance-field-row">
+                <label>Code<input id="budgetCode" required maxlength="60" /></label>
+                <label>Name<input id="budgetName" required maxlength="160" /></label>
+                <label>Period
+                  <select id="budgetPeriod" required>
+                    <option value="MONTHLY">Monthly</option>
+                    <option value="QUARTERLY">Quarterly</option>
+                    <option value="ANNUAL">Annual</option>
+                  </select>
+                </label>
+              </div>
+              <div class="field-row finance-field-row">
+                <label>Start date<input id="budgetStartDate" type="date" required /></label>
+                <label>End date<input id="budgetEndDate" type="date" required /></label>
+                <label>Account<select id="budgetAccount" required></select></label>
+                <label>Amount (cents)<input id="budgetAmountCents" type="number" min="0" step="1" required /></label>
+              </div>
+              <div class="form-actions"><button type="submit">Create budget</button><span id="budgetStatus" class="muted" aria-live="polite"></span></div>
+            </form>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Statements</h2></div>
+            <form id="statementForm">
+              <div class="field-row finance-field-row">
+                <label>Report
+                  <select id="statementReport" required>
+                    <option value="trial-balance">Trial balance</option>
+                    <option value="income">Income statement</option>
+                    <option value="balance-sheet">Balance sheet</option>
+                    <option value="ageing">Receivable / payable ageing</option>
+                  </select>
+                </label>
+                <label>As of<input id="statementAsOf" type="date" /></label>
+                <label>From<input id="statementFrom" type="date" /></label>
+                <label>To<input id="statementTo" type="date" /></label>
+                <label>Direction (ageing)
+                  <select id="statementDirection">
+                    <option value="">All</option>
+                    <option value="SALES">Sales</option>
+                    <option value="PURCHASE">Purchase</option>
+                  </select>
+                </label>
+              </div>
+              <div class="form-actions"><button type="submit">Run report</button><span id="statementStatus" class="muted" aria-live="polite"></span></div>
+            </form>
+            <p id="statementError" class="error" role="alert"></p>
+            <div class="table-scroll">
+              <table>
+                <thead id="statementHead"></thead>
+                <tbody id="statementRows"></tbody>
+                <tfoot id="statementTotals"></tfoot>
+              </table>
+            </div>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>eTIMS submissions</h2></div>
+            <p class="muted">Ready-only queue — no live KRA filing until certified. This internal queue records payloads and in-app notifications only; it never submits to KRA.</p>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Invoice</th><th>Status</th><th>Payload version</th><th>Provider</th><th>Attempts</th><th>Last error</th><th>Queued</th><th></th></tr></thead>
+                <tbody id="submissionRows"></tbody>
+              </table>
+            </div>
+            <p id="etimsPayloadLabel" class="muted" hidden>Payload</p>
+            <pre id="etimsPayload" class="finance-payload" hidden></pre>
           </section>
         </div>
       </section>

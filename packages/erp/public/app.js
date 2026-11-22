@@ -1,15 +1,19 @@
-// Phase 5 ERP shell: identity, directory, messaging and platform views
-// (notifications, files, workflow, search, documents). Uses the same JSON API
-// as the storefront; no external dependencies. The Socket.IO client is served
-// by the realtime service itself, and the inbox falls back to authenticated
-// polling when sockets are unavailable.
+// ERP shell: identity, directory, messaging, platform views (notifications,
+// files, workflow, search, documents) and Phase 6 finance. Uses the same JSON
+// API as the storefront; no external dependencies. The Socket.IO client is
+// served by the realtime service itself, and the inbox falls back to
+// authenticated polling when sockets are unavailable.
 
 const API = window.ERP_API_URL || 'http://localhost:4000/api'
 const API_ORIGIN = API.replace(/\/api\/?$/, '')
 const REALTIME = window.ERP_REALTIME_URL || 'http://localhost:4001'
 const POLL_MS = 6000
 const QUEUE_KEY = 'comet_erp_message_queue'
-const VIEWS = ['inbox', 'directory', 'notifications', 'files', 'workflow', 'search', 'documents']
+const VIEWS = ['inbox', 'directory', 'notifications', 'files', 'workflow', 'search', 'documents', 'finance']
+const FINANCE_EVENTS = [
+  'finance:account', 'finance:journal', 'finance:invoice', 'finance:payment',
+  'finance:budget', 'finance:rate', 'finance:etims', 'finance:etims-failed',
+]
 const $ = (id) => document.getElementById(id)
 
 let token = sessionStorage.getItem('comet_erp_token') || ''
@@ -38,7 +42,15 @@ const state = {
   searchTotal: 0,
   documents: [],
   documentKinds: [],
+  financeAccounts: [],
+  financeRates: [],
+  financeParties: [],
+  financeInvoices: [],
+  financePayments: [],
+  financeBudgets: [],
+  financeSubmissions: [],
 }
+let financeRefreshTimer = null
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -162,6 +174,13 @@ function showDashboard(profile) {
     state.instances = []
     state.tasks = []
     state.documents = []
+    state.financeAccounts = []
+    state.financeRates = []
+    state.financeParties = []
+    state.financeInvoices = []
+    state.financePayments = []
+    state.financeBudgets = []
+    state.financeSubmissions = []
     state.versionTarget = null
     setUnreadBadge(0)
     $('versionPanel').hidden = true
@@ -1180,6 +1199,471 @@ $('generateForm').onsubmit = async (event) => {
   }
 }
 
+// ------------------------------------------------------------------- finance
+
+function financeList(payload, ...keys) {
+  if (Array.isArray(payload)) return payload
+  return listFrom(payload, ...keys, 'items')
+}
+
+function formatCents(cents, currency) {
+  const amount = Number(cents) || 0
+  return `${currency ? `${currency} ` : ''}${amount.toFixed(2)}`
+}
+
+function financeStatus(status) {
+  const value = String(status ?? '—')
+  const key = value.toLowerCase().replace(/[^a-z]/g, '')
+  const known = [
+    'unverified', 'verified', 'superseded', 'draft', 'posted', 'reversed',
+    'pending', 'queued', 'submitted', 'failed', 'issued', 'partiallypaid',
+    'paid', 'overdue', 'cancelled', 'completed', 'approved', 'closed',
+  ]
+  const className = known.includes(key) ? key : ''
+  return `<span class="pill finance-status ${className}">${escapeHtml(value)}</span>`
+}
+
+function renderFinanceRows(bodyId, rows, columns, emptyMessage) {
+  const body = $(bodyId)
+  if (!body) return
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="${columns.length}" class="muted">${escapeHtml(emptyMessage)}</td></tr>`
+    return
+  }
+  body.innerHTML = rows
+    .map((row) => `<tr>${columns.map((column) => column(row)).join('')}</tr>`)
+    .join('')
+}
+
+function fillFinanceSelect(select, entries, placeholder) {
+  if (!select) return
+  const previous = select.value
+  const options = entries.map(({ value, label }) =>
+    `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`).join('')
+  select.innerHTML = `<option value="">${escapeHtml(placeholder)}</option>${options}`
+  if (previous && [...select.options].some((option) => option.value === previous)) select.value = previous
+}
+
+function renderAccounts() {
+  renderFinanceRows('accountRows', state.financeAccounts, [
+    (account) => `<code>${escapeHtml(account.code)}</code>`,
+    (account) => escapeHtml(account.name),
+    (account) => escapeHtml(account.type),
+    (account) => escapeHtml(account.systemCode || '—'),
+    (account) => (account.isActive ? 'Active' : 'Inactive'),
+  ], 'No accounts available for this tenant.')
+  fillFinanceSelect($('budgetAccount'), state.financeAccounts.map((account) => ({
+    value: account.id,
+    label: `${account.code} — ${account.name}`,
+  })), 'Select an account')
+}
+
+function renderRates() {
+  renderFinanceRows('rateRows', state.financeRates, [
+    (rate) => `<code>${escapeHtml(rate.code)}</code>`,
+    (rate) => escapeHtml(rate.label),
+    (rate) => escapeHtml(rate.rateBps ?? '—'),
+    (rate) => financeStatus(rate.status),
+    (rate) => escapeHtml(rate.effectiveFrom),
+    (rate) => escapeHtml(rate.sourceReference),
+  ], 'No statutory rates available. Verify fixture rates before use.')
+  const verifyEntries = state.financeRates
+    .filter((rate) => rate.status !== 'VERIFIED')
+    .map((rate) => ({
+      value: rate.id,
+      label: `${rate.code} — ${rate.label} (${rate.rateBps} bps, ${rate.status})`,
+    }))
+  const usableEntries = state.financeRates
+    .filter((rate) => rate.status === 'VERIFIED')
+    .map((rate) => ({
+      value: rate.id,
+      label: `${rate.code} — ${rate.label} (${rate.rateBps} bps, verified)`,
+    }))
+  fillFinanceSelect($('rateVerifyId'), verifyEntries, 'Select a rate to verify')
+  fillFinanceSelect($('invoiceTaxRateId'), usableEntries, 'No rate selected')
+}
+
+function partyLabel(id) {
+  const party = state.financeParties.find((item) => item.id === id)
+  return party ? `${party.name} (${party.type})` : (id || '—')
+}
+
+function renderParties() {
+  renderFinanceRows('partyRows', state.financeParties, [
+    (party) => escapeHtml(party.type),
+    (party) => escapeHtml(party.name),
+    (party) => escapeHtml(party.taxPinMasked || 'Not supplied'),
+    (party) => escapeHtml(party.email || '—'),
+    (party) => escapeHtml(party.phone || '—'),
+    (party) => escapeHtml(party.currency || '—'),
+  ], 'No parties yet.')
+  const entries = state.financeParties.map((party) => ({ value: party.id, label: partyLabel(party.id) }))
+  fillFinanceSelect($('invoiceParty'), entries, 'Select a party')
+  fillFinanceSelect($('paymentParty'), entries, 'Select a party')
+}
+
+function renderInvoices() {
+  const body = $('invoiceRows')
+  renderFinanceRows('invoiceRows', state.financeInvoices, [
+    (invoice) => `<code>${escapeHtml(invoice.number)}</code>`,
+    (invoice) => escapeHtml(invoice.direction),
+    (invoice) => escapeHtml(invoice.type),
+    (invoice) => financeStatus(invoice.status),
+    (invoice) => escapeHtml(partyLabel(invoice.partyId)),
+    (invoice) => escapeHtml(invoice.issueDate),
+    (invoice) => escapeHtml(invoice.dueDate || '—'),
+    (invoice) => escapeHtml(formatCents(invoice.totalCents, invoice.currency)),
+    (invoice) => escapeHtml(formatCents(invoice.balanceCents, invoice.currency)),
+    (invoice) => escapeHtml(invoice.classification || '—'),
+    (invoice) => (invoice.status === 'DRAFT'
+      ? `<button class="secondary" data-issue-invoice="${escapeHtml(invoice.id)}" type="button">Issue</button>`
+      : '<span class="muted">—</span>'),
+  ], 'No invoices yet.')
+  body.querySelectorAll('[data-issue-invoice]').forEach((button) => {
+    button.onclick = () => issueInvoice(button.dataset.issueInvoice)
+  })
+  fillFinanceSelect($('paymentInvoiceId'), state.financeInvoices.map((invoice) => ({
+    value: invoice.id,
+    label: `${invoice.number} — ${formatCents(invoice.balanceCents, invoice.currency)} due`,
+  })), 'No invoice allocation')
+}
+
+function renderPayments() {
+  renderFinanceRows('paymentRows', state.financePayments, [
+    (payment) => `<code>${escapeHtml(payment.number)}</code>`,
+    (payment) => escapeHtml(payment.direction),
+    (payment) => escapeHtml(partyLabel(payment.partyId)),
+    (payment) => escapeHtml(payment.method),
+    (payment) => escapeHtml(formatCents(payment.amountCents, payment.currency)),
+    (payment) => escapeHtml(payment.paidAt ? formatDate(payment.paidAt) : '—'),
+    (payment) => escapeHtml(payment.reference || '—'),
+    (payment) => financeStatus(payment.status),
+  ], 'No payments recorded yet.')
+}
+
+function renderBudgets() {
+  const body = $('budgetRows')
+  renderFinanceRows('budgetRows', state.financeBudgets, [
+    (budget) => `<code>${escapeHtml(budget.code)}</code>`,
+    (budget) => escapeHtml(budget.name),
+    (budget) => escapeHtml(budget.period),
+    (budget) => escapeHtml(budget.startDate),
+    (budget) => escapeHtml(budget.endDate),
+    (budget) => financeStatus(budget.status),
+    (budget) => (budget.status === 'DRAFT'
+      ? `<button class="secondary" data-approve-budget="${escapeHtml(budget.id)}" type="button">Approve</button>`
+      : '<span class="muted">—</span>'),
+  ], 'No budgets yet.')
+  body.querySelectorAll('[data-approve-budget]').forEach((button) => {
+    button.onclick = () => approveBudget(button.dataset.approveBudget)
+  })
+}
+
+function renderSubmissions() {
+  const body = $('submissionRows')
+  renderFinanceRows('submissionRows', state.financeSubmissions, [
+    (submission) => escapeHtml(submission.invoiceId),
+    (submission) => financeStatus(submission.status),
+    (submission) => escapeHtml(submission.payloadVersion),
+    (submission) => escapeHtml(submission.provider || '—'),
+    (submission) => escapeHtml(submission.attempts ?? 0),
+    (submission) => escapeHtml(submission.lastError || '—'),
+    (submission) => escapeHtml(formatDate(submission.queuedAt)),
+    (submission) => `<button class="link" data-etims-payload="${escapeHtml(submission.id)}" type="button">Payload</button>
+      <button class="secondary" data-etims-retry="${escapeHtml(submission.id)}" type="button">Retry</button>`,
+  ], 'No eTIMS queue entries yet. Internal queue only — no live KRA filing.')
+  body.querySelectorAll('[data-etims-payload]').forEach((button) => {
+    button.onclick = () => showEtimsPayload(button.dataset.etimsPayload)
+  })
+  body.querySelectorAll('[data-etims-retry]').forEach((button) => {
+    button.onclick = () => retryEtimsSubmission(button.dataset.etimsRetry)
+  })
+}
+
+async function loadFinance() {
+  if (!token) return
+  setError('financeError', '')
+  const [accounts, rates, parties, invoices, payments, budgets, submissions] = await Promise.allSettled([
+    request('/finance/accounts?limit=200'),
+    request('/finance/statutory-rates?limit=200'),
+    request('/finance/parties?limit=200'),
+    request('/finance/invoices?limit=200'),
+    request('/finance/payments?limit=200'),
+    request('/finance/budgets'),
+    request('/finance/etims/submissions?limit=200'),
+  ])
+  const failures = []
+  const assign = (result, key, setter, keyNames) => {
+    if (result.status === 'fulfilled') setter(financeList(result.value, ...keyNames))
+    else failures.push(`${key}: ${result.reason?.message || 'unavailable'}`)
+  }
+  assign(accounts, 'Accounts', (value) => { state.financeAccounts = value }, ['accounts'])
+  assign(rates, 'Rates', (value) => { state.financeRates = value }, ['rates'])
+  assign(parties, 'Parties', (value) => { state.financeParties = value }, ['parties'])
+  assign(invoices, 'Invoices', (value) => { state.financeInvoices = value }, ['invoices'])
+  assign(payments, 'Payments', (value) => { state.financePayments = value }, ['payments'])
+  assign(budgets, 'Budgets', (value) => { state.financeBudgets = value }, ['budgets'])
+  assign(submissions, 'eTIMS', (value) => { state.financeSubmissions = value }, ['submissions'])
+
+  renderAccounts()
+  renderRates()
+  renderParties()
+  renderInvoices()
+  renderPayments()
+  renderBudgets()
+  renderSubmissions()
+  if (failures.length) setError('financeError', failures.join(' · '))
+}
+
+async function issueInvoice(id) {
+  const invoice = state.financeInvoices.find((item) => item.id === id)
+  const rateId = invoice?.taxRateId || $('invoiceTaxRateId').value
+  const body = rateId ? { taxRateId: rateId } : {}
+  setError('invoiceError', '')
+  $('invoiceStatus').textContent = `Issuing ${invoice?.number || id}…`
+  try {
+    await request(`/finance/invoices/${encodeURIComponent(id)}/issue`, {
+      method: 'POST', body: JSON.stringify(body),
+    })
+    $('invoiceStatus').textContent = 'Invoice issued'
+    await loadFinance()
+  } catch (error) {
+    $('invoiceStatus').textContent = ''
+    setError('invoiceError', error.status === 409 ? `Issue blocked: ${error.message}` : error.message)
+  }
+}
+
+async function approveBudget(id) {
+  setError('financeError', '')
+  $('budgetStatus').textContent = 'Approving…'
+  try {
+    await request(`/finance/budgets/${encodeURIComponent(id)}/approve`, {
+      method: 'POST', body: JSON.stringify({}),
+    })
+    $('budgetStatus').textContent = 'Budget approved'
+    await loadFinance()
+  } catch (error) {
+    $('budgetStatus').textContent = ''
+    setError('financeError', error.message)
+  }
+}
+
+async function showEtimsPayload(id) {
+  try {
+    const result = await request(`/finance/etims/submissions/${encodeURIComponent(id)}`)
+    const submission = result.submission || result
+    $('etimsPayloadLabel').textContent = `Payload for submission ${submission?.id || id} (encrypted PIN references only)`
+    $('etimsPayload').textContent = JSON.stringify(submission?.payload ?? {}, null, 2)
+    $('etimsPayloadLabel').hidden = false
+    $('etimsPayload').hidden = false
+    setError('financeError', '')
+  } catch (error) {
+    setError('financeError', error.message)
+  }
+}
+
+async function retryEtimsSubmission(id) {
+  setError('financeError', '')
+  try {
+    await request(`/finance/etims/submissions/${encodeURIComponent(id)}/retry`, {
+      method: 'POST', body: JSON.stringify({}),
+    })
+    await loadFinance()
+  } catch (error) {
+    setError('financeError', error.message)
+  }
+}
+
+function renderStatement(report) {
+  const columns = Array.isArray(report?.columns) ? report.columns : []
+  const rows = Array.isArray(report?.rows) ? report.rows : []
+  $('statementHead').innerHTML = columns.length
+    ? `<tr>${columns.map((column) => `<th>${escapeHtml(column.label ?? column.key)}</th>`).join('')}</tr>`
+    : ''
+  $('statementRows').innerHTML = rows.length
+    ? rows.map((row) => `<tr>${columns.map((column) => `<td>${escapeHtml(row?.[column.key] ?? '—')}</td>`).join('')}</tr>`).join('')
+    : `<tr><td colspan="${Math.max(columns.length, 1)}" class="muted">No rows returned.</td></tr>`
+  const totals = report?.totals || {}
+  $('statementTotals').innerHTML = columns.length
+    ? `<tr>${columns.map((column) => `<th>${escapeHtml(totals[column.key] ?? '')}</th>`).join('')}</tr>`
+    : ''
+  $('statementStatus').textContent = `${report?.title ? `${report.title} · ` : ''}${rows.length} row(s)`
+}
+
+async function runStatement() {
+  const report = $('statementReport').value
+  const paths = {
+    'trial-balance': '/finance/statements/trial-balance',
+    income: '/finance/statements/income',
+    'balance-sheet': '/finance/statements/balance-sheet',
+    ageing: '/finance/statements/ageing',
+  }
+  const path = paths[report]
+  if (!path) return
+  const params = new URLSearchParams()
+  if (report === 'income') {
+    if ($('statementFrom').value) params.set('from', $('statementFrom').value)
+    if ($('statementTo').value) params.set('to', $('statementTo').value)
+  } else {
+    if ($('statementAsOf').value) params.set('asOf', $('statementAsOf').value)
+    if (report === 'ageing' && $('statementDirection').value) params.set('direction', $('statementDirection').value)
+  }
+  const query = params.toString()
+  setError('statementError', '')
+  $('statementStatus').textContent = 'Running…'
+  try {
+    const result = await request(`${path}${query ? `?${query}` : ''}`)
+    renderStatement(result.report || result)
+  } catch (error) {
+    $('statementStatus').textContent = ''
+    setError('statementError', error.message)
+  }
+}
+
+$('refreshFinance').onclick = () => loadFinance()
+
+$('rateVerifyForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const id = $('rateVerifyId').value
+  const verifiedBy = $('rateVerifyBy').value.trim()
+  if (!id || !verifiedBy) return
+  $('rateVerifyStatus').textContent = 'Verifying…'
+  try {
+    await request(`/finance/statutory-rates/${encodeURIComponent(id)}/verify`, {
+      method: 'POST',
+      body: JSON.stringify({ verifiedBy, verificationNote: $('rateVerifyNote').value.trim() }),
+    })
+    $('rateVerifyStatus').textContent = 'Rate verified'
+    $('rateVerifyNote').value = ''
+    await loadFinance()
+  } catch (error) {
+    $('rateVerifyStatus').textContent = error.message
+  }
+}
+
+$('partyForm').onsubmit = async (event) => {
+  event.preventDefault()
+  $('partyStatus').textContent = 'Creating…'
+  try {
+    await request('/finance/parties', {
+      method: 'POST',
+      body: JSON.stringify({
+        type: $('partyType').value,
+        name: $('partyName').value.trim(),
+        taxPin: $('partyTaxPin').value.trim() || undefined,
+        email: $('partyEmail').value.trim() || undefined,
+        phone: $('partyPhone').value.trim() || undefined,
+      }),
+    })
+    $('partyForm').reset()
+    $('partyStatus').textContent = 'Party created'
+    await loadFinance()
+  } catch (error) {
+    $('partyStatus').textContent = error.message
+  }
+}
+
+$('invoiceForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const description = $('invoiceLineDescription').value.trim()
+  const qty = Number($('invoiceLineQty').value)
+  const unitPriceCents = Number($('invoiceLineUnitPriceCents').value)
+  if (!description || !(qty > 0) || !(unitPriceCents > 0)) {
+    setError('invoiceError', 'Enter a description, a positive quantity and a positive unit price in cents.')
+    return
+  }
+  setError('invoiceError', '')
+  $('invoiceStatus').textContent = 'Creating…'
+  try {
+    await request('/finance/invoices', {
+      method: 'POST',
+      body: JSON.stringify({
+        direction: $('invoiceDirection').value,
+        type: $('invoiceType').value,
+        partyId: $('invoiceParty').value,
+        issueDate: $('invoiceIssueDate').value,
+        dueDate: $('invoiceDueDate').value || undefined,
+        taxInclusive: $('invoiceTaxInclusive').checked,
+        taxRateId: $('invoiceTaxRateId').value || undefined,
+        lines: [{ description, qty, unitPriceCents }],
+      }),
+    })
+    $('invoiceStatus').textContent = 'Invoice created as DRAFT'
+    await loadFinance()
+  } catch (error) {
+    $('invoiceStatus').textContent = ''
+    setError('invoiceError', error.message)
+  }
+}
+
+$('paymentForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const invoiceId = $('paymentInvoiceId').value
+  const allocationCents = Number($('paymentAllocationAmountCents').value) || 0
+  const allocations = invoiceId && allocationCents > 0
+    ? [{ invoiceId, amountCents: allocationCents }]
+    : []
+  $('paymentStatus').textContent = 'Recording…'
+  try {
+    await request('/finance/payments', {
+      method: 'POST',
+      body: JSON.stringify({
+        direction: $('paymentDirection').value,
+        partyId: $('paymentParty').value,
+        method: $('paymentMethod').value,
+        amountCents: Number($('paymentAmountCents').value),
+        reference: $('paymentReference').value.trim() || undefined,
+        allocations,
+      }),
+    })
+    $('paymentStatus').textContent = 'Payment recorded'
+    await loadFinance()
+  } catch (error) {
+    $('paymentStatus').textContent = error.message
+  }
+}
+
+$('budgetForm').onsubmit = async (event) => {
+  event.preventDefault()
+  $('budgetStatus').textContent = 'Creating…'
+  try {
+    await request('/finance/budgets', {
+      method: 'POST',
+      body: JSON.stringify({
+        code: $('budgetCode').value.trim(),
+        name: $('budgetName').value.trim(),
+        period: $('budgetPeriod').value,
+        startDate: $('budgetStartDate').value,
+        endDate: $('budgetEndDate').value,
+        lines: [{
+          accountId: $('budgetAccount').value,
+          amountCents: Number($('budgetAmountCents').value),
+        }],
+      }),
+    })
+    $('budgetStatus').textContent = 'Budget created as DRAFT'
+    await loadFinance()
+  } catch (error) {
+    $('budgetStatus').textContent = error.message
+  }
+}
+
+$('statementForm').onsubmit = (event) => {
+  event.preventDefault()
+  runStatement()
+}
+
+function onFinanceEvent() {
+  // Finance socket frames carry IDs/classification only. Ignore their content
+  // and refetch authoritative data from the authenticated API when visible.
+  if (state.view !== 'finance') return
+  if (financeRefreshTimer) clearTimeout(financeRefreshTimer)
+  financeRefreshTimer = setTimeout(() => {
+    financeRefreshTimer = null
+    loadFinance()
+  }, 250)
+}
+
 // ---------------------------------------------------------------- realtime
 
 function loadSocketClient() {
@@ -1285,6 +1769,9 @@ function connectRealtime() {
     socket.on('file:scanned', () => refreshFiles())
     socket.on('document:generated', () => refreshDocuments())
     socket.on('document:issued', () => refreshDocuments())
+    // Phase 6 finance events are ID-only signals; onFinanceEvent ignores the
+    // payload entirely and reloads the finance view through request().
+    for (const event of FINANCE_EVENTS) socket.on(event, onFinanceEvent)
   })
 }
 
@@ -1312,6 +1799,7 @@ function showView(view) {
     loadDocumentKinds()
     refreshDocuments()
   }
+  else if (view === 'finance') loadFinance()
 }
 
 $('tabInbox').onclick = () => showView('inbox')
@@ -1321,6 +1809,7 @@ $('tabFiles').onclick = () => showView('files')
 $('tabWorkflow').onclick = () => showView('workflow')
 $('tabSearch').onclick = () => showView('search')
 $('tabDocuments').onclick = () => showView('documents')
+$('tabFinance').onclick = () => showView('finance')
 
 // ------------------------------------------------------------------- boot
 

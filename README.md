@@ -82,18 +82,31 @@ Phase 5 does not change the seed accounts or their passwords.
   (quotation, invoice, proforma, SLA, NDA, COA) with PDF storage. All Phase 5 tables
   are RLS-protected and all new events carry IDs/classification only.
   Contract: `docs/openapi/openapi.yaml` (`0.5.0-phase.5`); decision: `docs/decisions/ADR-0010-shared-services.md`.
+- **Finance (Phase 6)** — tenant/branch-scoped chart of accounts, parties with encrypted PIN
+  references, a versioned statutory-rate register with manual verification, balanced
+  double-entry journals, sales/purchase invoices and payments, budgets, trial balance/income/
+  balance-sheet/ageing statements, and a ready-only eTIMS payload queue. All money is integer
+  cents; rates are taken only from verified statutory rows. The ERP at `:5174` has a Finance tab.
+  Contract: `docs/openapi/openapi.yaml` (`0.6.0-phase.6`); decision: `docs/decisions/ADR-0011-finance-and-statutory-rates.md`.
+
+> **Finance warning:** verify statutory rates against current KRA/Government publications before
+> use — fixture rates are `UNVERIFIED`. eTIMS is a ready-only internal queue; it is **not live KRA
+> filing** and never submits to KRA.
 
 ### API namespaces
 
-| Namespace | Phase 5 endpoints (summary) |
+| Namespace | Phase 5/6 endpoints (summary) |
 | --- | --- |
 | `/api/files` | `POST /uploads`, `POST /uploads/:id/confirm`, `GET /?purpose&status&limit`, `GET /:id`, `GET /:id/download`, `POST /:id/versions`, `DELETE /:id`. Local fallback ticket URLs: `/local-upload/:token`, `/local-download/:token`. |
 | `/api/workflow` | `GET|POST /definitions`, `GET|POST /instances`, `GET /tasks?mine=1`, `POST /tasks/:id/decide`, `POST /tasks/:id/delegate`. |
 | `/api/notifications` | `GET /?unreadOnly&category&limit`, `GET|PUT /preferences`, `POST /:id/read`, `POST /read-all`. |
 | `/api/search` | `GET /?q&types&limit` (permission-aware FTS over files, documents, workflows, users). |
 | `/api/documents` | `GET /kinds`, `GET /`, `POST /generate`, `GET /jobs/:id`, `GET /:code/download`, `GET /:code`, `GET /:code/pdf`. |
+| `/api/finance` | `GET\|POST /accounts`, `GET\|POST /parties`, `GET\|POST /statutory-rates`, `POST /statutory-rates/:id/verify`, `GET\|POST /journals`, `GET /journals/:id`, `POST /journals/:id/post`, `POST /journals/:id/reverse`, `GET\|POST /invoices`, `GET /invoices/:id`, `POST /invoices/:id/issue`, `GET\|POST /payments`, `GET /payments/:id`, `GET\|POST /budgets`, `GET /budgets/:id`, `POST /budgets/:id/approve`, `GET /statements/{trial-balance,income,balance-sheet,ageing}`, `GET /etims/submissions`, `GET /etims/submissions/:id`, `POST /etims/submissions/:id/retry`, `GET /etims/payload/:invoiceId`. |
 
-`Idempotency-Key` is required only for Phase 4 messaging sends; Phase 5 writes do not use it.
+`Idempotency-Key` is required only for Phase 4 messaging sends; Phase 5 and Phase 6 writes do not use it.
+The `finance.etims.submit` worker queue records `PENDING` submissions for a certified provider and
+creates in-app notifications only — no live KRA filing occurs.
 
 ## Commands
 
@@ -104,7 +117,7 @@ Phase 5 does not change the seed accounts or their passwords.
 | `npm run dev:api`        | Express only (watch)                                |
 | `npm run dev:erp`        | ERP shell + inbox on `:5174`                        |
 | `npm run dev:realtime`   | Socket.IO + Redis adapter on `:4001`                |
-| `npm run dev:workers`    | Outbox publisher + BullMQ workers (scans, notifications, documents, search, retention) |
+| `npm run dev:workers`    | Outbox publisher + BullMQ workers (scans, notifications, documents, search, retention, `finance.etims.submit`) |
 | `npm run build`          | Production build to `packages/web/dist/`            |
 | `npm start`              | Production server (serves the web build too)        |
 | `npm run lint`           | Oxlint                                              |
@@ -131,6 +144,8 @@ Phase 5 uses the R2 settings already listed in `.env.example` plus
 `LOCAL_OBJECT_DIR` (default `storage/objects`), optional `FILE_SCAN_HOOK_URL` with
 `FILE_SCAN_TIMEOUT_MS`, and the worker controls `QUEUES_ENABLED`, `BULLMQ_PREFIX`,
 `RETENTION_SWEEP_CRON`, `OUTBOX_POLL_MS` and `OUTBOX_MAX_ATTEMPTS`.
+Phase 6 adds `ETIMS_PAYLOAD_VERSION` (default `1.0`) and `ETIMS_PROVIDER` (default
+`internal-queue`) for the ready-only payload queue; neither enables live KRA filing.
 
 ### Object storage (Phase 5)
 
@@ -152,17 +167,17 @@ packages/
   api/                Express app: index.js, lib/, routes/, tests/
   web/                Storefront: src/, public/, tests/, Vite config
   cms/                Content Studio workspace scaffold
-  erp/                Internal suite: ERP shell + messaging UI (public/, static server)
+  erp/                Internal suite: ERP shell + messaging UI + Finance tab (public/, static server)
   realtime/           Socket.IO server, Redis adapter and stream relay (Phase 4)
-  workers/            Outbox publisher + BullMQ job processors (Phase 5)
+  workers/            Outbox publisher + BullMQ job processors (Phase 5/6)
 prisma/
-  schema.prisma       PostgreSQL 16 schema (identity, org, messaging, shared services, legacy)
+  schema.prisma       PostgreSQL 16 schema (identity, org, messaging, shared services, finance, legacy)
   migrations/         Versioned SQL + RLS/role/audit rules
   seed.js             Tenant, branches, departments, inboxes, demo data
 docs/
   architecture/       Phase 1 architecture + Phase 3 ERD
-  decisions/          ADRs (0001-0010)
-  openapi/            Phase 5 API contract (0.5.0-phase.5)
+  decisions/          ADRs (0001-0011; finance and statutory rates in ADR-0011)
+  openapi/            Phase 6 API contract (0.6.0-phase.6)
 ```
 
 ## Production-readiness notes
@@ -180,7 +195,8 @@ This codebase is a solid foundation, not a finished compliance deliverable.
 - **Database** — PostgreSQL 16 with Prisma migrations, RLS, a non-owner runtime
   role, and backups. PII should be minimised/encrypted; logs avoid writing it.
 - **Payments** for consultations/CDMO orders aren't wired; add a provider (e.g.
-  M-Pesa Daraja/Stripe) if charging clients.
+  M-Pesa Daraja/Stripe) if charging clients. Phase 6 finance payments record ledger
+  entries only (including `CARD_TOKEN` references) and never charge a card.
 - **CSP/CORS** — tighten CORS origin in production; add security headers.
 - The visual design ("Comet Blue" navy/azure + brass) lives in
   `packages/web/src/index.css` as Tailwind `@theme` tokens.

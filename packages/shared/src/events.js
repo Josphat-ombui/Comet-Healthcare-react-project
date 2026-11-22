@@ -169,6 +169,69 @@ export const SearchIndexUpdatedDataSchema = EntityRefSchema.extend({
   classification: ClassificationSchema,
 }).strict()
 
+// Phase 6 finance events. As with the shared-service payloads, these are
+// strictly ID/status only: invoice lines, amounts, tax pins and eTIMS payloads
+// stay behind the authenticated API and never enter the event bus.
+export const FinanceAccountCreatedDataSchema = EntityRefSchema.extend({
+  accountId: z.string(),
+  code: z.string(),
+  type: z.enum(['ASSET', 'LIABILITY', 'EQUITY', 'INCOME', 'EXPENSE']),
+  classification: ClassificationSchema,
+}).strict()
+
+export const JournalPostedDataSchema = EntityRefSchema.extend({
+  journalId: z.string(),
+  number: z.string(),
+  status: z.literal('POSTED'),
+  lineCount: z.number().int().nonnegative(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const InvoiceIssuedDataSchema = EntityRefSchema.extend({
+  invoiceId: z.string(),
+  number: z.string(),
+  direction: z.enum(['SALES', 'PURCHASE']),
+  type: z.enum(['INVOICE', 'CREDIT_NOTE']),
+  status: z.enum(['ISSUED', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'CANCELLED']),
+  classification: ClassificationSchema,
+}).strict()
+
+export const PaymentRecordedDataSchema = EntityRefSchema.extend({
+  paymentId: z.string(),
+  number: z.string(),
+  direction: z.enum(['INCOMING', 'OUTGOING']),
+  method: z.enum(['BANK_TRANSFER', 'MPESA', 'CASH', 'CHEQUE', 'CARD_TOKEN', 'OTHER']),
+  classification: ClassificationSchema,
+}).strict()
+
+export const BudgetApprovedDataSchema = EntityRefSchema.extend({
+  budgetId: z.string(),
+  code: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const StatutoryRateVerifiedDataSchema = EntityRefSchema.extend({
+  rateId: z.string(),
+  code: z.string(),
+  kind: z.literal('VAT'),
+  effectiveFrom: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const EtimsSubmissionQueuedDataSchema = EntityRefSchema.extend({
+  submissionId: z.string(),
+  invoiceId: z.string(),
+  status: z.enum(['QUEUED', 'PENDING', 'SUBMITTED', 'FAILED']),
+  classification: ClassificationSchema,
+}).strict()
+
+export const EtimsSubmissionFailedDataSchema = EntityRefSchema.extend({
+  submissionId: z.string(),
+  invoiceId: z.string(),
+  reasonCode: z.string().max(80),
+  classification: ClassificationSchema,
+}).strict()
+
 export const DomainEventSchemas = {
   MessageSent: MessageSentDataSchema,
   ThreadAssigned: ThreadAssignedDataSchema,
@@ -191,6 +254,14 @@ export const DomainEventSchemas = {
   DocumentGenerated: DocumentGeneratedDataSchema,
   DocumentIssued: DocumentIssuedDataSchema,
   SearchIndexUpdated: SearchIndexUpdatedDataSchema,
+  FinanceAccountCreated: FinanceAccountCreatedDataSchema,
+  JournalPosted: JournalPostedDataSchema,
+  InvoiceIssued: InvoiceIssuedDataSchema,
+  PaymentRecorded: PaymentRecordedDataSchema,
+  BudgetApproved: BudgetApprovedDataSchema,
+  StatutoryRateVerified: StatutoryRateVerifiedDataSchema,
+  EtimsSubmissionQueued: EtimsSubmissionQueuedDataSchema,
+  EtimsSubmissionFailed: EtimsSubmissionFailedDataSchema,
 }
 
 export function parseEventEnvelope(input) {

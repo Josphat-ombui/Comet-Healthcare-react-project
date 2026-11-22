@@ -10,6 +10,7 @@ import bcrypt from 'bcryptjs'
 import { PrismaClient } from '@prisma/client'
 import '../packages/api/lib/env.js'
 import { genBookingCode } from '../packages/api/lib/util.js'
+import { encryptString } from '../packages/api/lib/crypto.js'
 import { addDays, localIsoDay } from '../packages/api/lib/slots.js'
 import { DEFAULT_COMPANY, computeLine, computeTotals } from '../packages/api/lib/documents.js'
 import { DEFAULT_SITE_CONTENT } from '../packages/api/lib/content.js'
@@ -636,6 +637,174 @@ async function main() {
     })
   }
   console.log(`✓ Indexed ${seededDocs.length} documents for permission-aware search`)
+
+  // ---- Phase 6 finance fixtures ----
+  const FINANCE_ACCOUNTS = [
+    { systemCode: 'AR_CONTROL', code: '1000', name: 'Accounts Receivable Control', type: 'ASSET', normalBalance: 'DEBIT' },
+    { systemCode: 'BANK', code: '1100', name: 'Bank Account', type: 'ASSET', normalBalance: 'DEBIT' },
+    { systemCode: 'VAT_INPUT', code: '1400', name: 'VAT Input', type: 'ASSET', normalBalance: 'DEBIT' },
+    { systemCode: 'AP_CONTROL', code: '2100', name: 'Accounts Payable Control', type: 'LIABILITY', normalBalance: 'CREDIT' },
+    { systemCode: 'VAT_OUTPUT', code: '2200', name: 'VAT Output', type: 'LIABILITY', normalBalance: 'CREDIT' },
+    { systemCode: 'EQUITY', code: '3000', name: 'Equity', type: 'EQUITY', normalBalance: 'CREDIT' },
+    { systemCode: 'SALES', code: '4000', name: 'Sales', type: 'INCOME', normalBalance: 'CREDIT' },
+    { systemCode: 'PURCHASES', code: '5000', name: 'Purchases', type: 'EXPENSE', normalBalance: 'DEBIT' },
+    { systemCode: 'EXPENSE', code: '6000', name: 'Operating Expenses', type: 'EXPENSE', normalBalance: 'DEBIT' },
+  ]
+  const financeAccountsByCode = {}
+  for (const account of FINANCE_ACCOUNTS) {
+    const saved = await prisma.financeAccount.upsert({
+      where: { companyId_systemCode: { companyId, systemCode: account.systemCode } },
+      update: {
+        code: account.code,
+        name: account.name,
+        type: account.type,
+        normalBalance: account.normalBalance,
+        isActive: true,
+      },
+      create: {
+        companyId,
+        ...account,
+        currency: 'KES',
+        classification: 'INTERNAL',
+        createdById: admin.id,
+      },
+    })
+    financeAccountsByCode[account.systemCode] = saved
+  }
+  console.log(`✓ Seeded ${FINANCE_ACCOUNTS.length} finance chart-of-accounts entries`)
+
+  // Fixture rate is explicitly UNVERIFIED; verification is a COMPLIANCE action.
+  const rate = await prisma.statutoryRate.upsert({
+    where: { companyId_code_effectiveFrom: { companyId, code: 'VAT_STANDARD', effectiveFrom: '2026-01-01' } },
+    update: {
+      kind: 'VAT',
+      label: 'Standard VAT (fixture)',
+      rateBps: 1600,
+      sourceReference: 'KRA VAT fixture - verify before production use',
+    },
+    create: {
+      companyId,
+      code: 'VAT_STANDARD',
+      kind: 'VAT',
+      label: 'Standard VAT (fixture)',
+      rateBps: 1600,
+      effectiveFrom: '2026-01-01',
+      sourceReference: 'KRA VAT fixture - verify before production use',
+      verificationNote: null,
+      verifiedBy: null,
+      status: 'UNVERIFIED',
+      createdById: admin.id,
+    },
+  })
+  const taxMultiplier = rate.rateBps / 10000
+  console.log('✓ Seeded unverified VAT statutory rate fixture')
+
+  // Tax PINs are stored encrypted only; the plaintexts are deliberately fake.
+  async function financePartyFixture(id, type, name, fakePin) {
+    const existing = await prisma.financeParty.findFirst({ where: { companyId, type, name } })
+    if (existing) return existing
+    return prisma.financeParty.create({
+      data: {
+        id,
+        companyId,
+        type,
+        name,
+        taxPinCiphertext: encryptString(fakePin),
+        currency: 'KES',
+        classification: 'INTERNAL',
+        createdById: admin.id,
+      },
+    })
+  }
+  const customerParty = await financePartyFixture('fin_party_afya_generics', 'CUSTOMER', 'Afya Generics Labs', 'A123456789X')
+  const supplierParty = await financePartyFixture('fin_party_kisumu_pharma', 'SUPPLIER', 'Kisumu Pharma Suppliers', 'B987654321Y')
+  console.log('✓ Seeded finance parties with encrypted tax PINs')
+
+  const lineTotals = (qty, unitPriceCents) => {
+    const netCents = Math.round(qty * unitPriceCents)
+    const taxCents = Math.round(netCents * taxMultiplier)
+    return { netCents, taxCents, grossCents: netCents + taxCents }
+  }
+  const financeInvoiceFixtures = [
+    {
+      number: 'INV-2026-F001',
+      direction: 'SALES',
+      partyId: customerParty.id,
+      notes: 'Draft fixture sales invoice — not issued.',
+      lines: [{ description: 'Metformin HCl 500mg tablets (seed fixture)', qty: 2, unitPriceCents: 150000, position: 0 }],
+    },
+    {
+      number: 'BILL-2026-F001',
+      direction: 'PURCHASE',
+      partyId: supplierParty.id,
+      notes: 'Draft fixture purchase invoice — not issued.',
+      lines: [{ description: 'Active pharmaceutical ingredient (seed fixture)', qty: 2, unitPriceCents: 150000, position: 0 }],
+    },
+  ]
+  for (const fixture of financeInvoiceFixtures) {
+    const lineData = fixture.lines.map((line) => ({
+      companyId,
+      ...line,
+      ...lineTotals(line.qty, line.unitPriceCents),
+      taxRateId: rate.id,
+    }))
+    const subtotalCents = lineData.reduce((sum, line) => sum + line.netCents, 0)
+    const taxCents = lineData.reduce((sum, line) => sum + line.taxCents, 0)
+    const totalCents = subtotalCents + taxCents
+    await prisma.financeInvoice.upsert({
+      where: { companyId_number: { companyId, number: fixture.number } },
+      update: {},
+      create: {
+        companyId,
+        number: fixture.number,
+        direction: fixture.direction,
+        type: 'INVOICE',
+        status: 'DRAFT',
+        partyId: fixture.partyId,
+        issueDate: '2026-01-15',
+        dueDate: '2026-02-14',
+        currency: 'KES',
+        taxInclusive: false,
+        taxRateId: rate.id,
+        subtotalCents,
+        taxCents,
+        totalCents,
+        paidCents: 0,
+        balanceCents: totalCents,
+        notes: fixture.notes,
+        classification: 'INTERNAL',
+        journalId: null,
+        createdById: admin.id,
+        lines: { create: lineData },
+      },
+    })
+  }
+  console.log(`✓ Seeded ${financeInvoiceFixtures.length} draft finance invoices`)
+
+  await prisma.financeBudget.upsert({
+    where: { companyId_code: { companyId, code: 'BUDGET-2026-Q4' } },
+    update: {},
+    create: {
+      companyId,
+      code: 'BUDGET-2026-Q4',
+      name: 'Q4 2026 Operating Budget (fixture)',
+      period: 'QUARTERLY',
+      startDate: '2026-10-01',
+      endDate: '2026-12-31',
+      status: 'APPROVED',
+      approvedById: admin.id,
+      approvedAt: new Date(),
+      classification: 'INTERNAL',
+      createdById: admin.id,
+      lines: {
+        create: [
+          { companyId, accountId: financeAccountsByCode.SALES.id, amountCents: 50000000 },
+          { companyId, accountId: financeAccountsByCode.EXPENSE.id, amountCents: 20000000 },
+        ],
+      },
+    },
+  })
+  console.log('✓ Seeded approved Q4 finance budget')
 
   console.log('\nSeed complete ✔')
 }

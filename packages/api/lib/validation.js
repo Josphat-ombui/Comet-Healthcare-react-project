@@ -3,6 +3,7 @@
 
 import { z } from 'zod'
 import { isValidIsoDate, isValidIsoTime, isPastDate, addDays, localIsoDay } from './slots.js'
+import { inspectText, findingTypes } from '../../shared/src/dlp.js'
 
 export const emailSchema = z.string().trim().min(3, 'Please enter an email address').max(190).email('Please enter a valid email address')
 
@@ -437,3 +438,200 @@ export const siteContentSchema = z.intersection(
       'Content payload is too large'
     )
 )
+
+// ------------------------------------------------------------ phase 6 finance
+//
+// Finance keeps all money as integer cents. Findings from the shared DLP
+// patterns are reported by type only — never by the matched value itself.
+
+function dlpSafeText(max, options = {}) {
+  const allowWholeKraPin = options.allowWholeKraPin === true
+  return z.string().trim().max(max).superRefine((value, ctx) => {
+    const findings = inspectText(value)
+    if (!findings.length) return
+    const types = findingTypes(findings)
+    // A KRA PIN is a legitimate tax identifier on a party, but only when it is
+    // the entire field. Embedded/card/secret findings are always rejected.
+    const wholeKraPin = allowWholeKraPin
+      && types.length === 1
+      && types[0] === 'KRA_PIN'
+      && findings.length === 1
+      && findings[0].start === 0
+      && findings[0].end === value.length
+    if (wholeKraPin) return
+    ctx.addIssue({
+      code: 'custom',
+      message: `Contains restricted data (${types.join(', ')})`,
+    })
+  })
+}
+
+const financeId = z.string().trim().min(1).max(80)
+const financeDate = z.string().refine(isValidIsoDate, 'Choose a valid date')
+const financeLimit = z.coerce.number().int().min(1).max(200).default(50)
+const financeMoney = z.number().int().nonnegative()
+const financeMoneyPositive = z.number().int().positive()
+const financeSystemCode = z.string().trim().max(60).regex(/^[A-Z][A-Z0-9_]*$/, 'Use uppercase letters, numbers and underscores')
+
+export const financeAccountSchema = z.object({
+  code: z.string().trim().min(1).max(60),
+  name: z.string().trim().min(1).max(160),
+  type: z.enum(['ASSET', 'LIABILITY', 'EQUITY', 'INCOME', 'EXPENSE']),
+  normalBalance: z.enum(['DEBIT', 'CREDIT']),
+  systemCode: financeSystemCode.nullable().optional(),
+  parentId: financeId.nullable().optional(),
+  currency: z.string().trim().min(1).max(8).default('KES'),
+  isActive: z.boolean().default(true),
+  branchId: financeId.nullable().optional(),
+  classification: classificationSchema.default('INTERNAL'),
+})
+
+export const financePartySchema = z.object({
+  type: z.enum(['CUSTOMER', 'SUPPLIER']),
+  name: dlpSafeText(160),
+  legalName: dlpSafeText(200).optional().or(z.literal('')),
+  taxPin: dlpSafeText(20, { allowWholeKraPin: true }).optional().or(z.literal('')),
+  email: emailSchema.optional().or(z.literal('')),
+  phone: z.string().trim().max(40).optional().or(z.literal('')),
+  currency: z.string().trim().min(1).max(8).default('KES'),
+  classification: classificationSchema.default('INTERNAL'),
+})
+
+export const financeJournalSchema = z.object({
+  date: financeDate,
+  description: dlpSafeText(300),
+  lines: z.array(z.object({
+    accountId: financeId,
+    partyId: financeId.nullable().optional(),
+    debitCents: financeMoney.default(0),
+    creditCents: financeMoney.default(0),
+    memo: dlpSafeText(240).optional().or(z.literal('')),
+  })).min(2, 'A journal needs at least two lines').max(40),
+  referenceType: z.string().trim().max(40).optional().or(z.literal('')),
+  referenceId: financeId.optional(),
+  branchId: financeId.nullable().optional(),
+  classification: classificationSchema.default('INTERNAL'),
+})
+
+export const financeRateSchema = z.object({
+  code: z.string().trim().min(1).max(60),
+  kind: z.enum(['VAT']).default('VAT'),
+  label: z.string().trim().min(1).max(160),
+  rateBps: z.number().int().min(1, 'Rate must be at least 1 basis point').max(10_000),
+  effectiveFrom: financeDate,
+  effectiveTo: financeDate.nullable().optional(),
+  sourceReference: z.string().trim().min(1, 'A source reference is required').max(240),
+})
+
+export const financeRateVerifySchema = z.object({
+  verifiedBy: z.string().trim().min(1, 'Verifier is required').max(120),
+  verificationNote: z.string().trim().min(1, 'A verification note is required').max(500),
+})
+
+const financeInvoiceLineSchema = z.object({
+  description: z.string().trim().min(1).max(240),
+  qty: z.number().positive('Quantity must be greater than zero'),
+  unitPriceCents: financeMoneyPositive,
+})
+
+export const financeInvoiceSchema = z.object({
+  direction: z.enum(['SALES', 'PURCHASE']),
+  type: z.enum(['INVOICE', 'CREDIT_NOTE']).default('INVOICE'),
+  partyId: financeId,
+  issueDate: financeDate,
+  dueDate: financeDate.nullable().optional(),
+  currency: z.string().trim().min(1).max(8).default('KES'),
+  taxInclusive: z.boolean().default(false),
+  taxRateId: financeId.optional(),
+  lines: z.array(financeInvoiceLineSchema).min(1).max(60),
+  businessDocumentId: financeId.optional(),
+  sourceInvoiceId: financeId.optional(),
+  notes: dlpSafeText(2000).optional().or(z.literal('')),
+  branchId: financeId.nullable().optional(),
+  classification: classificationSchema.default('INTERNAL'),
+})
+
+export const financeInvoiceIssueSchema = z.object({
+  taxRateId: financeId.optional(),
+})
+
+export const financePaymentSchema = z.object({
+  direction: z.enum(['INCOMING', 'OUTGOING']),
+  partyId: financeId,
+  method: z.enum(['BANK_TRANSFER', 'MPESA', 'CASH', 'CHEQUE', 'CARD_TOKEN', 'OTHER']),
+  amountCents: financeMoneyPositive,
+  currency: z.string().trim().min(1).max(8).default('KES'),
+  paidAt: optionalIsoDateTime.optional(),
+  reference: dlpSafeText(200).optional().or(z.literal('')),
+  allocations: z.array(z.object({
+    invoiceId: financeId,
+    amountCents: financeMoneyPositive,
+  })).max(50).default([]),
+  branchId: financeId.nullable().optional(),
+  classification: classificationSchema.default('INTERNAL'),
+})
+
+export const financeBudgetSchema = z.object({
+  code: z.string().trim().min(1).max(60),
+  name: z.string().trim().min(1).max(160),
+  period: z.enum(['MONTHLY', 'QUARTERLY', 'ANNUAL']),
+  startDate: financeDate,
+  endDate: financeDate,
+  lines: z.array(z.object({
+    accountId: financeId,
+    amountCents: financeMoney,
+  })).min(1).max(40),
+  branchId: financeId.nullable().optional(),
+  classification: classificationSchema.default('INTERNAL'),
+})
+
+export const financeAccountQuerySchema = z.object({
+  type: z.enum(['ASSET', 'LIABILITY', 'EQUITY', 'INCOME', 'EXPENSE']).optional(),
+  active: z.enum(['true', 'false']).optional(),
+  limit: financeLimit,
+})
+
+export const financePartyQuerySchema = z.object({
+  type: z.enum(['CUSTOMER', 'SUPPLIER']).optional(),
+  limit: financeLimit,
+})
+
+export const financeRateQuerySchema = z.object({
+  kind: z.enum(['VAT']).optional(),
+  activeOn: financeDate.optional(),
+  limit: financeLimit,
+})
+
+export const financeJournalQuerySchema = z.object({
+  status: z.enum(['DRAFT', 'POSTED', 'REVERSED']).optional(),
+  limit: financeLimit,
+})
+
+export const financeInvoiceQuerySchema = z.object({
+  direction: z.enum(['SALES', 'PURCHASE']).optional(),
+  status: z.enum(['DRAFT', 'ISSUED', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'CANCELLED']).optional(),
+  partyId: financeId.optional(),
+  limit: financeLimit,
+})
+
+export const financePaymentQuerySchema = z.object({
+  direction: z.enum(['INCOMING', 'OUTGOING']).optional(),
+  limit: financeLimit,
+})
+
+export const financeBudgetQuerySchema = z.object({
+  limit: financeLimit,
+})
+
+export const financeStatementQuerySchema = z.object({
+  asOf: financeDate.optional(),
+  from: financeDate.optional(),
+  to: financeDate.optional(),
+  direction: z.enum(['SALES', 'PURCHASE']).optional(),
+  limit: financeLimit.optional(),
+})
+
+export const financeEtimsQuerySchema = z.object({
+  invoiceId: financeId.optional(),
+  limit: financeLimit,
+})

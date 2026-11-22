@@ -8,6 +8,54 @@ The format follows a phase-gate model: each enterprise phase ends with passing t
 
 ## [Unreleased]
 
+### Phase 6 — Finance
+
+**Added**
+
+- Tenant/branch-scoped finance domain: versioned statutory rates with UNVERIFIED → VERIFIED
+  sign-off, chart of accounts, encrypted-PIN parties, balanced double-entry journals, sales and
+  purchase invoices/credit notes, incoming/outgoing payments with allocations, budgets, and
+  trial balance / income / balance sheet / ageing statements. All money is integer cents and all
+  rates come from verified statutory rows; fixture rates remain UNVERIFIED.
+- `/api/finance` endpoints for accounts, parties, statutory rates (including `/verify`), journals
+  (detail, post, reverse), invoices (detail, issue), payments (detail), budgets (detail, approve),
+  statements and the ready-only eTIMS queue (submissions, detail, retry, payload). New `finance.*`
+  permissions and bearer auth on every finance operation.
+- ERP Finance tab: rates table plus manual verify form, accounts, parties, invoices with per-row
+  Issue, payments with invoice allocation, budgets with approve, generic statement renderer and
+  eTIMS submission/payload/retry controls. Verification and PCI warnings are shown in the UI.
+- `finance.etims.submit` worker queue: provider-agnostic payloads with encrypted PIN references,
+  PENDING records for a certified provider and in-app notifications only. This is **not** live
+  KRA filing; `ETIMS_PAYLOAD_VERSION` (default `1.0`) and `ETIMS_PROVIDER` (default
+  `internal-queue`) are documented in `.env.example`.
+- Phase 6 socket events (`finance:account`, `finance:journal`, `finance:invoice`,
+  `finance:payment`, `finance:budget`, `finance:rate`, `finance:etims`, `finance:etims-failed`)
+  carrying IDs/classification only; clients refetch through `/api/finance`.
+- OpenAPI `0.6.0-phase.6` (24 new paths, 31 operations, 11+ reusable finance schemas), ADR-0011,
+  README and OpenAPI README updates.
+
+**Changed**
+
+- Finance calculations never use hardcoded rates or the legacy storefront `taxRate`; that field
+  remains outside the statutory-rate table and is not used by Phase 6 finance (ADR-0011).
+- Tax PINs are encrypted at rest and only `hasTaxPin`/`taxPinMasked` are emitted; no PAN, card
+  number or CVV field exists in any finance request or response. `Idempotency-Key` remains scoped
+  to messaging sends only, so finance writes are not replay-safe.
+- eTIMS endpoints and events are described strictly as an internal ready-only queue; no claim of
+  KRA submission or filing is made.
+
+**Verification**
+
+- `node --check packages/erp/public/app.js` passes.
+- OpenAPI YAML parses with Python `yaml.safe_load` (version `0.6.0-phase.6`, 93 paths,
+  51 schemas); every `$ref` resolves and all Phase 3/4/5 paths remain.
+- `npm run lint` checked for the owned ERP/documentation files; final test count recorded at
+  phase-gate review.
+- Final Phase 6 test, migration, RLS and runtime smoke counts are recorded at the phase-gate
+  review.
+
+---
+
 ### Phase 5 — Shared Services
 
 **Added**

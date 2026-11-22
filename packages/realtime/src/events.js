@@ -8,6 +8,19 @@ function unique(values) {
   return [...new Set(values.filter(Boolean))]
 }
 
+// Finance events carry IDs only and are visible company-wide; never route
+// them through messaging thread or inbox rooms.
+const FINANCE_EVENT_TYPES = new Set([
+  'FinanceAccountCreated',
+  'JournalPosted',
+  'InvoiceIssued',
+  'PaymentRecorded',
+  'BudgetApproved',
+  'StatutoryRateVerified',
+  'EtimsSubmissionQueued',
+  'EtimsSubmissionFailed',
+])
+
 function eventRooms(event) {
   const prefix = `company:${event.companyId}`
   const data = event.data || {}
@@ -57,6 +70,12 @@ function eventRooms(event) {
   if (event.type === 'DocumentGenerated' || event.type === 'DocumentIssued') {
     return unique([prefix, userRoom(data.createdById)])
   }
+
+  // ------------------------------------------------------- phase 6 finance
+  if (FINANCE_EVENT_TYPES.has(event.type)) {
+    const userId = data.actorId || data.requestedById || data.createdById
+    return unique([prefix, userRoom(userId)])
+  }
   return []
 }
 
@@ -76,6 +95,14 @@ function socketEventFor(type) {
     FileScanned: 'file:scanned',
     DocumentGenerated: 'document:generated',
     DocumentIssued: 'document:issued',
+    FinanceAccountCreated: 'finance:account',
+    JournalPosted: 'finance:journal',
+    InvoiceIssued: 'finance:invoice',
+    PaymentRecorded: 'finance:payment',
+    BudgetApproved: 'finance:budget',
+    StatutoryRateVerified: 'finance:rate',
+    EtimsSubmissionQueued: 'finance:etims',
+    EtimsSubmissionFailed: 'finance:etims-failed',
   }[type] || null
 }
 

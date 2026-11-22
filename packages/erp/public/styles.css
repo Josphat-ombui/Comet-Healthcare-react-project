@@ -99,3 +99,15 @@ button.unread-badge { cursor: pointer; }
   .field-row { grid-template-columns: 1fr; }
   .item-row { grid-template-columns: 1fr 1fr; }
 }
+
+/* Phase 6 finance */
+.finance-banner { margin: 0 0 16px; padding: 12px 16px; border: 1px solid #f4dc9c; border-left: 4px solid #d97706; border-radius: 10px; background: #fff8e7; color: #78350f; font-size: 14px; font-weight: 600; }
+.finance-field-row { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+.finance-payload { max-height: 320px; overflow: auto; margin: 10px 0 0; padding: 14px; border-radius: 10px; background: #0d2340; color: #e2e8f0; font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.pill.finance-status.unverified { background: #fef3c7; color: #92400e; }
+.pill.finance-status.verified { background: #dcfce7; color: #166534; }
+.pill.finance-status.draft, .pill.finance-status.pending, .pill.finance-status.queued { background: #e8eef6; color: #334155; }
+.pill.finance-status.failed, .pill.finance-status.superseded { background: #fee2e2; color: #b91c1c; }
+@media (max-width: 780px) {
+  .finance-field-row { grid-template-columns: 1fr; }
+}

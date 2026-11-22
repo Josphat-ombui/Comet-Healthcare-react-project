@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Comet Healthcare Enterprise API
-  version: 0.5.0-phase.5
+  version: 0.6.0-phase.6
   summary: REST and webhook contract for the Comet Healthcare enterprise platform.
   description: |
     Phase 3 adds local identity, sessions, MFA, OIDC, organisation directory and audit.
@@ -31,6 +31,30 @@ info:
     `workflow.instance.read`, `workflow.task.approve/delegate`, `notifications.read/manage`,
     `search.read`, and `documents.read/write/issue`. All new endpoints require the bearer
     access token and enforce tenant/branch scope in addition to RLS.
+
+    Phase 6 adds tenant/branch-scoped finance under `/api/finance`: chart of accounts,
+    parties, a versioned statutory-rate register with manual verification, double-entry
+    journals, invoices, payments, budgets, statements and a ready-only eTIMS payload queue.
+    All money fields are integer cents (`*Cents`). `rateBps` (basis points, 10000 = 100%)
+    comes only from the versioned statutory-rate table, and only VERIFIED, effective rows
+    may be used for finance calculations or invoice issuance. Rates are never hardcoded in
+    application code. The legacy storefront `taxRate` field remains outside this table and
+    is not used by Phase 6 finance calculations.
+
+    No plaintext tax PIN or card data is stored or emitted. Party tax PINs are encrypted at
+    rest and public DTOs expose only `taxPinMasked`; `CARD_TOKEN` is a method name only, and
+    no PAN, card number or CVV is accepted anywhere in the API. eTIMS is a ready-only
+    internal queue: the `finance.etims.submit` worker records PENDING submissions for a
+    certified provider, stores provider-agnostic payloads with encrypted PIN references
+    and creates in-app notifications only. It is NOT live filing and never submits to KRA.
+    Payload amounts are decimal presentation strings; finance API money fields remain integer cents.
+
+    Phase 6 permissions: `finance.account.read/write`, `finance.journal.read/write/post`,
+    `finance.party.read/write`, `finance.invoice.read/write/issue`,
+    `finance.payment.read/write`, `finance.budget.read/write`,
+    `finance.statutory.read/write/verify`, `finance.statement.read` and
+    `finance.etims.read/write`. `Idempotency-Key` remains scoped to messaging sends only;
+    no finance endpoint consumes it.
   contact:
     name: Comet Healthcare Platform Team
   license:
@@ -53,14 +77,16 @@ tags:
     description: Inboxes, threads, channels, and files. Added in Phase 4.
   - name: Platform
     description: Workflow, files, search, notifications, and documents. Added in Phase 5.
+  - name: Finance
+    description: Accounts, parties, statutory rates, journals, invoices, payments, budgets, statements and ready-only eTIMS queue. Added in Phase 6.
 x-phase-roadmap:
   phase1: Architecture and this skeleton only
   phase2: ERD, migrations, workspace split, shared contracts
   phase3: /api/auth, /api/identity, /api/org, /api/audit
   phase4: Complete - /api/messaging and realtime events
   phase5: Complete - /api/files, /api/workflow, /api/notifications, /api/search, /api/documents
-  phase6: Next - /api/finance
-  phase7: /api/sales
+  phase6: Complete - /api/finance (accounts, parties, statutory rates, journals, invoices, payments, budgets, statements, ready-only eTIMS queue)
+  phase7: Next - /api/sales
   phase8: /api/inventory
   phase9: /api/procurement
   phase10: /api/service
@@ -102,6 +128,14 @@ x-realtime:
     file:scanned: 'FileScanned; refetch GET /api/files/{id} for the scan status.'
     document:generated: 'DocumentGenerated; poll GET /api/documents/jobs/{id} or refetch /api/documents.'
     document:issued: 'DocumentIssued; refetch GET /api/documents/{code}.'
+    finance:account: 'FinanceAccount changed; refetch GET /api/finance/accounts.'
+    finance:journal: 'FinanceJournal changed; refetch GET /api/finance/journals.'
+    finance:invoice: 'FinanceInvoice changed; refetch GET /api/finance/invoices.'
+    finance:payment: 'FinancePayment changed; refetch GET /api/finance/payments.'
+    finance:budget: 'FinanceBudget changed; refetch GET /api/finance/budgets.'
+    finance:rate: 'StatutoryRate changed; refetch GET /api/finance/statutory-rates.'
+    finance:etims: 'EtimsSubmission queued or progressed; refetch GET /api/finance/etims/submissions. Internal queue only, not live filing.'
+    finance:etims-failed: 'EtimsSubmission failed; refetch GET /api/finance/etims/submissions and in-app notifications.'
   eventPayload:
     eventId: string
     type: string
@@ -127,12 +161,88 @@ x-realtime:
     Authenticated polling of /api/notifications, /api/workflow/tasks, /api/files and
     /api/documents when sockets are unavailable. Socket frames carry IDs only; clients
     always refetch through the authenticated API.
+  phase6EventMap:
+    FinanceAccountCreated: finance:account
+    FinanceAccountUpdated: finance:account
+    FinancePartyCreated: 'none (parties reloaded with the finance view)'
+    StatutoryRateCreated: finance:rate
+    StatutoryRateVerified: finance:rate
+    FinanceJournalCreated: finance:journal
+    FinanceJournalPosted: finance:journal
+    FinanceJournalReversed: finance:journal
+    FinanceInvoiceCreated: finance:invoice
+    FinanceInvoiceIssued: finance:invoice
+    FinancePaymentRecorded: finance:payment
+    FinanceBudgetCreated: finance:budget
+    FinanceBudgetApproved: finance:budget
+    EtimsSubmissionQueued: finance:etims
+    EtimsSubmissionFailed: finance:etims-failed
+  phase6PayloadRule: |
+    Every finance socket frame carries only IDs and classification. No amount, status
+    text, tax PIN, card data, payload or eTIMS provider response is placed on a socket;
+    clients always refetch through the authenticated /api/finance endpoints.
+  phase6EtimsNote: |
+    finance.etims and finance:etims-failed report an internal ready-only queue. The
+    finance.etims.submit worker records PENDING for a certified provider and creates
+    in-app notifications only. No event or endpoint claims live filing to KRA.
+  phase6Fallback: |
+    Authenticated polling of /api/finance accounts, rates, parties, invoices, payments,
+    budgets and eTIMS submissions when sockets are unavailable. As with Phase 5, event
+    data is never rendered directly.
 x-idempotency:
   requiredFor:
     - POST /api/messaging/threads/{id}/messages
   phase5: |
     Not required. No Phase 5 endpoint consumes an Idempotency-Key, and retries of
     Phase 5 writes are not de-duplicated by the server.
+  phase6: |
+    Not required. Idempotency-Key remains scoped to messaging sends only. No
+    /api/finance endpoint consumes it, and finance writes are not replay-safe.
+x-finance:
+  money: All finance API monetary fields are integer cents (`*Cents`); reports use the same unit. The eTIMS payload is a separate external-style representation using decimal strings and is not a finance money field.
+  rates: |
+    `rateBps` is integer basis points and comes only from the versioned statutory-rate
+    table. Only VERIFIED, effective rows may be used for finance calculations and invoice
+    issuance. Rates are never hardcoded. The legacy storefront `taxRate` remains outside
+    this table and is not used by Phase 6 finance calculations.
+  sensitiveData: |
+    No plaintext tax PIN or card data is stored or emitted. Party PINs are encrypted at rest
+    and only `hasTaxPin`/`taxPinMasked` are exposed. `CARD_TOKEN` is a method identifier;
+    PAN, card number and CVV are not accepted fields.
+  etims: |
+    Ready-only internal queue on `finance.etims.submit`. PENDING records for a certified
+    provider plus in-app notifications only. NOT live filing and never a submission to KRA.
+  permissions:
+    - finance.account.read
+    - finance.account.write
+    - finance.journal.read
+    - finance.journal.write
+    - finance.journal.post
+    - finance.party.read
+    - finance.party.write
+    - finance.invoice.read
+    - finance.invoice.write
+    - finance.invoice.issue
+    - finance.payment.read
+    - finance.payment.write
+    - finance.budget.read
+    - finance.budget.write
+    - finance.statutory.read
+    - finance.statutory.write
+    - finance.statutory.verify
+    - finance.statement.read
+    - finance.etims.read
+    - finance.etims.write
+  socketEvents:
+    - finance:account
+    - finance:journal
+    - finance:invoice
+    - finance:payment
+    - finance:budget
+    - finance:rate
+    - finance:etims
+    - finance:etims-failed
+  idempotency: Idempotency-Key is scoped to messaging sends only; finance writes are not replay-safe.
 paths:
   /api/health/live:
     get:
@@ -1717,6 +1827,961 @@ paths:
           description: Document is a draft or caller cannot view it.
         '404':
           description: Document not found.
+  /api/finance/accounts:
+    get:
+      tags: [Finance]
+      summary: List the chart of accounts
+      description: Tenant/branch scoped. Accepts either `{ accounts }` or a bare array in non-conforming deployments.
+      operationId: listFinanceAccounts
+      x-permission: finance.account.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: type
+          in: query
+          schema: { type: string, enum: [ASSET, LIABILITY, EQUITY, INCOME, EXPENSE] }
+        - name: active
+          in: query
+          schema: { type: string, enum: ['true', 'false'] }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+      responses:
+        '200':
+          description: Accounts visible to the caller.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accounts]
+                properties:
+                  accounts:
+                    type: array
+                    items: { $ref: '#/components/schemas/FinanceAccount' }
+        '400': { description: Invalid query parameter. }
+        '403': { description: Missing finance.account.read permission. }
+    post:
+      tags: [Finance]
+      summary: Create a chart of accounts entry
+      operationId: createFinanceAccount
+      x-permission: finance.account.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FinanceAccountCreateRequest'
+      responses:
+        '201':
+          description: Created account.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [account]
+                properties:
+                  account: { $ref: '#/components/schemas/FinanceAccount' }
+        '400': { description: Invalid account payload. }
+        '403': { description: Missing finance.account.write permission. }
+        '409': { description: Account code or systemCode already exists in this tenant. }
+  /api/finance/parties:
+    get:
+      tags: [Finance]
+      summary: List customers and suppliers
+      description: Returns `hasTaxPin` and `taxPinMasked` only. Plaintext PINs are never stored or emitted.
+      operationId: listFinanceParties
+      x-permission: finance.party.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: type
+          in: query
+          schema: { type: string, enum: [CUSTOMER, SUPPLIER] }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+      responses:
+        '200':
+          description: Parties visible to the caller.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [parties]
+                properties:
+                  parties:
+                    type: array
+                    items: { $ref: '#/components/schemas/FinanceParty' }
+        '403': { description: Missing finance.party.read permission. }
+    post:
+      tags: [Finance]
+      summary: Create a customer or supplier
+      description: A supplied PIN is encrypted at rest; only a masked reference is returned. Card numbers and CVV are not accepted fields.
+      operationId: createFinanceParty
+      x-permission: finance.party.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FinancePartyCreateRequest'
+      responses:
+        '201':
+          description: Created party.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [party]
+                properties:
+                  party: { $ref: '#/components/schemas/FinanceParty' }
+        '400': { description: Invalid party payload. }
+        '403': { description: Missing finance.party.write permission. }
+  /api/finance/statutory-rates:
+    get:
+      tags: [Finance]
+      summary: List versioned statutory rates
+      description: Filter by `activeOn` to find the rate effective on a date. Fixture rows are UNVERIFIED until signed off.
+      operationId: listStatutoryRates
+      x-permission: finance.statutory.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: kind
+          in: query
+          schema: { type: string, enum: [VAT] }
+        - name: activeOn
+          in: query
+          description: ISO date (`YYYY-MM-DD`) within the rate's effective interval.
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+      responses:
+        '200':
+          description: Statutory rate rows.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rates]
+                properties:
+                  rates:
+                    type: array
+                    items: { $ref: '#/components/schemas/StatutoryRate' }
+        '403': { description: Missing finance.statutory.read permission. }
+    post:
+      tags: [Finance]
+      summary: Propose a statutory rate
+      description: Creates an UNVERIFIED row with a source reference. It cannot be used for finance calculations until verified.
+      operationId: createStatutoryRate
+      x-permission: finance.statutory.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StatutoryRateCreateRequest'
+      responses:
+        '201':
+          description: Created UNVERIFIED rate.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rate]
+                properties:
+                  rate: { $ref: '#/components/schemas/StatutoryRate' }
+        '400': { description: Invalid rate payload or missing sourceReference. }
+        '403': { description: Missing finance.statutory.write permission. }
+        '409': { description: A row with this code and effectiveFrom already exists. }
+  /api/finance/statutory-rates/{id}/verify:
+    post:
+      tags: [Finance]
+      summary: Sign off a statutory rate
+      description: Moves a row from UNVERIFIED to VERIFIED with a named reviewer and note. Finance clients never auto-verify rates.
+      operationId: verifyStatutoryRate
+      x-permission: finance.statutory.verify
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StatutoryRateVerifyRequest'
+      responses:
+        '200':
+          description: Verified rate.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rate]
+                properties:
+                  rate: { $ref: '#/components/schemas/StatutoryRate' }
+        '400': { description: Missing verifiedBy or verificationNote. }
+        '403': { description: Missing finance.statutory.verify permission. }
+        '404': { description: Rate not found. }
+        '409': { description: Rate is already VERIFIED or SUPERSEDED. }
+  /api/finance/journals:
+    get:
+      tags: [Finance]
+      summary: List double-entry journals
+      operationId: listFinanceJournals
+      x-permission: finance.journal.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [DRAFT, POSTED, REVERSED] }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+      responses:
+        '200':
+          description: Journals visible to the caller.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [journals]
+                properties:
+                  journals:
+                    type: array
+                    items: { $ref: '#/components/schemas/FinanceJournal' }
+        '403': { description: Missing finance.journal.read permission. }
+    post:
+      tags: [Finance]
+      summary: Create a draft journal
+      description: Debit and credit totals must balance in integer cents before a journal can be posted.
+      operationId: createFinanceJournal
+      x-permission: finance.journal.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FinanceJournalCreateRequest'
+      responses:
+        '201':
+          description: Created draft journal.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [journal]
+                properties:
+                  journal: { $ref: '#/components/schemas/FinanceJournal' }
+        '400': { description: Invalid lines or unbalanced journal. }
+        '403': { description: Missing finance.journal.write permission. }
+  /api/finance/journals/{id}:
+    get:
+      tags: [Finance]
+      summary: Get a journal with its lines
+      operationId: getFinanceJournal
+      x-permission: finance.journal.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Journal detail.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [journal]
+                properties:
+                  journal: { $ref: '#/components/schemas/FinanceJournal' }
+        '403': { description: Missing finance.journal.read permission. }
+        '404': { description: Journal not found. }
+  /api/finance/journals/{id}/post:
+    post:
+      tags: [Finance]
+      summary: Post a draft journal
+      operationId: postFinanceJournal
+      x-permission: finance.journal.post
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Posted journal.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [journal]
+                properties:
+                  journal: { $ref: '#/components/schemas/FinanceJournal' }
+        '403': { description: Missing finance.journal.post permission. }
+        '404': { description: Journal not found. }
+        '409': { description: Journal is not a balanced DRAFT. }
+  /api/finance/journals/{id}/reverse:
+    post:
+      tags: [Finance]
+      summary: Reverse a posted journal
+      description: Creates a balancing reversal journal and links it to the original.
+      operationId: reverseFinanceJournal
+      x-permission: finance.journal.post
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Reversal journal.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [journal]
+                properties:
+                  journal: { $ref: '#/components/schemas/FinanceJournal' }
+        '403': { description: Missing finance.journal.post permission. }
+        '404': { description: Journal not found. }
+        '409': { description: Only POSTED journals can be reversed, or it was already reversed. }
+  /api/finance/invoices:
+    get:
+      tags: [Finance]
+      summary: List finance invoices
+      operationId: listFinanceInvoices
+      x-permission: finance.invoice.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: direction
+          in: query
+          schema: { type: string, enum: [SALES, PURCHASE] }
+        - name: status
+          in: query
+          schema: { type: string, enum: [DRAFT, ISSUED, PARTIALLY_PAID, PAID, OVERDUE, CANCELLED] }
+        - name: partyId
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+      responses:
+        '200':
+          description: Invoices visible to the caller; money fields are integer cents.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invoices]
+                properties:
+                  invoices:
+                    type: array
+                    items: { $ref: '#/components/schemas/FinanceInvoice' }
+        '403': { description: Missing finance.invoice.read permission. }
+    post:
+      tags: [Finance]
+      summary: Create a draft invoice
+      description: Computes subtotal/tax/total in integer cents using a VERIFIED statutory rate when supplied. New invoices are DRAFT.
+      operationId: createFinanceInvoice
+      x-permission: finance.invoice.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FinanceInvoiceCreateRequest'
+      responses:
+        '201':
+          description: Created draft invoice.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invoice]
+                properties:
+                  invoice: { $ref: '#/components/schemas/FinanceInvoice' }
+        '400': { description: Invalid invoice, lines or party. }
+        '403': { description: Missing finance.invoice.write permission. }
+        '409': { description: A VERIFIED rate is required for a taxed invoice. }
+  /api/finance/invoices/{id}:
+    get:
+      tags: [Finance]
+      summary: Get an invoice with its lines
+      operationId: getFinanceInvoice
+      x-permission: finance.invoice.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Invoice detail including lines.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invoice]
+                properties:
+                  invoice: { $ref: '#/components/schemas/FinanceInvoice' }
+        '403': { description: Missing finance.invoice.read permission. }
+        '404': { description: Invoice not found. }
+  /api/finance/invoices/{id}/issue:
+    post:
+      tags: [Finance]
+      summary: Issue a draft invoice
+      description: Fails with 409 unless the applied statutory rate is VERIFIED and effective on the issue date. This endpoint never verifies a rate on the caller's behalf.
+      operationId: issueFinanceInvoice
+      x-permission: finance.invoice.issue
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                taxRateId:
+                  type: string
+                  description: Optional VERIFIED, effective rate to apply when the invoice has none.
+      responses:
+        '200':
+          description: Issued invoice.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invoice]
+                properties:
+                  invoice: { $ref: '#/components/schemas/FinanceInvoice' }
+        '403': { description: Missing finance.invoice.issue permission. }
+        '404': { description: Invoice not found. }
+        '409': { description: Invoice is not DRAFT, or the rate is UNVERIFIED/not effective. }
+  /api/finance/payments:
+    get:
+      tags: [Finance]
+      summary: List payments
+      operationId: listFinancePayments
+      x-permission: finance.payment.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: direction
+          in: query
+          schema: { type: string, enum: [INCOMING, OUTGOING] }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+      responses:
+        '200':
+          description: Payments visible to the caller.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [payments]
+                properties:
+                  payments:
+                    type: array
+                    items: { $ref: '#/components/schemas/FinancePayment' }
+        '403': { description: Missing finance.payment.read permission. }
+    post:
+      tags: [Finance]
+      summary: Record a payment with optional invoice allocations
+      description: CARD_TOKEN is a method identifier only. No PAN, card number or CVV is accepted or stored.
+      operationId: createFinancePayment
+      x-permission: finance.payment.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FinancePaymentCreateRequest'
+      responses:
+        '201':
+          description: Recorded payment.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [payment]
+                properties:
+                  payment: { $ref: '#/components/schemas/FinancePayment' }
+        '400': { description: Invalid payment, method or allocation. }
+        '403': { description: Missing finance.payment.write permission. }
+        '409': { description: Allocations exceed the payment amount or the invoice balance. }
+  /api/finance/payments/{id}:
+    get:
+      tags: [Finance]
+      summary: Get a payment with its allocations
+      operationId: getFinancePayment
+      x-permission: finance.payment.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Payment detail.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [payment]
+                properties:
+                  payment: { $ref: '#/components/schemas/FinancePayment' }
+        '403': { description: Missing finance.payment.read permission. }
+        '404': { description: Payment not found. }
+  /api/finance/budgets:
+    get:
+      tags: [Finance]
+      summary: List budgets
+      operationId: listFinanceBudgets
+      x-permission: finance.budget.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Budgets visible to the caller.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [budgets]
+                properties:
+                  budgets:
+                    type: array
+                    items: { $ref: '#/components/schemas/FinanceBudget' }
+        '403': { description: Missing finance.budget.read permission. }
+    post:
+      tags: [Finance]
+      summary: Create a draft budget
+      operationId: createFinanceBudget
+      x-permission: finance.budget.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FinanceBudgetCreateRequest'
+      responses:
+        '201':
+          description: Created draft budget.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [budget]
+                properties:
+                  budget: { $ref: '#/components/schemas/FinanceBudget' }
+        '400': { description: Invalid budget or lines. }
+        '403': { description: Missing finance.budget.write permission. }
+        '409': { description: Budget code already exists in this tenant. }
+  /api/finance/budgets/{id}:
+    get:
+      tags: [Finance]
+      summary: Get a budget with usage
+      operationId: getFinanceBudget
+      x-permission: finance.budget.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Budget detail and computed usage in integer cents.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [budget, usage]
+                properties:
+                  budget: { $ref: '#/components/schemas/FinanceBudget' }
+                  usage: { type: object, additionalProperties: true, description: Amounts are integer cents. }
+        '403': { description: Missing finance.budget.read permission. }
+        '404': { description: Budget not found. }
+  /api/finance/budgets/{id}/approve:
+    post:
+      tags: [Finance]
+      summary: Approve a draft budget
+      operationId: approveFinanceBudget
+      x-permission: finance.budget.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Approved budget.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [budget]
+                properties:
+                  budget: { $ref: '#/components/schemas/FinanceBudget' }
+        '403': { description: Missing finance.budget.write permission. }
+        '404': { description: Budget not found. }
+        '409': { description: Budget is not DRAFT. }
+  /api/finance/statements/trial-balance:
+    get:
+      tags: [Finance]
+      summary: Trial balance as of a date
+      operationId: getTrialBalance
+      x-permission: finance.statement.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: asOf
+          in: query
+          description: ISO date (`YYYY-MM-DD`); defaults to today when omitted.
+          schema: { type: string }
+      responses:
+        '200':
+          description: Trial balance report; amounts are integer cents.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [report]
+                properties:
+                  report: { $ref: '#/components/schemas/FinanceStatement' }
+        '400': { description: Invalid asOf date. }
+        '403': { description: Missing finance.statement.read permission. }
+  /api/finance/statements/income:
+    get:
+      tags: [Finance]
+      summary: Income statement for a period
+      operationId: getIncomeStatement
+      x-permission: finance.statement.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: from
+          in: query
+          description: ISO date (`YYYY-MM-DD`); defaults to the beginning of time when omitted.
+          schema: { type: string }
+        - name: to
+          in: query
+          description: ISO date (`YYYY-MM-DD`); defaults to today when omitted.
+          schema: { type: string }
+      responses:
+        '200':
+          description: Income report; amounts are integer cents.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [report]
+                properties:
+                  report: { $ref: '#/components/schemas/FinanceStatement' }
+        '400': { description: Invalid from/to period. }
+        '403': { description: Missing finance.statement.read permission. }
+  /api/finance/statements/balance-sheet:
+    get:
+      tags: [Finance]
+      summary: Balance sheet as of a date
+      operationId: getBalanceSheet
+      x-permission: finance.statement.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: asOf
+          in: query
+          description: ISO date (`YYYY-MM-DD`); defaults to today when omitted.
+          schema: { type: string }
+      responses:
+        '200':
+          description: Balance sheet report; amounts are integer cents.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [report]
+                properties:
+                  report: { $ref: '#/components/schemas/FinanceStatement' }
+        '400': { description: Invalid asOf date. }
+        '403': { description: Missing finance.statement.read permission. }
+  /api/finance/statements/ageing:
+    get:
+      tags: [Finance]
+      summary: Receivable/payable ageing as of a date
+      operationId: getAgeingStatement
+      x-permission: finance.statement.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: asOf
+          in: query
+          description: ISO date (`YYYY-MM-DD`); defaults to today when omitted.
+          schema: { type: string }
+        - name: direction
+          in: query
+          schema: { type: string, enum: [SALES, PURCHASE] }
+      responses:
+        '200':
+          description: Ageing report; amounts are integer cents.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [report]
+                properties:
+                  report: { $ref: '#/components/schemas/FinanceStatement' }
+        '400': { description: Invalid asOf or direction. }
+        '403': { description: Missing finance.statement.read permission. }
+  /api/finance/etims/submissions:
+    get:
+      tags: [Finance]
+      summary: List internal eTIMS queue submissions
+      description: Ready-only queue for a certified provider. No live KRA filing occurs.
+      operationId: listEtimsSubmissions
+      x-permission: finance.etims.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: invoiceId
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+      responses:
+        '200':
+          description: Queue entries with status and attempt counts.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [submissions]
+                properties:
+                  submissions:
+                    type: array
+                    items: { $ref: '#/components/schemas/EtimsSubmission' }
+        '403': { description: Missing finance.etims.read permission. }
+  /api/finance/etims/submissions/{id}:
+    get:
+      tags: [Finance]
+      summary: Get one eTIMS queue submission and its payload
+      description: The payload contains encrypted PIN references only; it is never filed to KRA.
+      operationId: getEtimsSubmission
+      x-permission: finance.etims.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Submission detail including the provider-agnostic payload.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [submission]
+                properties:
+                  submission: { allOf: [{ $ref: '#/components/schemas/EtimsSubmission' }, { type: object, properties: { payload: { $ref: '#/components/schemas/EtimsPayload' } } }] }
+        '403': { description: Missing finance.etims.read permission. }
+        '404': { description: Submission not found. }
+  /api/finance/etims/submissions/{id}/retry:
+    post:
+      tags: [Finance]
+      summary: Requeue an internal eTIMS submission
+      description: Requeues the job on `finance.etims.submit`. This is an internal retry, not a live filing request to KRA.
+      operationId: retryEtimsSubmission
+      x-permission: finance.etims.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Requeued submission.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [submission]
+                properties:
+                  submission: { $ref: '#/components/schemas/EtimsSubmission' }
+        '403': { description: Missing finance.etims.write permission. }
+        '404': { description: Submission not found. }
+        '409': { description: Submission is not in a retryable state. }
+  /api/finance/etims/payload/{invoiceId}:
+    get:
+      tags: [Finance]
+      summary: Build the provider-agnostic eTIMS payload for an invoice
+      description: Returns a ready-only payload with encrypted PIN references. It is not submitted anywhere.
+      operationId: getEtimsPayloadForInvoice
+      x-permission: finance.etims.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: invoiceId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Generated payload.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [payload]
+                properties:
+                  payload: { $ref: '#/components/schemas/EtimsPayload' }
+        '403': { description: Missing finance.etims.read permission. }
+        '404': { description: Invoice not found. }
+        '409': { description: Invoice is not eligible for a payload (for example still DRAFT). }
 components:
   securitySchemes:
     bearerAuth:
@@ -2228,6 +3293,354 @@ components:
         failedReason: { type: string, nullable: true }
         returnvalue: { description: Job result containing documentId, number and fileId. }
         createdAt: { type: string, format: date-time }
+    FinanceAccount:
+      type: object
+      required: [id, code, name, type, normalBalance, isActive]
+      properties:
+        id: { type: string }
+        code: { type: string }
+        name: { type: string }
+        type: { type: string, enum: [ASSET, LIABILITY, EQUITY, INCOME, EXPENSE] }
+        normalBalance: { type: string, enum: [DEBIT, CREDIT] }
+        systemCode: { type: string, nullable: true, description: Stable system account code, for example VAT_OUTPUT. }
+        isActive: { type: boolean }
+        classification: { $ref: '#/components/schemas/Classification' }
+    FinanceAccountCreateRequest:
+      type: object
+      required: [code, name, type, normalBalance]
+      properties:
+        code: { type: string, minLength: 1, maxLength: 60 }
+        name: { type: string, minLength: 1, maxLength: 160 }
+        type: { type: string, enum: [ASSET, LIABILITY, EQUITY, INCOME, EXPENSE] }
+        normalBalance: { type: string, enum: [DEBIT, CREDIT] }
+        systemCode: { type: string, maxLength: 60, pattern: '^[A-Z][A-Z0-9_]*$' }
+        isActive: { type: boolean, default: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    FinanceParty:
+      type: object
+      required: [id, type, name, hasTaxPin]
+      properties:
+        id: { type: string }
+        type: { type: string, enum: [CUSTOMER, SUPPLIER] }
+        name: { type: string }
+        hasTaxPin: { type: boolean, description: True when an encrypted PIN reference is on file. }
+        taxPinMasked: { type: string, nullable: true, description: Masked reference only. Plaintext PINs are never stored or emitted. }
+        email: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+        currency: { type: string, example: KES }
+        classification: { $ref: '#/components/schemas/Classification' }
+    FinancePartyCreateRequest:
+      type: object
+      required: [type, name]
+      properties:
+        type: { type: string, enum: [CUSTOMER, SUPPLIER] }
+        name: { type: string, minLength: 1, maxLength: 160 }
+        taxPin: { type: string, maxLength: 20, description: Encrypted at rest on receipt; never echoed in a response. }
+        email: { type: string, maxLength: 180 }
+        phone: { type: string, maxLength: 40 }
+    StatutoryRate:
+      type: object
+      required: [id, code, kind, label, rateBps, effectiveFrom, status, sourceReference]
+      properties:
+        id: { type: string }
+        code: { type: string }
+        kind: { type: string, enum: [VAT] }
+        label: { type: string }
+        rateBps: { type: integer, minimum: 1, maximum: 10000, description: Basis points (10000 = 100%). Sourced only from this versioned statutory-rate table; only VERIFIED, effective rows are used in finance calculations. }
+        effectiveFrom: { type: string, description: ISO date (`YYYY-MM-DD`). }
+        effectiveTo: { type: string, nullable: true, description: ISO date (`YYYY-MM-DD`). }
+        status: { type: string, enum: [UNVERIFIED, VERIFIED, SUPERSEDED] }
+        sourceReference: { type: string, description: KRA/Government publication reference for the rate. }
+        verificationNote: { type: string, nullable: true }
+        verifiedBy: { type: string, nullable: true }
+        verifiedAt: { type: string, format: date-time, nullable: true }
+    StatutoryRateCreateRequest:
+      type: object
+      required: [code, kind, label, rateBps, effectiveFrom, sourceReference]
+      properties:
+        code: { type: string, minLength: 1, maxLength: 60 }
+        kind: { type: string, enum: [VAT] }
+        label: { type: string, minLength: 1, maxLength: 160 }
+        rateBps: { type: integer, minimum: 1, maximum: 10000 }
+        effectiveFrom: { type: string, description: ISO date (`YYYY-MM-DD`). }
+        effectiveTo: { type: string, description: ISO date (`YYYY-MM-DD`). }
+        sourceReference: { type: string, minLength: 1, maxLength: 240 }
+        verificationNote: { type: string, maxLength: 1000 }
+      description: Always creates an UNVERIFIED row; verification is a separate signed-off action.
+    StatutoryRateVerifyRequest:
+      type: object
+      required: [verifiedBy, verificationNote]
+      properties:
+        verifiedBy: { type: string, minLength: 1, maxLength: 120, description: Named reviewer or reviewer ID. }
+        verificationNote: { type: string, minLength: 1, maxLength: 500, description: Publication/reference checked during sign-off. }
+    FinanceJournalLine:
+      type: object
+      required: [id, accountId, debitCents, creditCents]
+      properties:
+        id: { type: string }
+        accountId: { type: string }
+        partyId: { type: string, nullable: true }
+        debitCents: { type: integer, minimum: 0, description: Integer cents. }
+        creditCents: { type: integer, minimum: 0, description: Integer cents. }
+        memo: { type: string, nullable: true }
+        position: { type: integer }
+    FinanceJournal:
+      type: object
+      required: [id, number, date, description, status]
+      properties:
+        id: { type: string }
+        number: { type: string }
+        date: { type: string, description: ISO date (`YYYY-MM-DD`). }
+        description: { type: string }
+        status: { type: string, enum: [DRAFT, POSTED, REVERSED] }
+        referenceType: { type: string, nullable: true }
+        referenceId: { type: string, nullable: true }
+        reversalOfId: { type: string, nullable: true }
+        postedAt: { type: string, format: date-time, nullable: true }
+        lines:
+          type: array
+          items: { $ref: '#/components/schemas/FinanceJournalLine' }
+        classification: { $ref: '#/components/schemas/Classification' }
+    FinanceJournalCreateRequest:
+      type: object
+      required: [date, description, lines]
+      properties:
+        date: { type: string, description: ISO date (`YYYY-MM-DD`). }
+        description: { type: string, minLength: 1, maxLength: 300 }
+        referenceType: { type: string, maxLength: 40 }
+        referenceId: { type: string, maxLength: 80 }
+        classification: { $ref: '#/components/schemas/Classification' }
+        lines:
+          type: array
+          minItems: 2
+          items:
+            type: object
+            required: [accountId, debitCents, creditCents]
+            properties:
+              accountId: { type: string }
+              partyId: { type: string }
+              debitCents: { type: integer, minimum: 0 }
+              creditCents: { type: integer, minimum: 0 }
+              memo: { type: string, maxLength: 240 }
+      description: Total debitCents must equal total creditCents before posting.
+    FinanceInvoiceLine:
+      type: object
+      required: [id, description, qty, unitPriceCents, netCents, taxCents, grossCents]
+      properties:
+        id: { type: string }
+        description: { type: string }
+        qty: { type: number }
+        unitPriceCents: { type: integer, description: Integer cents. }
+        taxRateId: { type: string, nullable: true }
+        netCents: { type: integer, description: Integer cents. }
+        taxCents: { type: integer, description: Integer cents. }
+        grossCents: { type: integer, description: Integer cents. }
+    FinanceInvoice:
+      type: object
+      required: [id, number, direction, type, status, partyId, issueDate, currency, taxInclusive, subtotalCents, taxCents, totalCents, paidCents, balanceCents]
+      properties:
+        id: { type: string }
+        number: { type: string }
+        direction: { type: string, enum: [SALES, PURCHASE] }
+        type: { type: string, enum: [INVOICE, CREDIT_NOTE] }
+        status: { type: string, enum: [DRAFT, ISSUED, PARTIALLY_PAID, PAID, OVERDUE, CANCELLED] }
+        partyId: { type: string }
+        issueDate: { type: string, description: ISO date (`YYYY-MM-DD`). }
+        dueDate: { type: string, nullable: true, description: ISO date (`YYYY-MM-DD`). }
+        currency: { type: string, example: KES }
+        taxInclusive: { type: boolean }
+        taxRateId: { type: string, nullable: true, description: VERIFIED statutory rate used for tax calculations. }
+        subtotalCents: { type: integer, description: Integer cents. }
+        taxCents: { type: integer, description: Integer cents. }
+        totalCents: { type: integer, description: Integer cents. }
+        paidCents: { type: integer, description: Integer cents. }
+        balanceCents: { type: integer, description: Integer cents. }
+        notes: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        issuedAt: { type: string, format: date-time, nullable: true }
+        lines:
+          type: array
+          items: { $ref: '#/components/schemas/FinanceInvoiceLine' }
+    FinanceInvoiceCreateRequest:
+      type: object
+      required: [direction, type, partyId, issueDate, taxInclusive, lines]
+      properties:
+        direction: { type: string, enum: [SALES, PURCHASE] }
+        type: { type: string, enum: [INVOICE, CREDIT_NOTE] }
+        partyId: { type: string }
+        issueDate: { type: string, description: ISO date (`YYYY-MM-DD`). }
+        dueDate: { type: string, description: ISO date (`YYYY-MM-DD`). }
+        taxInclusive: { type: boolean }
+        taxRateId: { type: string, description: Optional VERIFIED statutory rate; rateBps is never supplied by the client. }
+        notes: { type: string, maxLength: 3000 }
+        classification: { $ref: '#/components/schemas/Classification' }
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 60
+          items:
+            type: object
+            required: [description, qty, unitPriceCents]
+            properties:
+              description: { type: string, maxLength: 240 }
+              qty: { type: number, exclusiveMinimum: 0 }
+              unitPriceCents: { type: integer, minimum: 1 }
+    FinancePayment:
+      type: object
+      required: [id, number, direction, partyId, method, amountCents, currency]
+      properties:
+        id: { type: string }
+        number: { type: string }
+        direction: { type: string, enum: [INCOMING, OUTGOING] }
+        partyId: { type: string }
+        method: { type: string, enum: [BANK_TRANSFER, MPESA, CASH, CHEQUE, CARD_TOKEN, OTHER], description: Method identifier only; no PAN or CVV is accepted or emitted. }
+        amountCents: { type: integer, description: Integer cents. }
+        currency: { type: string, example: KES }
+        paidAt: { type: string, format: date-time, nullable: true }
+        reference: { type: string, nullable: true }
+        status: { type: string, enum: [PENDING, COMPLETED, FAILED] }
+        allocations:
+          type: array
+          items:
+            type: object
+            required: [invoiceId, amountCents]
+            properties:
+              invoiceId: { type: string }
+              amountCents: { type: integer, description: Integer cents. }
+        classification: { $ref: '#/components/schemas/Classification' }
+    FinancePaymentCreateRequest:
+      type: object
+      required: [direction, partyId, method, amountCents]
+      properties:
+        direction: { type: string, enum: [INCOMING, OUTGOING] }
+        partyId: { type: string }
+        method: { type: string, enum: [BANK_TRANSFER, MPESA, CASH, CHEQUE, CARD_TOKEN, OTHER] }
+        amountCents: { type: integer, minimum: 1, description: Integer cents. }
+        paidAt: { type: string, format: date-time }
+        reference: { type: string, maxLength: 120 }
+        allocations:
+          type: array
+          items:
+            type: object
+            required: [invoiceId, amountCents]
+            properties:
+              invoiceId: { type: string }
+              amountCents: { type: integer, minimum: 1 }
+      description: No card number, PAN or CVV field exists; CARD_TOKEN denotes a token handled outside this API.
+    FinanceBudget:
+      type: object
+      required: [id, code, name, period, startDate, endDate, status]
+      properties:
+        id: { type: string }
+        code: { type: string }
+        name: { type: string }
+        period: { type: string, enum: [MONTHLY, QUARTERLY, ANNUAL] }
+        startDate: { type: string, description: ISO date (`YYYY-MM-DD`). }
+        endDate: { type: string, description: ISO date (`YYYY-MM-DD`). }
+        status: { type: string, enum: [DRAFT, APPROVED, CLOSED] }
+        approvedAt: { type: string, format: date-time, nullable: true }
+        lines:
+          type: array
+          items:
+            type: object
+            required: [accountId, amountCents]
+            properties:
+              accountId: { type: string }
+              amountCents: { type: integer, description: Integer cents. }
+        classification: { $ref: '#/components/schemas/Classification' }
+    FinanceBudgetCreateRequest:
+      type: object
+      required: [code, name, period, startDate, endDate, lines]
+      properties:
+        code: { type: string, minLength: 1, maxLength: 60 }
+        name: { type: string, minLength: 1, maxLength: 160 }
+        period: { type: string, enum: [MONTHLY, QUARTERLY, ANNUAL] }
+        startDate: { type: string, description: ISO date (`YYYY-MM-DD`). }
+        endDate: { type: string, description: ISO date (`YYYY-MM-DD`). }
+        classification: { $ref: '#/components/schemas/Classification' }
+        lines:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [accountId, amountCents]
+            properties:
+              accountId: { type: string }
+              amountCents: { type: integer, minimum: 0 }
+    FinanceStatement:
+      type: object
+      required: [title, columns, rows, totals]
+      description: Generic report shape. Every amount in `rows` and `totals` is an integer number of cents.
+      properties:
+        title: { type: string }
+        columns:
+          type: array
+          items:
+            type: object
+            required: [key, label]
+            properties:
+              key: { type: string }
+              label: { type: string }
+        rows:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        totals:
+          type: object
+          additionalProperties: true
+    EtimsSubmission:
+      type: object
+      required: [id, invoiceId, status, payloadVersion, attempts, queuedAt]
+      description: Internal ready-only queue record. Not a live KRA filing or submission receipt.
+      properties:
+        id: { type: string }
+        invoiceId: { type: string }
+        status: { type: string, enum: [QUEUED, PENDING, SUBMITTED, FAILED], description: Status of the internal queue only. }
+        payloadVersion: { type: string, example: '1.0' }
+        provider: { type: string, nullable: true, description: Certified provider label for the internal queue; no live filing is performed. }
+        externalReference: { type: string, nullable: true, description: Internal reference only; not a KRA filing receipt. }
+        attempts: { type: integer, minimum: 0 }
+        lastError: { type: string, nullable: true }
+        queuedAt: { type: string, format: date-time, nullable: true }
+        submittedAt: { type: string, format: date-time, nullable: true }
+    EtimsPayload:
+      type: object
+      description: |
+        Provider-agnostic payload built for the internal queue. Contains encrypted PIN
+        references only and is never filed to KRA. Unlike finance API money fields, the
+        external-style payload uses decimal strings for presentation amounts; this object
+        is not a finance money field.
+      properties:
+        schemaVersion: { type: string, example: '1.0', description: Value of ETIMS_PAYLOAD_VERSION. }
+        provider: { type: string, example: internal-queue, description: Value of ETIMS_PROVIDER; an internal queue label, not a live filing integration. }
+        documentType: { type: string, enum: [Invoice, CreditNote] }
+        supplierPinRef: { type: string, nullable: true, description: Encrypted PIN reference, never a plaintext PIN. }
+        buyerPinRef: { type: string, nullable: true, description: Encrypted PIN reference, never a plaintext PIN. }
+        invoiceNumber: { type: string }
+        issueDate: { type: string, description: ISO date (`YYYY-MM-DD`). }
+        currency: { type: string, example: KES }
+        taxInclusive: { type: boolean }
+        classification: { $ref: '#/components/schemas/Classification' }
+        lines:
+          type: array
+          items:
+            type: object
+            properties:
+              description: { type: string }
+              qty: { type: number }
+              unitPrice: { type: string, description: Decimal presentation amount, not integer cents. }
+              vatRate: { type: number, description: Fraction derived from a VERIFIED statutory rate (rateBps / 10000). }
+              netAmount: { type: string }
+              vatAmount: { type: string }
+              grossAmount: { type: string }
+        totals:
+          type: object
+          properties:
+            net: { type: string, description: Decimal presentation amount, not integer cents. }
+            vat: { type: string }
+            gross: { type: string }
+      x-queue-note: Ready-only internal queue; no live KRA filing or submission occurs.
     Problem:
       type: object
       required:

@@ -231,6 +231,102 @@ enum JobStatus {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 6 finance enums
+// ---------------------------------------------------------------------------
+
+enum FinanceAccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  INCOME
+  EXPENSE
+}
+
+enum FinanceAccountNormal {
+  DEBIT
+  CREDIT
+}
+
+enum JournalStatus {
+  DRAFT
+  POSTED
+  REVERSED
+}
+
+enum FinancePartyType {
+  CUSTOMER
+  SUPPLIER
+}
+
+enum FinanceDocumentDirection {
+  SALES
+  PURCHASE
+}
+
+enum FinanceDocumentType {
+  INVOICE
+  CREDIT_NOTE
+}
+
+enum FinanceInvoiceStatus {
+  DRAFT
+  ISSUED
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+enum PaymentDirection {
+  INCOMING
+  OUTGOING
+}
+
+enum PaymentMethod {
+  BANK_TRANSFER
+  MPESA
+  CASH
+  CHEQUE
+  CARD_TOKEN
+  OTHER
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+}
+
+enum BudgetPeriod {
+  MONTHLY
+  QUARTERLY
+  ANNUAL
+}
+
+enum BudgetStatus {
+  DRAFT
+  APPROVED
+  CLOSED
+}
+
+enum StatutoryRateKind {
+  VAT
+}
+
+enum StatutoryRateStatus {
+  UNVERIFIED
+  VERIFIED
+  SUPERSEDED
+}
+
+enum EtimsStatus {
+  QUEUED
+  PENDING
+  SUBMITTED
+  FAILED
+}
+
+// ---------------------------------------------------------------------------
 // Organisation
 // ---------------------------------------------------------------------------
 
@@ -293,6 +389,18 @@ model Company {
   workflowTasks      WorkflowTask[]
   searchDocuments    SearchDocument[]
   jobs               JobRecord[]
+  financeAccounts    FinanceAccount[]
+  financeParties     FinanceParty[]
+  statutoryRates     StatutoryRate[]
+  financeJournals    FinanceJournal[]
+  financeJournalLines FinanceJournalLine[]
+  financeInvoices    FinanceInvoice[]
+  financeInvoiceLines FinanceInvoiceLine[]
+  financePayments    FinancePayment[]
+  financePaymentAllocations FinancePaymentAllocation[]
+  financeBudgets     FinanceBudget[]
+  financeBudgetLines FinanceBudgetLine[]
+  etimsSubmissions   EtimsSubmission[]
 }
 
 model Branch {
@@ -320,6 +428,13 @@ model Branch {
   routingRules RoutingRule[] @relation("RoutingBranch")
   files        FileObject[]  @relation("FileBranch")
   workflows    WorkflowInstance[] @relation("WorkflowBranch")
+  financeAccounts    FinanceAccount[]
+  financeParties     FinanceParty[]
+  financeJournals    FinanceJournal[]
+  financeInvoices    FinanceInvoice[]
+  financePayments    FinancePayment[]
+  financeBudgets     FinanceBudget[]
+  etimsSubmissions   EtimsSubmission[]
 
   @@unique([companyId, code])
   @@index([companyId, isActive])
@@ -444,6 +559,15 @@ model User {
   workflowRequests     WorkflowInstance[]  @relation("WorkflowRequester")
   workflowAssignments  WorkflowTask[]      @relation("WorkflowAssignee")
   workflowDelegationsFrom WorkflowTask[]   @relation("WorkflowDelegatedFrom")
+  financeAccountsCreated   FinanceAccount[]  @relation("FinanceAccountCreatedBy")
+  financePartiesCreated    FinanceParty[]    @relation("FinancePartyCreatedBy")
+  statutoryRatesCreated    StatutoryRate[]   @relation("StatutoryRateCreatedBy")
+  financeJournalsCreated   FinanceJournal[]  @relation("FinanceJournalCreatedBy")
+  financeJournalsPosted    FinanceJournal[]  @relation("FinanceJournalPostedBy")
+  financeInvoicesCreated   FinanceInvoice[]  @relation("FinanceInvoiceCreatedBy")
+  financePaymentsCreated   FinancePayment[]  @relation("FinancePaymentCreatedBy")
+  financeBudgetsCreated    FinanceBudget[]   @relation("FinanceBudgetCreatedBy")
+  financeBudgetsApproved   FinanceBudget[]   @relation("FinanceBudgetApprovedBy")
 
   @@unique([companyId, email])
   @@unique([companyId, identityProvider, externalId])
@@ -1305,7 +1429,324 @@ model BusinessDocument {
   updatedAt     DateTime       @updatedAt
   deletedAt     DateTime?
 
+  financeInvoices FinanceInvoice[]
+
   @@index([companyId, kind])
   @@index([companyId, status])
   @@index([companyId, clientEmail])
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6 finance: chart of accounts, journals, invoices, payments, budgets
+// ---------------------------------------------------------------------------
+
+model FinanceAccount {
+  id             String             @id @default(cuid())
+  companyId      String             @default("cmp_comet")
+  tenant         Company            @relation(fields: [companyId], references: [id])
+  branchId       String?
+  branch         Branch?            @relation(fields: [branchId], references: [id])
+  code           String
+  name           String
+  type           FinanceAccountType
+  normalBalance  FinanceAccountNormal
+  systemCode     String?
+  parentId       String?
+  parent         FinanceAccount?    @relation("FinanceAccountTree", fields: [parentId], references: [id])
+  children       FinanceAccount[]   @relation("FinanceAccountTree")
+  currency       String             @default("KES")
+  isActive       Boolean            @default(true)
+  classification DataClassification @default(INTERNAL)
+  createdById    String?
+  createdBy      User?              @relation("FinanceAccountCreatedBy", fields: [createdById], references: [id])
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  journalLines FinanceJournalLine[]
+  budgetLines  FinanceBudgetLine[]
+
+  @@unique([companyId, code])
+  @@unique([companyId, systemCode])
+  @@index([companyId, type, isActive])
+}
+
+model FinanceParty {
+  id               String             @id @default(cuid())
+  companyId        String             @default("cmp_comet")
+  tenant           Company            @relation(fields: [companyId], references: [id])
+  branchId         String?
+  branch           Branch?            @relation(fields: [branchId], references: [id])
+  type             FinancePartyType
+  name             String
+  legalName        String?
+  taxPinCiphertext String?
+  email            String?
+  phone            String?
+  currency         String             @default("KES")
+  classification   DataClassification @default(INTERNAL)
+  createdById      String?
+  createdBy        User?              @relation("FinancePartyCreatedBy", fields: [createdById], references: [id])
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  invoices     FinanceInvoice[]
+  payments     FinancePayment[]
+  journalLines FinanceJournalLine[]
+
+  @@index([companyId, type])
+  @@index([companyId, name])
+}
+
+model StatutoryRate {
+  id               String              @id @default(cuid())
+  companyId        String              @default("cmp_comet")
+  tenant           Company             @relation(fields: [companyId], references: [id])
+  code             String
+  kind             StatutoryRateKind
+  label            String
+  rateBps          Int
+  effectiveFrom    String
+  effectiveTo      String?
+  sourceReference  String
+  verificationNote String?
+  verifiedBy       String?
+  verifiedAt       DateTime?
+  status           StatutoryRateStatus @default(UNVERIFIED)
+  createdById      String?
+  createdBy        User?               @relation("StatutoryRateCreatedBy", fields: [createdById], references: [id])
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  invoices     FinanceInvoice[]
+  invoiceLines FinanceInvoiceLine[]
+
+  @@unique([companyId, code, effectiveFrom])
+  @@index([companyId, kind, status, effectiveFrom])
+}
+
+model FinanceJournal {
+  id             String             @id @default(cuid())
+  companyId      String             @default("cmp_comet")
+  tenant         Company            @relation(fields: [companyId], references: [id])
+  branchId       String?
+  branch         Branch?            @relation(fields: [branchId], references: [id])
+  number         String
+  date           String
+  description    String
+  status         JournalStatus      @default(DRAFT)
+  referenceType  String?
+  referenceId    String?
+  reversalOfId   String?
+  reversalOf     FinanceJournal?    @relation("FinanceJournalReversal", fields: [reversalOfId], references: [id])
+  reversals      FinanceJournal[]   @relation("FinanceJournalReversal")
+  postedAt       DateTime?
+  postedById     String?
+  postedBy       User?              @relation("FinanceJournalPostedBy", fields: [postedById], references: [id])
+  createdById    String?
+  createdBy      User?              @relation("FinanceJournalCreatedBy", fields: [createdById], references: [id])
+  classification DataClassification @default(INTERNAL)
+  lines          FinanceJournalLine[]
+  invoice        FinanceInvoice?
+  payment        FinancePayment?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  @@unique([companyId, number])
+  @@index([companyId, status, date])
+}
+
+model FinanceJournalLine {
+  id          String         @id @default(cuid())
+  companyId   String         @default("cmp_comet")
+  tenant      Company        @relation(fields: [companyId], references: [id])
+  journalId   String
+  journal     FinanceJournal @relation(fields: [journalId], references: [id])
+  accountId   String
+  account     FinanceAccount @relation(fields: [accountId], references: [id])
+  partyId     String?
+  party       FinanceParty?  @relation(fields: [partyId], references: [id])
+  debitCents  Int            @default(0)
+  creditCents Int            @default(0)
+  memo        String?
+  position    Int            @default(0)
+  createdAt   DateTime       @default(now())
+
+  @@index([journalId])
+  @@index([companyId, accountId])
+}
+
+model FinanceInvoice {
+  id                 String                   @id @default(cuid())
+  companyId          String                   @default("cmp_comet")
+  tenant             Company                  @relation(fields: [companyId], references: [id])
+  branchId           String?
+  branch             Branch?                  @relation(fields: [branchId], references: [id])
+  number             String
+  direction          FinanceDocumentDirection
+  type               FinanceDocumentType      @default(INVOICE)
+  status             FinanceInvoiceStatus     @default(DRAFT)
+  partyId            String
+  party              FinanceParty             @relation(fields: [partyId], references: [id])
+  issueDate          String
+  dueDate            String?
+  currency           String                   @default("KES")
+  taxInclusive       Boolean                  @default(false)
+  taxRateId          String?
+  taxRate            StatutoryRate?           @relation(fields: [taxRateId], references: [id])
+  subtotalCents      Int                      @default(0)
+  taxCents           Int                      @default(0)
+  totalCents         Int                      @default(0)
+  paidCents          Int                      @default(0)
+  balanceCents       Int                      @default(0)
+  notes              String?
+  classification     DataClassification       @default(INTERNAL)
+  sourceInvoiceId    String?
+  sourceInvoice      FinanceInvoice?          @relation("FinanceInvoiceCreditNote", fields: [sourceInvoiceId], references: [id])
+  creditNotes        FinanceInvoice[]         @relation("FinanceInvoiceCreditNote")
+  businessDocumentId String?
+  businessDocument   BusinessDocument?        @relation(fields: [businessDocumentId], references: [id])
+  journalId          String?                  @unique
+  journal            FinanceJournal?          @relation(fields: [journalId], references: [id])
+  createdById        String?
+  createdBy          User?                    @relation("FinanceInvoiceCreatedBy", fields: [createdById], references: [id])
+  issuedAt           DateTime?
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+
+  lines            FinanceInvoiceLine[]
+  allocations      FinancePaymentAllocation[]
+  etimsSubmissions EtimsSubmission[]
+
+  @@unique([companyId, number])
+  @@index([companyId, direction, status])
+  @@index([companyId, partyId])
+}
+
+model FinanceInvoiceLine {
+  id             String         @id @default(cuid())
+  companyId      String         @default("cmp_comet")
+  tenant         Company        @relation(fields: [companyId], references: [id])
+  invoiceId      String
+  invoice        FinanceInvoice @relation(fields: [invoiceId], references: [id])
+  description    String
+  qty            Float
+  unitPriceCents Int
+  taxRateId      String?
+  taxRate        StatutoryRate? @relation(fields: [taxRateId], references: [id])
+  netCents       Int            @default(0)
+  taxCents       Int            @default(0)
+  grossCents     Int            @default(0)
+  position       Int            @default(0)
+  createdAt      DateTime       @default(now())
+
+  @@index([invoiceId])
+}
+
+model FinancePayment {
+  id             String             @id @default(cuid())
+  companyId      String             @default("cmp_comet")
+  tenant         Company            @relation(fields: [companyId], references: [id])
+  branchId       String?
+  branch         Branch?            @relation(fields: [branchId], references: [id])
+  number         String
+  direction      PaymentDirection
+  partyId        String
+  party          FinanceParty       @relation(fields: [partyId], references: [id])
+  method         PaymentMethod
+  amountCents    Int
+  currency       String             @default("KES")
+  paidAt         DateTime?
+  reference      String?
+  status         PaymentStatus      @default(COMPLETED)
+  journalId      String?            @unique
+  journal        FinanceJournal?    @relation(fields: [journalId], references: [id])
+  classification DataClassification @default(INTERNAL)
+  createdById    String?
+  createdBy      User?              @relation("FinancePaymentCreatedBy", fields: [createdById], references: [id])
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  allocations FinancePaymentAllocation[]
+
+  @@unique([companyId, number])
+  @@index([companyId, direction])
+  @@index([companyId, partyId])
+}
+
+model FinancePaymentAllocation {
+  id          String         @id @default(cuid())
+  companyId   String         @default("cmp_comet")
+  tenant      Company        @relation(fields: [companyId], references: [id])
+  paymentId   String
+  payment     FinancePayment @relation(fields: [paymentId], references: [id])
+  invoiceId   String
+  invoice     FinanceInvoice @relation(fields: [invoiceId], references: [id])
+  amountCents Int
+  createdAt   DateTime       @default(now())
+
+  @@unique([paymentId, invoiceId])
+}
+
+model FinanceBudget {
+  id             String             @id @default(cuid())
+  companyId      String             @default("cmp_comet")
+  tenant         Company            @relation(fields: [companyId], references: [id])
+  branchId       String?
+  branch         Branch?            @relation(fields: [branchId], references: [id])
+  code           String
+  name           String
+  period         BudgetPeriod
+  startDate      String
+  endDate        String
+  status         BudgetStatus       @default(DRAFT)
+  approvedById   String?
+  approvedBy     User?              @relation("FinanceBudgetApprovedBy", fields: [approvedById], references: [id])
+  approvedAt     DateTime?
+  classification DataClassification @default(INTERNAL)
+  createdById    String?
+  createdBy      User?              @relation("FinanceBudgetCreatedBy", fields: [createdById], references: [id])
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  lines FinanceBudgetLine[]
+
+  @@unique([companyId, code])
+}
+
+model FinanceBudgetLine {
+  id          String         @id @default(cuid())
+  companyId   String         @default("cmp_comet")
+  tenant      Company        @relation(fields: [companyId], references: [id])
+  budgetId    String
+  budget      FinanceBudget  @relation(fields: [budgetId], references: [id])
+  accountId   String
+  account     FinanceAccount @relation(fields: [accountId], references: [id])
+  amountCents Int
+  createdAt   DateTime       @default(now())
+
+  @@unique([budgetId, accountId])
+}
+
+model EtimsSubmission {
+  id                String         @id @default(cuid())
+  companyId         String         @default("cmp_comet")
+  tenant            Company        @relation(fields: [companyId], references: [id])
+  branchId          String?
+  branch            Branch?        @relation(fields: [branchId], references: [id])
+  invoiceId         String
+  invoice           FinanceInvoice @relation(fields: [invoiceId], references: [id])
+  payloadVersion    String
+  status            EtimsStatus    @default(QUEUED)
+  provider          String?
+  externalReference String?
+  attempts          Int            @default(0)
+  lastError         String?
+  payload           Json?
+  queuedAt          DateTime       @default(now())
+  submittedAt       DateTime?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  @@index([companyId, invoiceId])
+  @@index([companyId, status])
 }

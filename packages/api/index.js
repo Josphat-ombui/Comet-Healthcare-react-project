@@ -41,6 +41,7 @@ import { filesRouter } from './routes/files.routes.js'
 import { workflowRouter } from './routes/workflow.routes.js'
 import { notificationsRouter } from './routes/notifications.routes.js'
 import { searchRouter } from './routes/search.routes.js'
+import { financeRouter } from './routes/finance.routes.js'
 import { storageMode } from './lib/object-storage.js'
 import { requireAuth } from './lib/auth.js'
 import { resolvePrincipal } from './lib/authorize.js'
@@ -112,6 +113,7 @@ app.use('/api/files', filesRouter)
 app.use('/api/workflow', workflowRouter)
 app.use('/api/notifications', notificationsRouter)
 app.use('/api/search', searchRouter)
+app.use('/api/finance', financeRouter)
 app.use('/api/admin', requireAuth, adminRouter)
 
 // ---- production: serve the built frontend from dist/ and SPA-fallback ----
