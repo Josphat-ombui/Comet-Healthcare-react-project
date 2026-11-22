@@ -1,0 +1,168 @@
+openapi: 3.1.0
+info:
+  title: Comet Healthcare Enterprise API
+  version: 0.1.0-phase.1
+  summary: REST and webhook contract for the Comet Healthcare enterprise platform.
+  description: |
+    Phase 1 skeleton. Business endpoints are added by the phase that implements them.
+    Tenant and branch context are derived from the authenticated principal; clients must
+    never supply companyId directly.
+  contact:
+    name: Comet Healthcare Platform Team
+  license:
+    name: Proprietary - internal use
+servers:
+  - url: https://api.example.invalid
+    description: Production (placeholder until domain/provider is confirmed)
+  - url: http://localhost:4000
+    description: Local development
+tags:
+  - name: Health
+    description: Liveness and readiness checks.
+  - name: Identity
+    description: Users, sessions, MFA, and policies. Added in Phase 3.
+  - name: Messaging
+    description: Inboxes, threads, channels, and files. Added in Phase 4.
+  - name: Platform
+    description: Workflow, files, search, notifications, and documents. Added in Phase 5.
+x-phase-roadmap:
+  phase1: Architecture and this skeleton only
+  phase2: ERD, migrations, workspace split, shared contracts
+  phase3: /api/auth, /api/identity, /api/org, /api/audit
+  phase4: /api/messaging and realtime events
+  phase5: /api/files, /api/workflow, /api/notifications, /api/search, /api/documents
+  phase6: /api/finance
+  phase7: /api/sales
+  phase8: /api/inventory
+  phase9: /api/procurement
+  phase10: /api/service
+  phase11: /api/hr
+  phase12: /api/projects
+  phase13: /api/manufacturing
+  phase14: /api/reporting
+  phase15: /api/public/v1 and /api/webhooks
+paths:
+  /api/health/live:
+    get:
+      tags:
+        - Health
+      summary: Liveness probe
+      description: Returns 200 if the process is running. Does not check dependencies.
+      operationId: getHealthLive
+      security: []
+      responses:
+        '200':
+          description: Process is alive.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+  /api/health/ready:
+    get:
+      tags:
+        - Health
+      summary: Readiness probe
+      description: Checks PostgreSQL, Redis, and object storage availability.
+      operationId: getHealthReady
+      security: []
+      responses:
+        '200':
+          description: All required dependencies are reachable.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        '503':
+          description: One or more dependencies are unavailable.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Short-lived access token for ERP/CMS users.
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: comet_refresh
+      description: HttpOnly, Secure, SameSite=Strict refresh session cookie.
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Scoped public API key with per-key rate limits.
+    oauth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://api.example.invalid/oauth/token
+          scopes:
+            public:read: Read permitted public resources.
+            public:write: Write permitted public resources.
+  headers:
+    CorrelationId:
+      description: Stable identifier propagated through logs, events, and jobs.
+      schema:
+        type: string
+        example: cor_01JQ8Z3M9K2P7YV4
+  schemas:
+    HealthStatus:
+      type: object
+      required:
+        - status
+        - correlationId
+      properties:
+        status:
+          type: string
+          enum:
+            - ok
+            - degraded
+            - unavailable
+        correlationId:
+          type: string
+        checks:
+          type: object
+          additionalProperties:
+            type: string
+          example:
+            postgres: ok
+            redis: ok
+            objectStorage: ok
+    Problem:
+      type: object
+      required:
+        - type
+        - title
+        - status
+        - correlationId
+      properties:
+        type:
+          type: string
+          format: uri
+          default: about:blank
+        title:
+          type: string
+        status:
+          type: integer
+          format: int32
+        detail:
+          type: string
+        instance:
+          type: string
+        correlationId:
+          type: string
+security:
+  - bearerAuth: []
