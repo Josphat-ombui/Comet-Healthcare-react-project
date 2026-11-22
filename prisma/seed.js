@@ -8,11 +8,12 @@
 
 import bcrypt from 'bcryptjs'
 import { PrismaClient } from '@prisma/client'
-import { genBookingCode } from '../lib/util.js'
-import { addDays, localIsoDay } from '../lib/slots.js'
-import { DEFAULT_COMPANY, computeLine, computeTotals } from '../lib/documents.js'
-import { DEFAULT_SITE_CONTENT } from '../lib/content.js'
-import { SEED_EXPERTS } from '../../src/lib/experts.js'
+import '../packages/api/lib/env.js'
+import { genBookingCode } from '../packages/api/lib/util.js'
+import { addDays, localIsoDay } from '../packages/api/lib/slots.js'
+import { DEFAULT_COMPANY, computeLine, computeTotals } from '../packages/api/lib/documents.js'
+import { DEFAULT_SITE_CONTENT } from '../packages/api/lib/content.js'
+import { SEED_EXPERTS } from '../packages/web/src/lib/experts.js'
 
 const prisma = new PrismaClient()
 
@@ -56,19 +57,88 @@ const TESTIMONIALS = [
   { name: 'Robert Gakinya', role: 'Founder, PharmaStart Incubator', quote: 'The training program on regulatory compliance and digital tools transformed how our startup approaches quality. Practical, current, and honest.', rating: 5 },
 ]
 
+const DEPARTMENTS = [
+  { code: 'sales', name: 'Sales', address: 'sales@internal' },
+  { code: 'repairs', name: 'Repairs & Service', address: 'repairs@internal' },
+  { code: 'procurement', name: 'Procurement', address: 'procurement@internal' },
+  { code: 'stores', name: 'Stores', address: 'stores@internal' },
+  { code: 'production', name: 'Production', address: 'production@internal' },
+  { code: 'quality', name: 'Quality Assurance', address: 'quality@internal' },
+  { code: 'finance', name: 'Finance', address: 'finance@internal' },
+  { code: 'hr', name: 'Human Resources', address: 'hr@internal' },
+  { code: 'customer-care', name: 'Customer Care', address: 'customercare@internal' },
+  { code: 'management', name: 'Management', address: 'management@internal' },
+]
+
 async function main() {
   const adminPassword = process.env.SEED_ADMIN_PASSWORD || 'ChangeMe123!'
   const adminHash = await bcrypt.hash(adminPassword, 12)
+  const companyId = 'cmp_comet'
+
+  await prisma.company.upsert({
+    where: { id: companyId },
+    update: {},
+    create: {
+      id: companyId,
+      code: 'COMET',
+      name: 'Comet Healthcare Pharmaceutical Ltd',
+    },
+  })
+
+  await prisma.branch.upsert({
+    where: { companyId_code: { companyId, code: 'br_nairobi_hq' } },
+    update: {},
+    create: {
+      companyId,
+      code: 'br_nairobi_hq',
+      name: 'Nairobi HQ',
+      type: 'HQ',
+      city: 'Nairobi',
+    },
+  })
+  await prisma.branch.upsert({
+    where: { companyId_code: { companyId, code: 'br_machakos_plant' } },
+    update: {},
+    create: {
+      companyId,
+      code: 'br_machakos_plant',
+      name: 'Machakos Plant',
+      type: 'PLANT',
+      city: 'Machakos',
+    },
+  })
+
+  for (const dept of DEPARTMENTS) {
+    const department = await prisma.department.upsert({
+      where: { companyId_code: { companyId, code: dept.code } },
+      update: {},
+      create: { companyId, code: dept.code, name: dept.name, internalAddress: dept.address },
+    })
+    await prisma.inbox.upsert({
+      where: { companyId_internalAddress: { companyId, internalAddress: dept.address } },
+      update: {},
+      create: {
+        companyId,
+        departmentId: department.id,
+        kind: 'DEPARTMENT',
+        code: `inbox_${dept.code}`,
+        name: `${dept.name} Shared Inbox`,
+        internalAddress: dept.address,
+      },
+    })
+  }
 
   await prisma.user.upsert({
     where: { email: 'admin@comethealthcare.local' },
     update: {},
     create: {
+      companyId,
       email: 'admin@comethealthcare.local',
       passwordHash: adminHash,
       firstName: 'Comet',
       lastName: 'Admin',
       role: 'ADMIN',
+      departmentId: (await prisma.department.findUnique({ where: { companyId_code: { companyId, code: 'management' } } }))?.id,
     },
   })
   console.log(`✓ Admin: admin@comethealthcare.local (password: ${process.env.SEED_ADMIN_PASSWORD ? 'per SEED_ADMIN_PASSWORD' : 'ChangeMe123!'})`)
@@ -77,6 +147,7 @@ async function main() {
     where: { email: 'client@comethealthcare.local' },
     update: {},
     create: {
+      companyId,
       email: 'client@comethealthcare.local',
       passwordHash: await bcrypt.hash('ClientPass123!', 12),
       firstName: 'Demo',
@@ -328,6 +399,44 @@ async function main() {
     })
   }
   console.log(`✓ Seeded ${sampleDocs.length} sample business documents`)
+
+  // ---- Minimal internal messaging proof data ----
+  const repairsInbox = await prisma.inbox.findUnique({
+    where: { companyId_internalAddress: { companyId, internalAddress: 'repairs@internal' } },
+  })
+  if (repairsInbox && !(await prisma.thread.findUnique({ where: { id: 'thr_seed_001' } }))) {
+    await prisma.thread.create({
+      data: {
+        id: 'thr_seed_001',
+        companyId,
+        inboxId: repairsInbox.id,
+        subject: 'Service ticket routing check',
+        status: 'OPEN',
+        priority: 'NORMAL',
+        createdById: admin.id,
+        assignedToId: admin.id,
+      },
+    })
+    const message = await prisma.message.upsert({
+      where: { idempotencyKey: 'seed_msg_001' },
+      update: {},
+      create: {
+        companyId,
+        threadId: 'thr_seed_001',
+        senderId: admin.id,
+        body: 'This thread verifies that the Repairs shared inbox is ready for Phase 4.',
+        idempotencyKey: 'seed_msg_001',
+      },
+    })
+    await prisma.messageRecipient.create({
+      data: { companyId, messageId: message.id, inboxId: repairsInbox.id, status: 'DELIVERED' },
+    })
+    await prisma.thread.update({
+      where: { id: 'thr_seed_001' },
+      data: { lastMessageAt: message.createdAt },
+    })
+    console.log('✓ Seeded internal messaging proof thread')
+  }
 
   console.log('\nSeed complete ✔')
 }

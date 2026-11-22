@@ -1,0 +1,19 @@
+{
+  "name": "@comet/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "dev": "node --watch index.js",
+    "start": "node index.js",
+    "db:generate": "node ../../scripts/prisma.js generate --schema prisma/schema.prisma",
+    "db:migrate": "node ../../scripts/prisma.js migrate dev --schema prisma/schema.prisma",
+    "db:deploy": "node ../../scripts/prisma.js migrate deploy --schema prisma/schema.prisma",
+    "db:push": "node ../../scripts/prisma.js db push --schema prisma/schema.prisma",
+    "db:reset": "node ../../scripts/prisma.js db push --schema prisma/schema.prisma --force-reset",
+    "db:seed": "node ../../prisma/seed.js",
+    "db:studio": "node ../../scripts/prisma.js studio --schema prisma/schema.prisma",
+    "test": "node --test tests/"
+  }
+}

@@ -2,7 +2,7 @@
 // here so there is a single place to see what is required/optional.
 // See `.env.example` for documentation of each value.
 
-import 'dotenv/config'
+import './env.js'
 
 const int = (value, fallback) => {
   const parsed = Number.parseInt(value, 10)
@@ -14,7 +14,7 @@ export const config = {
   nodeEnv: process.env.NODE_ENV || 'development',
   isProd: process.env.NODE_ENV === 'production',
 
-  databaseUrl: process.env.DATABASE_URL || 'file:./dev.db',
+  databaseUrl: process.env.DATABASE_URL_APP || process.env.DATABASE_URL || '',
 
   jwtSecret: process.env.JWT_SECRET || 'dev-only-secret-do-not-use-in-production',
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',

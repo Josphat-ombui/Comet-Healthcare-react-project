@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { siteContentSchema } from '../lib/validation.js'
 import { deepMerge, DEFAULT_SITE_CONTENT, resolveContent } from '../lib/content.js'
-import { DEFAULT_MEDIA, updateSharedPhoto } from '../../src/lib/media.js'
+import { DEFAULT_MEDIA, updateSharedPhoto } from '../../web/src/lib/media.js'
 
 test('siteContentSchema accepts a realistic CMS payload', () => {
   const payload = {

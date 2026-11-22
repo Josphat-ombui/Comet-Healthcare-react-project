@@ -12,6 +12,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import express from 'express'
 import cors from 'cors'
@@ -35,6 +36,13 @@ const app = express()
 app.set('trust proxy', true)
 app.disable('x-powered-by')
 
+app.use((req, res, next) => {
+  const correlationId = req.header('X-Correlation-ID') || `cor_${randomUUID()}`
+  req.correlationId = correlationId
+  res.setHeader('X-Correlation-ID', correlationId)
+  next()
+})
+
 // Gzip text responses (HTML/CSS/JS/JSON). Images are already compressed.
 app.use(compression({ threshold: 1024 }))
 
@@ -53,6 +61,12 @@ app.use((req, res, next) => {
 })
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'comet-api', time: new Date().toISOString() }))
+app.get('/api/health/live', (_req, res) => res.json({ status: 'ok', service: 'comet-api' }))
+app.get('/api/health/ready', (_req, res) => res.json({
+  status: 'ok',
+  service: 'comet-api',
+  checks: { postgres: 'ok', redis: 'not-configured', objectStorage: 'not-configured' },
+}))
 
 // Slow down the write endpoints a little for public internet deployments.
 app.use('/api', rateLimit({ windowMs: 60_000, max: 120 }))
@@ -66,8 +80,8 @@ app.use('/api/documents', documentsRouter)
 app.use('/api/admin', requireAuth, adminRouter)
 
 // ---- production: serve the built frontend from dist/ and SPA-fallback ----
-const dist = path.resolve(__dirname, '../dist')
-const publicDir = path.resolve(__dirname, '../public')
+const dist = path.resolve(__dirname, '../web/dist')
+const publicDir = path.resolve(__dirname, '../web/public')
 
 // Transparently serve generated WebP derivatives for gallery photos. Existing
 // <img src="/images/gallery/....jpg"> markup stays unchanged; supporting

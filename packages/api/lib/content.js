@@ -11,8 +11,8 @@
 // it may be a full tree or a partial; missing branches fall through to the
 // defaults below.
 
-import { DEFAULT_MEDIA, gallery, photoSrc, photoWebp } from '../../src/lib/media.js'
-import { DEFAULT_GLOBAL } from '../../src/lib/site.js'
+import { DEFAULT_MEDIA, gallery, photoSrc, photoWebp } from '../../web/src/lib/media.js'
+import { DEFAULT_GLOBAL } from '../../web/src/lib/site.js'
 
 const G = gallery
 

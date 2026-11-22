@@ -5,8 +5,8 @@ import {
   DEFAULT_MEDIA,
   photoSrc,
   resolveMedia,
-} from '../../src/lib/media.js'
-import { canonicalizeProvider } from '../../src/lib/experts.js'
+} from '../../web/src/lib/media.js'
+import { canonicalizeProvider } from '../../web/src/lib/experts.js'
 import { webpForGalleryUrl } from '../lib/media.js'
 
 test('resolveMedia layers Content Studio overrides over the shared defaults', () => {

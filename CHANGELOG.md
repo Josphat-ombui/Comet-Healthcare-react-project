@@ -8,6 +8,49 @@ The format follows a phase-gate model: each enterprise phase ends with passing t
 
 ## [Unreleased]
 
+### Phase 2 — Workspaces, PostgreSQL schema, ERD, and first migrations
+
+**Added**
+
+- npm workspaces: `packages/shared`, `api`, `web`, `cms`, `erp`, `realtime`, `workers`.
+- `packages/shared` contracts for constants, event envelopes, and permission declarations.
+- `prisma/schema.prisma` for PostgreSQL 16 covering Organisation, Identity, Messaging, Outbox, Audit, and legacy storefront models with `company_id` throughout.
+- `prisma/migrations/20261122000000_init/migration.sql` with the full schema, `comet_app` runtime role, grants, and append-only audit rules.
+- `prisma/migrations/20261122000100_fix_rls_column_names/migration.sql` — corrective tenant/branch RLS policies for Prisma's camelCase columns.
+- `docs/architecture/08-erd.md` and `docs/decisions/ADR-0006-tenant-context.md`.
+- `docker-compose.dev.yml` + PgBouncer config for local Postgres/Redis.
+- `/api/health/live` and `/api/health/ready` aligned with the OpenAPI skeleton.
+
+**Changed**
+
+- Moved storefront from `src/` to `packages/web/src/` and API from `server/` to `packages/api/`.
+- Root scripts now delegate to workspaces; build output is `packages/web/dist/`.
+- `.env.example` documents owner vs RLS-enforced runtime database URLs, Redis, and R2 settings.
+- README updated for the workspace layout and Postgres workflow.
+
+**Database changes**
+
+- SQLite → PostgreSQL 16.
+- New tenant/branch-scoped tables for Identity, Organisation, Messaging, Retention, Legal Hold, Outbox, and Audit.
+- Existing storefront tables now carry `company_id`.
+- Raw SQL: RLS, roles/grants, audit immutability.
+
+**New dependencies / licences**
+
+- None. Docker images used: PostgreSQL 16, Redis 7, PgBouncer (permissive OSS).
+
+**Verification**
+
+- `npm test` — 23 passed.
+- `npm run test:smoke` — 31 passed.
+- `npm run lint` — warnings only (no errors).
+- `npm run build` — passed (`packages/web/dist/`).
+- Migrations applied cleanly via `npm run db:deploy`; seed idempotent via `npm run db:seed`.
+- RLS verified: default tenant sees 2 users / 1 thread / 10 inboxes; switching `app.company_id` to `cmp_other` returns 0 for each.
+- Runtime health endpoints and static SPA smoke check passed.
+
+---
+
 ### Phase 1 — Enterprise architecture (documentation only)
 
 **Added**

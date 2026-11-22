@@ -4,7 +4,7 @@ import { Router } from 'express'
 import { prisma } from '../lib/prisma.js'
 import { isValidIsoDate, generateSlots } from '../lib/slots.js'
 import { getSiteContent } from '../lib/content.js'
-import { canonicalizeProvider } from '../../src/lib/experts.js'
+import { canonicalizeProvider } from '../../web/src/lib/experts.js'
 
 export const providerRouter = Router()
 

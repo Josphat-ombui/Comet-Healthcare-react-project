@@ -10,7 +10,7 @@ import { addDays, localIsoDay } from '../lib/slots.js'
 import { DOCUMENT_KINDS, getCompanyProfile, upsertCompanyProfile, nextDocumentNumber, computeLine, computeTotals, toPublicDocument } from '../lib/documents.js'
 import { DEFAULT_SITE_CONTENT, getSiteContent, setSiteContent } from '../lib/content.js'
 import { listMedia, saveMedia, deleteMedia, ALLOWED_MIME } from '../lib/media.js'
-import { DEFAULT_MEDIA } from '../../src/lib/media.js'
+import { DEFAULT_MEDIA } from '../../web/src/lib/media.js'
 import express from 'express'
 
 // Factory photos are committed source files referenced by the CMS defaults.

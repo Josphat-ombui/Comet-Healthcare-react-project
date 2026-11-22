@@ -24,13 +24,15 @@ are the "providers" — the naming was kept supplier-neutral in the data model.
 ```bash
 npm install
 cp .env.example .env
-npm run db:generate   # generate Prisma client (needs .env / DATABASE_URL)
-npm run db:push       # create the DB and tables
-npm run db:seed       # demo experts, admin, client, testimonials, inquiries
+npm run infra:up      # PostgreSQL 16 + Redis 7 via Docker Compose
+npm run db:generate   # generate Prisma client
+npm run db:deploy     # apply versioned migrations (RLS, roles, audit rules)
+npm run db:seed       # tenant, branches, departments, inboxes, demo data
 npm run dev           # API on :4000 + Vite on :5173 (Vite proxies /api -> :4000)
 ```
 
-Open http://localhost:5173.
+Open http://localhost:5173. The API runs as the non-owner `comet_app` role from
+`DATABASE_URL_APP`; migrations and seeds use the owner `DATABASE_URL`.
 
 ### Demo accounts (seeded)
 
@@ -52,51 +54,52 @@ Open http://localhost:5173.
   reschedule, and a list of your submitted inquiries.
 - **Admin portal** (`/portal/admin`) — dashboard stats, manage all appointments
   and inquiries (status changes).
-- **REST API** — `server/routes/` with Zod validation, auth/role guards, rate
-  limiting, and conflict-safe slot availability in `server/lib/slots.js`.
-  All endpoints are under `/api`. See the routes directory for details.
+- **REST API** — `packages/api/routes/` with Zod validation, auth/role guards,
+  rate limiting, and conflict-safe slot availability in `packages/api/lib/slots.js`.
+  All endpoints are under `/api`. Contract skeleton: `docs/openapi/openapi.yaml`.
 
 ## Commands
 
 | Command                  | Purpose                                             |
 | ------------------------ | --------------------------------------------------- |
 | `npm run dev`            | Run API (`:4000`) + Vite (`:5173`) together         |
-| `npm run dev:client`     | Vite only                                           |
-| `npm run dev:server`     | Express only (watch)                                |
-| `npm run build`          | Production build to `dist/`                         |
-| `npm start`              | Production server (serves `dist/` too)              |
+| `npm run dev:web`        | Vite only                                           |
+| `npm run dev:api`        | Express only (watch)                                |
+| `npm run build`          | Production build to `packages/web/dist/`            |
+| `npm start`              | Production server (serves the web build too)        |
 | `npm run lint`           | Oxlint                                              |
 | `npm test`               | Backend unit tests (node --test)                    |
 | `npm run test:smoke`     | Frontend per-route render smoke tests (vitest)      |
-| `npm run db:push/reset`  | Create / reset the schema                           |
+| `npm run infra:up/down`  | Start/stop local Postgres + Redis                   |
+| `npm run db:deploy`      | Apply versioned Postgres migrations                 |
 | `npm run db:seed`        | Seed demo data (idempotent)                         |
 
-## Configuration (`server/lib/config.js`)
+## Configuration (`packages/api/lib/config.js`)
 
 Everything is read from `.env` — see `.env.example` for the annotated list:
-`PORT`, `DATABASE_URL`, `JWT_SECRET`/`JWT_EXPIRES_IN`, `APP_URL`,
+`PORT`, `DATABASE_URL` (owner), `DATABASE_URL_APP` (RLS-enforced runtime role),
+`REDIS_URL`, R2 settings, `JWT_SECRET`/`JWT_EXPIRES_IN`, `APP_URL`,
 `RESET_TOKEN_TTL_SECONDS`, SMTP settings, and `SEED_ADMIN_PASSWORD`.
 
 ## Project layout
 
 ```
-server/
-  index.js            Express app (CORS, rate limit, routes, errors, static)
-  lib/                config, prisma, auth (JWT/reset), mailer, validation,
-                      slots (availability engine), util
-  routes/             auth, providers, appointments, inquiries, content, admin
-  prisma/
-    schema.prisma     models: User, Provider, ProviderSchedule, Appointment,
-                      Inquiry, Testimonial
-    seed.js           demo data
-  tests/              13 unit tests (slots + auth)
-src/
-  pages/              public + auth + portal pages (lazy-loaded routes)
-  components/         shell (Navbar/Footer) + UI kit (Button, Field, Alert,
-                      Modal, Badge, SmartImage…)
-  lib/                api client + date helpers
-  context/            auth + toasts
-tests/                13 route smoke tests (vitest + Testing Library)
+packages/
+  shared/             Zod event/permission/constant contracts
+  api/                Express app: index.js, lib/, routes/, tests/
+  web/                Storefront: src/, public/, tests/, Vite config
+  cms/                Content Studio workspace scaffold
+  erp/                Internal business suite scaffold
+  realtime/           Socket.IO server scaffold (Phase 4)
+  workers/            BullMQ consumers scaffold (Phase 5)
+prisma/
+  schema.prisma       PostgreSQL 16 schema (identity, org, messaging, legacy)
+  migrations/         Versioned SQL + RLS/role/audit rules
+  seed.js             Tenant, branches, departments, inboxes, demo data
+docs/
+  architecture/       Phase 1 architecture + Phase 2 ERD
+  decisions/          ADRs
+  openapi/            API contract skeleton
 ```
 
 ## Production-readiness notes
@@ -111,12 +114,11 @@ This codebase is a solid foundation, not a finished compliance deliverable.
 - **Auth hardening** — session revocation, IP/device tracking, and 2FA would be
   sensible before public launch. JWT is currently stored client-side in
   `localStorage`.
-- **Database** — ship with PostgreSQL + migrations (`prisma migrate dev`) and
-  backups. PII (names, emails, messages) should be minimized/encrypted and logs
-  already avoid writing it.
+- **Database** — PostgreSQL 16 with Prisma migrations, RLS, a non-owner runtime
+  role, and backups. PII should be minimised/encrypted; logs avoid writing it.
 - **Payments** for consultations/CDMO orders aren't wired; add a provider (e.g.
   M-Pesa Daraja/Stripe) if charging clients.
 - **CSP/CORS** — tighten CORS origin in production; add security headers.
-- The visual design ("Comet Blue" navy/azure + brass, Fraunces/Inter) lives in
-  `src/index.css` as Tailwind `@theme` tokens."# Comet-Healthcare-react-project" 
-"# Comet-Healthcare-react-project" 
+- The visual design ("Comet Blue" navy/azure + brass) lives in
+  `packages/web/src/index.css` as Tailwind `@theme` tokens.
+
