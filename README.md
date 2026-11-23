@@ -123,6 +123,13 @@ Phase 5 does not change the seed accounts or their passwords.
   verify action. Bank details and KRA PINs are encrypted at rest and returned only as masked
   suffixes. The ERP at `:5174` has an HR tab. Contract: `docs/openapi/openapi.yaml`
   (`0.11.0-phase.11`); decision: `docs/decisions/ADR-0016-payroll-rates.md`.
+- **Projects (Phase 12)** — tenant/branch-scoped projects, membership, tasks, milestones, time
+  entries and finance budget links. Hours are rounded once to two decimals; all money is integer
+  cents. Budget usage comes only from finance and unavailable data is reported explicitly, never
+  fabricated. Invoicing requires APPROVED, billable, positive time, a customer and a VERIFIED VAT
+  rate; finance owns tax arithmetic and eTIMS queueing. The ERP at `:5174` has a Projects tab.
+  Contract: `docs/openapi/openapi.yaml` (`0.12.0-phase.12`); decision:
+  `docs/decisions/ADR-0017-project-budget-links.md`.
 
 > **Rate warning:** verify statutory rates against current KRA/Government publications before
 > use — finance and HR fixture rates are `UNVERIFIED`. Sales may reference an unverified rate on a
@@ -132,7 +139,7 @@ Phase 5 does not change the seed accounts or their passwords.
 
 ### API namespaces
 
-| Namespace | Phase 5/6/7/8/9/10/11 endpoints (summary) |
+| Namespace | Phase 5/6/7/8/9/10/11/12 endpoints (summary) |
 | --- | --- |
 | `/api/files` | `POST /uploads`, `POST /uploads/:id/confirm`, `GET /?purpose&status&limit`, `GET /:id`, `GET /:id/download`, `POST /:id/versions`, `DELETE /:id`. Local fallback ticket URLs: `/local-upload/:token`, `/local-download/:token`. |
 | `/api/workflow` | `GET|POST /definitions`, `GET|POST /instances`, `GET /tasks?mine=1`, `POST /tasks/:id/decide`, `POST /tasks/:id/delegate`. |
@@ -145,8 +152,9 @@ Phase 5 does not change the seed accounts or their passwords.
 | `/api/procurement` | `GET|POST /requisitions`, `GET /requisitions/:id`, `POST /requisitions/:id/{submit,approve,convert}`, `GET|POST /orders`, `GET /orders/:id`, `POST /orders/:id/{approve,send}`, `GET|POST /receipts`, `GET /receipts/:id`, `POST /receipts/:id/inspect`, `GET|POST /returns`, `GET /returns/:id`, `POST /returns/:id/approve`, `GET|POST /matches`, `GET /matches/:id`, `POST /matches/:id/approve`. |
 | `/api/service` | `GET|POST /contracts`, `GET /contracts/:id`, `POST /contracts/:id/{activate,suspend,cancel}`, `GET|POST /tickets`, `GET /tickets/:id`, `POST /tickets/:id/{assign,start,wait,resolve,close,cancel}`, `GET|POST /work-orders`, `GET /work-orders/:id`, `POST /work-orders/:id/{schedule,start,complete,cancel,invoice}`, `GET|POST /visits`, `GET /visits/:id`, `POST /visits/:id/{check-in,complete,cancel}`, `GET|POST /parts`, `GET /parts/:id`. |
 | `/api/hr` | `GET|POST /employees`, `GET|PATCH /employees/:id`, `GET|POST /contracts`, `GET /contracts/:id`, `POST /contracts/:id/{activate,expire,terminate,cancel}`, `GET|POST /rates`, `GET /rates/:id`, `POST /rates/:id/verify`, `GET|POST /leave`, `GET /leave/:id`, `POST /leave/:id/decision`, `GET|POST /attendance`, `GET /attendance/:id`, `GET|POST /payroll/runs`, `GET /payroll/runs/:id`, `POST /payroll/runs/:id/{calculate,approve,post}`. |
+| `/api/projects` | `GET|POST /`, `GET|PATCH /:id`, `POST /:id/status`, `GET|POST /:id/members`, `GET|PATCH /:id/members/:memberId`, `GET|POST /:id/milestones`, `GET /:id/milestones/:milestoneId`, `POST /:id/milestones/:milestoneId/status`, `GET|POST /:id/tasks`, `GET|PATCH /:id/tasks/:taskId`, `POST /:id/tasks/:taskId/status`, `GET|POST /:id/time`, `GET /:id/time/:timeId`, `POST /:id/time/:timeId/{decision,invoice}`, `GET /:id/budget`, `POST /:id/budget/links`. |
 
-`Idempotency-Key` is required only for Phase 4 messaging sends; Phase 5, Phase 6, Phase 7, Phase 8, Phase 9, Phase 10 and Phase 11 writes do not use it.
+`Idempotency-Key` is required only for Phase 4 messaging sends; Phase 5, Phase 6, Phase 7, Phase 8, Phase 9, Phase 10, Phase 11 and Phase 12 writes do not use it.
 The `finance.etims.submit` worker queue records `PENDING` submissions for a certified provider and
 creates in-app notifications only — no live KRA filing occurs.
 
@@ -211,7 +219,7 @@ packages/
   api/                Express app: index.js, lib/, routes/, tests/
   web/                Storefront: src/, public/, tests/, Vite config
   cms/                Content Studio workspace scaffold
-  erp/                Internal suite: ERP shell + messaging UI + Finance/Sales/Inventory/Procurement tabs (public/, static server)
+  erp/                Internal suite: ERP shell + messaging UI + Finance/Sales/Inventory/Procurement/Service/HR/Projects tabs (public/, static server)
   realtime/           Socket.IO server, Redis adapter and stream relay (Phase 4)
   workers/            Outbox publisher + BullMQ job processors (Phase 5/6)
 prisma/
@@ -220,8 +228,8 @@ prisma/
   seed.js             Tenant, branches, departments, inboxes, demo data
 docs/
   architecture/       Phase 1 architecture + Phase 3 ERD
-  decisions/          ADRs (0001-0016; finance in ADR-0011, sales in ADR-0012, inventory in ADR-0013, procurement in ADR-0014, service in ADR-0015, payroll rates in ADR-0016)
-  openapi/            Phase 11 API contract (0.11.0-phase.11)
+  decisions/          ADRs (0001-0017; finance in ADR-0011, sales in ADR-0012, inventory in ADR-0013, procurement in ADR-0014, service in ADR-0015, payroll rates in ADR-0016, project budget links in ADR-0017)
+  openapi/            Phase 12 API contract (0.12.0-phase.12)
 ```
 
 ## Production-readiness notes
@@ -241,6 +249,7 @@ This codebase is a solid foundation, not a finished compliance deliverable.
 - **Inventory (Phase 8)** — stock valuation stays in the inventory ledger with integer-cent weighted averages; it does **not** post finance journals. A future phase must add an explicit inventory→finance posting policy.
 - **Procurement (Phase 9)** — receipts and returns post stock through inventory only. Three-way matching compares integer cents with a configurable business tolerance and never posts finance journals, payments or invoice mutations. A future phase must define procurement→finance posting explicitly.
 - **HR (Phase 11)** — payroll rates must be verified against current KRA/Government publications before use. Bank and KRA-PIN values are encrypted at rest and masked in DTOs, but production still needs a reviewed key-rotation policy, ODPC data-location sign-off, and a certified filing/payment integration before any live statutory submission or bank transfer. Posting creates an internal balanced journal only.
+- **Projects (Phase 12)** — budget usage and invoice arithmetic are delegated to finance; a finance failure is returned as explicit `unavailable` metadata, never as zero or estimated totals. Invoice creation requires a VERIFIED effective VAT rate and only queues internal eTIMS work; no live filing, payment or email is performed.
 - **Payments** for consultations/CDMO orders aren't wired; add a provider (e.g.
   M-Pesa Daraja/Stripe) if charging clients. Phase 6 finance payments record ledger
   entries only (including `CARD_TOKEN` references) and never charge a card.

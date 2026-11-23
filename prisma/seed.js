@@ -1314,6 +1314,62 @@ async function main() {
   })
   console.log('✓ Seeded HR employee with encrypted bank details, active contract and UNVERIFIED PAYE rate')
 
+  // -------------------------------------------------------------- phase 12
+  // Project fixtures are cmp_comet-only and strictly idempotent. They are
+  // deliberately DRAFT/PLANNED: no fixture implies approval, billing or a
+  // completed lifecycle. Money stays in integer cents and numbers are globally
+  // unique per tenant through the compound keys in the schema.
+  const projectFixture = await prisma.project.upsert({
+    where: { companyId_number: { companyId, number: 'PRJ-2026-F001' } },
+    update: {},
+    create: {
+      companyId,
+      number: 'PRJ-2026-F001',
+      name: 'Phase 12 fixture project',
+      description: 'Fixture project for projects lifecycle and budget-link tests.',
+      status: 'PLANNED',
+      budgetCents: 5_000_000,
+      currency: 'KES',
+      plannedStart: new Date('2026-01-05T00:00:00.000Z'),
+      plannedEnd: new Date('2026-03-05T00:00:00.000Z'),
+      classification: 'INTERNAL',
+      createdById: admin.id,
+    },
+  })
+
+  await prisma.milestone.upsert({
+    where: { companyId_number: { companyId, number: 'MS-2026-F001' } },
+    update: {},
+    create: {
+      companyId,
+      number: 'MS-2026-F001',
+      projectId: projectFixture.id,
+      name: 'Fixture milestone',
+      description: 'First fixture milestone — remains PLANNED.',
+      status: 'PLANNED',
+      dueAt: new Date('2026-02-05T00:00:00.000Z'),
+      classification: 'INTERNAL',
+      createdById: admin.id,
+    },
+  })
+
+  await prisma.projectTask.upsert({
+    where: { companyId_number: { companyId, number: 'TASK-2026-F001' } },
+    update: {},
+    create: {
+      companyId,
+      number: 'TASK-2026-F001',
+      projectId: projectFixture.id,
+      title: 'Fixture task',
+      description: 'First fixture task — remains TODO.',
+      status: 'TODO',
+      position: 0,
+      classification: 'INTERNAL',
+      createdById: admin.id,
+    },
+  })
+  console.log('✓ Seeded PLANNED project with PLANNED milestone and TODO task fixtures')
+
   console.log('\nSeed complete ✔')
 }
 

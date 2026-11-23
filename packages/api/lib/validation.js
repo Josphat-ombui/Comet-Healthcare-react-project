@@ -1517,3 +1517,160 @@ export const HR_MONEY_FIELDS = [
   'nssfEmployeeCents', 'nssfEmployerCents', 'shifCents', 'housingLevyCents',
   'deductionsCents', 'netCents', 'employerCostCents', 'rateBps',
 ]
+
+// --------------------------------------------------------------- phase 12 projects
+//
+// Write schemas are strict: tenant IDs, actor IDs, statuses, timestamps,
+// calculated time amounts, invoice links and finance usage totals can never be
+// supplied by a client. Hours are numeric and rounded once to two decimals at
+// the service boundary; all money remains safe integer cents. Free text fails
+// closed through the shared DLP inspector and reports finding types only.
+const projectId = z.string().trim().min(1).max(80)
+const projectNumber = z.string().trim().min(2).max(60).regex(/^[A-Za-z0-9_-]+$/, 'Use letters, numbers, _ or -')
+const projectDate = z.string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Use a date in YYYY-MM-DD format')
+  .refine(isValidIsoDate, 'Choose a valid date')
+const projectLimit = z.coerce.number().int().min(1).max(200).default(50)
+const projectMoney = z.number().int().nonnegative()
+const projectHours = z.number().positive().max(1000)
+const projectText = dlpSafeText(2000).optional().or(z.literal(''))
+const projectClassification = classificationSchema.default('INTERNAL')
+const projectStatus = z.enum(['PLANNED', 'ACTIVE', 'ON_HOLD', 'COMPLETED', 'CANCELLED'])
+const projectTaskStatus = z.enum(['TODO', 'IN_PROGRESS', 'BLOCKED', 'DONE', 'CANCELLED'])
+const projectMilestoneStatus = z.enum(['PLANNED', 'IN_PROGRESS', 'MET', 'MISSED'])
+
+export const projectCreateSchema = z.object({
+  number: projectNumber.optional(),
+  name: dlpSafeText(180).min(2),
+  description: dlpSafeText(1000).optional().or(z.literal('')),
+  branchId: projectId.nullable().optional(),
+  customerId: projectId.nullable().optional(),
+  salesOrderId: projectId.nullable().optional(),
+  budgetCents: projectMoney.default(0),
+  currency: z.string().trim().min(1).max(8).default('KES'),
+  plannedStart: projectDate.nullable().optional(),
+  plannedEnd: projectDate.nullable().optional(),
+  classification: projectClassification,
+}).strict()
+
+export const projectUpdateSchema = z.object({
+  number: projectNumber.optional(),
+  name: dlpSafeText(180).min(2).optional(),
+  description: dlpSafeText(1000).optional().or(z.literal('')),
+  branchId: projectId.nullable().optional(),
+  customerId: projectId.nullable().optional(),
+  salesOrderId: projectId.nullable().optional(),
+  budgetCents: projectMoney.optional(),
+  currency: z.string().trim().min(1).max(8).optional(),
+  plannedStart: projectDate.nullable().optional(),
+  plannedEnd: projectDate.nullable().optional(),
+  classification: classificationSchema.optional(),
+}).strict().refine((value) => Object.keys(value).length > 0, 'At least one field is required')
+
+export const projectTransitionSchema = z.object({ status: projectStatus }).strict()
+
+export const projectQuerySchema = z.object({
+  status: projectStatus.optional(),
+  branchId: projectId.optional(),
+  customerId: projectId.optional(),
+  limit: projectLimit,
+}).strict()
+
+export const projectMemberCreateSchema = z.object({
+  userId: projectId,
+  role: z.enum(['OWNER', 'MANAGER', 'MEMBER', 'VIEWER']).default('MEMBER'),
+  branchId: projectId.nullable().optional(),
+  classification: projectClassification,
+}).strict()
+
+export const projectMemberUpdateSchema = z.object({
+  role: z.enum(['OWNER', 'MANAGER', 'MEMBER', 'VIEWER']).optional(),
+  leftAt: projectDate.nullable().optional(),
+  classification: classificationSchema.optional(),
+}).strict().refine((value) => Object.keys(value).length > 0, 'At least one field is required')
+
+export const projectMilestoneCreateSchema = z.object({
+  number: projectNumber.optional(),
+  name: dlpSafeText(180).min(2),
+  description: dlpSafeText(1000).optional().or(z.literal('')),
+  dueAt: projectDate.nullable().optional(),
+  branchId: projectId.nullable().optional(),
+  classification: projectClassification,
+}).strict()
+
+export const projectMilestoneTransitionSchema = z.object({ status: projectMilestoneStatus }).strict()
+
+export const projectMilestoneQuerySchema = z.object({
+  status: projectMilestoneStatus.optional(),
+  limit: projectLimit,
+}).strict()
+
+export const projectTaskCreateSchema = z.object({
+  number: projectNumber.optional(),
+  title: dlpSafeText(180).min(2),
+  description: dlpSafeText(1000).optional().or(z.literal('')),
+  assigneeId: projectId.nullable().optional(),
+  milestoneId: projectId.nullable().optional(),
+  dueAt: projectDate.nullable().optional(),
+  position: z.number().int().min(0).max(1_000_000).default(0),
+  branchId: projectId.nullable().optional(),
+  classification: projectClassification,
+}).strict()
+
+export const projectTaskUpdateSchema = z.object({
+  title: dlpSafeText(180).min(2).optional(),
+  description: dlpSafeText(1000).optional().or(z.literal('')),
+  assigneeId: projectId.nullable().optional(),
+  milestoneId: projectId.nullable().optional(),
+  dueAt: projectDate.nullable().optional(),
+  position: z.number().int().min(0).max(1_000_000).optional(),
+  branchId: projectId.nullable().optional(),
+  classification: classificationSchema.optional(),
+}).strict().refine((value) => Object.keys(value).length > 0, 'At least one field is required')
+
+export const projectTaskTransitionSchema = z.object({ status: projectTaskStatus }).strict()
+
+export const projectTimeCreateSchema = z.object({
+  number: projectNumber.optional(),
+  workDate: projectDate,
+  hours: projectHours,
+  billable: z.boolean().default(false),
+  hourlyRateCents: projectMoney.default(0),
+  taskId: projectId.nullable().optional(),
+  memberId: projectId.nullable().optional(),
+  branchId: projectId.nullable().optional(),
+  classification: projectClassification,
+}).strict()
+
+export const projectTimeDecisionSchema = z.object({
+  decision: z.enum(['APPROVE', 'REJECT']),
+  note: projectText,
+}).strict()
+
+export const projectTimeInvoiceSchema = z.object({
+  description: dlpSafeText(500).min(3),
+  issueDate: projectDate.optional(),
+  dueDate: projectDate.nullable().optional(),
+  taxRateId: projectId.nullable().optional(),
+}).strict()
+
+export const projectBudgetLinkCreateSchema = z.object({ budgetId: projectId }).strict()
+
+export const projectTaskQuerySchema = z.object({
+  status: projectTaskStatus.optional(),
+  assigneeId: projectId.optional(),
+  milestoneId: projectId.optional(),
+  limit: projectLimit,
+}).strict()
+
+export const projectTimeQuerySchema = z.object({
+  status: z.enum(['DRAFT', 'APPROVED', 'BILLED', 'REJECTED']).optional(),
+  from: projectDate.optional(),
+  to: projectDate.optional(),
+  limit: projectLimit,
+}).strict()
+
+export const projectActionSchema = z.object({}).strict()
+
+export const PROJECT_CLASSIFICATIONS = ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED']
+export const PROJECT_MONEY_FIELDS = ['budgetCents', 'hourlyRateCents', 'amountCents']

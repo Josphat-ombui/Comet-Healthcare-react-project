@@ -1,6 +1,7 @@
 // ERP shell: identity, directory, messaging, platform views (notifications,
 // files, workflow, search, documents), Phase 6 finance, Phase 7 sales,
-// Phase 8 inventory, Phase 9 procurement, Phase 10 service and Phase 11 HR. Uses the same JSON API as the
+// Phase 8 inventory, Phase 9 procurement, Phase 10 service, Phase 11 HR and
+// Phase 12 projects. Uses the same JSON API as the
 // storefront; no external dependencies. The Socket.IO client is served by the
 // realtime service itself, and the inbox falls back to authenticated polling
 // when sockets are unavailable.
@@ -10,7 +11,7 @@ const API_ORIGIN = API.replace(/\/api\/?$/, '')
 const REALTIME = window.ERP_REALTIME_URL || 'http://localhost:4001'
 const POLL_MS = 6000
 const QUEUE_KEY = 'comet_erp_message_queue'
-const VIEWS = ['inbox', 'directory', 'notifications', 'files', 'workflow', 'search', 'documents', 'finance', 'sales', 'inventory', 'procurement', 'service', 'hr']
+const VIEWS = ['inbox', 'directory', 'notifications', 'files', 'workflow', 'search', 'documents', 'finance', 'sales', 'inventory', 'procurement', 'service', 'hr', 'projects']
 const FINANCE_EVENTS = [
   'finance:account', 'finance:journal', 'finance:invoice', 'finance:payment',
   'finance:budget', 'finance:rate', 'finance:etims', 'finance:etims-failed',
@@ -41,6 +42,11 @@ const SERVICE_EVENTS = [
 // amounts and rate percentages always come from the authenticated HR API.
 const HR_EVENTS = [
   'hr:employee', 'hr:leave', 'hr:rate', 'hr:payroll',
+]
+// Projects socket frames carry IDs/classification only. Names, hours, rates,
+// amounts and budget totals always come from the authenticated projects API.
+const PROJECT_EVENTS = [
+  'projects:project', 'projects:task', 'projects:milestone', 'projects:time',
 ]
 const $ = (id) => document.getElementById(id)
 
@@ -110,6 +116,15 @@ const state = {
   hrPayrollRuns: [],
   hrPayrollDetailId: null,
   hrPayrollLines: [],
+  projects: [],
+  projectMilestones: [],
+  projectTasks: [],
+  projectTimeEntries: [],
+  projectMembers: [],
+  projectBudgets: [],
+  projectFinanceBudgets: [],
+  projectBudget: null,
+  selectedProjectId: null,
 }
 let financeRefreshTimer = null
 let salesRefreshTimer = null
@@ -117,6 +132,7 @@ let inventoryRefreshTimer = null
 let procurementRefreshTimer = null
 let serviceRefreshTimer = null
 let hrRefreshTimer = null
+let projectsRefreshTimer = null
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -261,6 +277,15 @@ function showDashboard(profile) {
     state.inventoryTransfers = []
     state.inventoryCounts = []
     state.inventoryAlerts = []
+    state.projects = []
+    state.projectMilestones = []
+    state.projectTasks = []
+    state.projectTimeEntries = []
+    state.projectMembers = []
+    state.projectBudgets = []
+    state.projectFinanceBudgets = []
+    state.projectBudget = null
+    state.selectedProjectId = null
     state.versionTarget = null
     setUnreadBadge(0)
     $('versionPanel').hidden = true
@@ -3392,6 +3417,380 @@ $('hrPayrollForm').onsubmit = async (event) => {
   await hrMutation('/hr/payroll/runs', body, 'hrPayrollStatusText', 'Payroll run created as DRAFT')
 }
 
+// --------------------------------------------------------------- projects
+
+function projectToday() {
+  return new Date().toISOString().slice(0, 10)
+}
+
+function projectOptionalId(id) {
+  const value = $(id)?.value
+  return value ? value : undefined
+}
+
+function projectText(id) {
+  const value = $(id)?.value?.trim()
+  return value || undefined
+}
+
+function projectMutation(path, body, statusId, message, method = 'POST') {
+  setError('projectsError', '')
+  if ($(statusId)) $(statusId).textContent = 'Working…'
+  return request(path, {
+    method,
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  })
+    .then(async () => {
+      if ($(statusId)) $(statusId).textContent = message
+      await loadProjects()
+      return true
+    })
+    .catch((error) => {
+      if ($(statusId)) $(statusId).textContent = ''
+      setError('projectsError', error.status === 409 ? `Transition blocked: ${error.message}` : error.message)
+      return false
+    })
+}
+
+function projectActionLabel(action) {
+  return {
+    'select-project': 'Open',
+    'project-activate': 'Activate',
+    'project-hold': 'Hold',
+    'project-complete': 'Complete',
+    'project-cancel': 'Cancel',
+    'milestone-progress': 'Start',
+    'milestone-met': 'Mark met',
+    'milestone-missed': 'Mark missed',
+    'task-progress': 'Start',
+    'task-block': 'Block',
+    'task-done': 'Complete',
+    'task-cancel': 'Cancel',
+    'time-approve': 'Approve',
+    'time-reject': 'Reject',
+    'time-invoice': 'Invoice',
+  }[action] || action
+}
+
+function projectAction(action, id, projectId) {
+  return `<button class="link" type="button" data-project-action="${action}" data-project-id="${escapeHtml(projectId)}" data-project-child="${escapeHtml(id)}">${projectActionLabel(action)}</button>`
+}
+
+function projectMilestoneName(id) {
+  const milestone = state.projectMilestones.find((row) => row.id === id)
+  return milestone ? milestone.number : '—'
+}
+
+function projectOptions() {
+  return state.projects.map((project) => ({
+    value: project.id,
+    label: `${project.number} — ${project.name}`,
+  }))
+}
+
+function renderProjects() {
+  renderFinanceRows('projectRows', state.projects, [
+    (row) => `<code>${escapeHtml(row.number)}</code>`,
+    (row) => escapeHtml(row.name),
+    (row) => financeStatus(row.status),
+    (row) => escapeHtml(row.budgetCents),
+    (row) => escapeHtml(row.customerId ? String(row.customerId).slice(0, 8) : '—'),
+    (row) => escapeHtml(row.classification),
+    (row) => [
+      projectAction('select-project', row.id, row.id),
+      row.status === 'PLANNED' ? projectAction('project-activate', row.id, row.id) : '',
+      ['PLANNED', 'ACTIVE'].includes(row.status) ? projectAction('project-hold', row.id, row.id) : '',
+      row.status === 'ACTIVE' ? projectAction('project-complete', row.id, row.id) : '',
+      ['PLANNED', 'ACTIVE', 'ON_HOLD'].includes(row.status) ? projectAction('project-cancel', row.id, row.id) : '',
+    ].join(' '),
+  ], 'No projects for this tenant.')
+
+  renderFinanceRows('projectMilestoneRows', state.projectMilestones, [
+    (row) => `<code>${escapeHtml(row.number)}</code>`,
+    (row) => escapeHtml(row.name),
+    (row) => escapeHtml(row.dueAt ? String(row.dueAt).slice(0, 10) : '—'),
+    (row) => financeStatus(row.status),
+    (row) => [
+      row.status === 'PLANNED' ? projectAction('milestone-progress', row.id, row.projectId) : '',
+      ['PLANNED', 'IN_PROGRESS'].includes(row.status) ? projectAction('milestone-met', row.id, row.projectId) : '',
+      ['PLANNED', 'IN_PROGRESS'].includes(row.status) ? projectAction('milestone-missed', row.id, row.projectId) : '',
+    ].join(' '),
+  ], 'Select a project to load its milestones.')
+  $('projectMilestoneCount').textContent = `${state.projectMilestones.length} milestone(s)`
+
+  renderFinanceRows('projectTaskRows', state.projectTasks, [
+    (row) => `<code>${escapeHtml(row.number)}</code>`,
+    (row) => escapeHtml(row.title),
+    (row) => escapeHtml(projectMilestoneName(row.milestoneId)),
+    (row) => escapeHtml(row.position),
+    (row) => financeStatus(row.status),
+    (row) => [
+      ['TODO', 'BLOCKED'].includes(row.status) ? projectAction('task-progress', row.id, row.projectId) : '',
+      row.status === 'TODO' ? projectAction('task-block', row.id, row.projectId) : '',
+      ['TODO', 'IN_PROGRESS', 'BLOCKED'].includes(row.status) ? projectAction('task-done', row.id, row.projectId) : '',
+      ['TODO', 'IN_PROGRESS', 'BLOCKED'].includes(row.status) ? projectAction('task-cancel', row.id, row.projectId) : '',
+    ].join(' '),
+  ], 'Select a project to load its tasks.')
+  $('projectTaskCount').textContent = `${state.projectTasks.length} task(s)`
+
+  renderFinanceRows('projectTimeRows', state.projectTimeEntries, [
+    (row) => `<code>${escapeHtml(row.number)}</code>`,
+    (row) => escapeHtml(row.workDate),
+    (row) => escapeHtml(row.hours),
+    (row) => escapeHtml(row.amountCents),
+    (row) => (row.billable ? 'Yes' : 'No'),
+    (row) => financeStatus(row.status),
+    (row) => [
+      row.status === 'DRAFT' ? projectAction('time-approve', row.id, row.projectId) : '',
+      row.status === 'DRAFT' ? projectAction('time-reject', row.id, row.projectId) : '',
+      row.status === 'APPROVED' && row.billable && row.amountCents > 0
+        ? projectAction('time-invoice', row.id, row.projectId) : '',
+    ].join(' '),
+  ], 'Select a project to load its time entries.')
+  $('projectTimeCount').textContent = `${state.projectTimeEntries.length} entry/entries`
+
+  renderFinanceRows('projectMemberRows', state.projectMembers, [
+    (row) => {
+      const user = users.find((item) => item.id === row.userId)
+      return escapeHtml(user ? `${user.firstName} ${user.lastName}`.trim() : String(row.userId).slice(0, 8))
+    },
+    (row) => escapeHtml(row.role),
+    (row) => escapeHtml(row.joinedAt ? String(row.joinedAt).slice(0, 10) : '—'),
+    (row) => escapeHtml(row.leftAt ? String(row.leftAt).slice(0, 10) : '—'),
+  ], 'Select a project to load its members.')
+
+  for (const id of [
+    'projectMilestoneProject', 'projectTaskProject', 'projectTimeProject',
+    'projectMemberProject', 'projectBudgetProject',
+  ]) fillFinanceSelect($(id), projectOptions(), 'Select a project')
+  fillFinanceSelect($('projectTaskMilestone'), state.projectMilestones.map((row) => ({
+    value: row.id,
+    label: `${row.number} — ${row.name}`,
+  })), 'No milestone')
+  fillFinanceSelect($('projectTimeTask'), state.projectTasks.map((row) => ({
+    value: row.id,
+    label: `${row.number} — ${row.title}`,
+  })), 'No task')
+  fillFinanceSelect($('projectMemberUser'), users.map((user) => ({
+    value: user.id,
+    label: `${user.firstName} ${user.lastName}`.trim() || user.email,
+  })), 'Select a user')
+  fillFinanceSelect($('projectBudgetBudget'), state.projectFinanceBudgets
+    .filter((budget) => budget.status === 'APPROVED')
+    .map((budget) => ({ value: budget.id, label: `${budget.code} — ${budget.name}` })),
+  'No approved budgets')
+
+  const budget = state.projectBudget
+  const usage = budget?.budgets?.map((entry) => {
+    if (entry.unavailable) {
+      return `${entry.budgetId}: unavailable (${entry.unavailable.code})`
+    }
+    const totals = entry.usage?.totals || {}
+    return `${entry.budgetId}: budget ${totals.budgetCents ?? '—'} / actual ${totals.actualCents ?? '—'} / variance ${totals.varianceCents ?? '—'} cents`
+  }).join('\n')
+  $('projectBudgetUsage').textContent = !state.selectedProjectId
+    ? 'Select a project to load finance-owned budget usage.'
+    : (usage || (budget ? 'No finance budget links for this project.' : 'Budget usage unavailable for this role.'))
+
+  if (!$('projectTimeWorkDate').value) $('projectTimeWorkDate').value = projectToday()
+  $('projectsView').querySelectorAll('[data-project-action]').forEach((button) => {
+    button.onclick = () => runProjectAction(
+      button.dataset.projectAction,
+      button.dataset.projectChild,
+      button.dataset.projectId
+    )
+  })
+}
+
+async function loadProjects() {
+  if (!token) return
+  setError('projectsError', '')
+  const results = await Promise.allSettled([
+    request('/projects?limit=200'),
+    users.length ? Promise.resolve({ users }) : request('/identity/users'),
+    request('/finance/budgets?limit=200'),
+  ])
+  const failures = []
+  if (results[0].status === 'fulfilled') state.projects = financeList(results[0].value, 'projects')
+  else {
+    state.projects = []
+    failures.push(`Projects: ${results[0].reason?.message || 'unavailable'}`)
+  }
+  if (results[1].status === 'fulfilled') users = financeList(results[1].value, 'users')
+  if (results[2].status === 'fulfilled') state.projectFinanceBudgets = financeList(results[2].value, 'budgets')
+  else state.projectFinanceBudgets = []
+
+  if (!state.projects.some((project) => project.id === state.selectedProjectId)) {
+    state.selectedProjectId = state.projects[0]?.id || null
+  }
+  const id = state.selectedProjectId
+  state.projectMilestones = []
+  state.projectTasks = []
+  state.projectTimeEntries = []
+  state.projectMembers = []
+  state.projectBudget = null
+  if (id) {
+    const encoded = encodeURIComponent(id)
+    const children = await Promise.allSettled([
+      request(`/projects/${encoded}/milestones?limit=200`),
+      request(`/projects/${encoded}/tasks?limit=200`),
+      request(`/projects/${encoded}/time?limit=200`),
+      request(`/projects/${encoded}/members`),
+      request(`/projects/${encoded}/budget`),
+    ])
+    const assign = (result, setter, key) => {
+      if (result.status === 'fulfilled') setter(financeList(result.value, key))
+    }
+    assign(children[0], (value) => { state.projectMilestones = value }, 'milestones')
+    assign(children[1], (value) => { state.projectTasks = value }, 'tasks')
+    assign(children[2], (value) => { state.projectTimeEntries = value }, 'timeEntries')
+    assign(children[3], (value) => { state.projectMembers = value }, 'members')
+    if (children[4].status === 'fulfilled') state.projectBudget = children[4].value.budget || null
+  }
+  renderProjects()
+  if (failures.length) setError('projectsError', failures.join(' · '))
+}
+
+async function runProjectAction(action, id, projectId) {
+  if (!id && action !== 'select-project') return false
+  if (action === 'select-project') {
+    state.selectedProjectId = id || null
+    await loadProjects()
+    return true
+  }
+  const paths = {
+    'project-activate': `/projects/${encodeURIComponent(id)}/status`,
+    'project-hold': `/projects/${encodeURIComponent(id)}/status`,
+    'project-complete': `/projects/${encodeURIComponent(id)}/status`,
+    'project-cancel': `/projects/${encodeURIComponent(id)}/status`,
+    'milestone-progress': `/projects/${encodeURIComponent(projectId)}/milestones/${encodeURIComponent(id)}/status`,
+    'milestone-met': `/projects/${encodeURIComponent(projectId)}/milestones/${encodeURIComponent(id)}/status`,
+    'milestone-missed': `/projects/${encodeURIComponent(projectId)}/milestones/${encodeURIComponent(id)}/status`,
+    'task-progress': `/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(id)}/status`,
+    'task-block': `/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(id)}/status`,
+    'task-done': `/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(id)}/status`,
+    'task-cancel': `/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(id)}/status`,
+    'time-approve': `/projects/${encodeURIComponent(projectId)}/time/${encodeURIComponent(id)}/decision`,
+    'time-reject': `/projects/${encodeURIComponent(projectId)}/time/${encodeURIComponent(id)}/decision`,
+    'time-invoice': `/projects/${encodeURIComponent(projectId)}/time/${encodeURIComponent(id)}/invoice`,
+  }
+  const path = paths[action]
+  if (!path) return false
+  const statuses = {
+    'project-activate': 'ACTIVE', 'project-hold': 'ON_HOLD',
+    'project-complete': 'COMPLETED', 'project-cancel': 'CANCELLED',
+    'milestone-progress': 'IN_PROGRESS', 'milestone-met': 'MET', 'milestone-missed': 'MISSED',
+    'task-progress': 'IN_PROGRESS', 'task-block': 'BLOCKED',
+    'task-done': 'DONE', 'task-cancel': 'CANCELLED',
+  }
+  let body
+  if (statuses[action]) body = { status: statuses[action] }
+  else if (action === 'time-approve' || action === 'time-reject') {
+    body = { decision: action === 'time-approve' ? 'APPROVE' : 'REJECT', note: 'Decided from ERP' }
+  } else if (action === 'time-invoice') {
+    body = { description: 'Approved project time', issueDate: projectToday() }
+  }
+  return projectMutation(path, body, 'projectsActionStatus', `${projectActionLabel(action)} completed`)
+}
+
+function onProjectEvent() {
+  // Project frames carry IDs/classification only. Never treat a frame as
+  // content — reload every record through the authenticated API instead.
+  if (state.view !== 'projects') return
+  if (projectsRefreshTimer) clearTimeout(projectsRefreshTimer)
+  projectsRefreshTimer = setTimeout(() => {
+    projectsRefreshTimer = null
+    loadProjects()
+  }, 250)
+}
+
+$('refreshProjects').onclick = () => loadProjects()
+$('refreshProjectBudget').onclick = () => loadProjects()
+
+$('projectForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const body = {
+    name: $('projectName').value,
+    budgetCents: Number($('projectBudgetCents').value),
+    classification: $('projectClassification').value,
+  }
+  const number = projectOptionalId('projectNumber')
+  if (number) body.number = number
+  const description = projectText('projectDescription')
+  if (description) body.description = description
+  const plannedStart = projectOptionalId('projectPlannedStart')
+  if (plannedStart) body.plannedStart = plannedStart
+  const plannedEnd = projectOptionalId('projectPlannedEnd')
+  if (plannedEnd) body.plannedEnd = plannedEnd
+  await projectMutation('/projects', body, 'projectStatusText', 'Project created as PLANNED')
+}
+
+$('projectMilestoneForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const projectId = $('projectMilestoneProject').value
+  if (!projectId) return
+  const body = { name: $('projectMilestoneName').value }
+  const dueAt = projectOptionalId('projectMilestoneDue')
+  if (dueAt) body.dueAt = dueAt
+  state.selectedProjectId = projectId
+  await projectMutation(`/projects/${encodeURIComponent(projectId)}/milestones`, body,
+    'projectMilestoneStatusText', 'Milestone created as PLANNED')
+}
+
+$('projectTaskForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const projectId = $('projectTaskProject').value
+  if (!projectId) return
+  const body = {
+    title: $('projectTaskTitle').value,
+    position: Number($('projectTaskPosition').value),
+  }
+  const milestoneId = projectOptionalId('projectTaskMilestone')
+  if (milestoneId) body.milestoneId = milestoneId
+  const dueAt = projectOptionalId('projectTaskDue')
+  if (dueAt) body.dueAt = dueAt
+  state.selectedProjectId = projectId
+  await projectMutation(`/projects/${encodeURIComponent(projectId)}/tasks`, body,
+    'projectTaskStatusText', 'Task created as TODO')
+}
+
+$('projectTimeForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const projectId = $('projectTimeProject').value
+  if (!projectId) return
+  const body = {
+    workDate: $('projectTimeWorkDate').value,
+    hours: Number($('projectTimeHours').value),
+    hourlyRateCents: Number($('projectTimeRateCents').value),
+    billable: $('projectTimeBillable').checked,
+  }
+  const taskId = projectOptionalId('projectTimeTask')
+  if (taskId) body.taskId = taskId
+  state.selectedProjectId = projectId
+  await projectMutation(`/projects/${encodeURIComponent(projectId)}/time`, body,
+    'projectTimeStatusText', 'Time recorded as DRAFT')
+}
+
+$('projectMemberForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const projectId = $('projectMemberProject').value
+  if (!projectId) return
+  const body = { userId: $('projectMemberUser').value, role: $('projectMemberRole').value }
+  state.selectedProjectId = projectId
+  await projectMutation(`/projects/${encodeURIComponent(projectId)}/members`, body,
+    'projectMemberStatusText', 'Member added')
+}
+
+$('projectBudgetLinkForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const projectId = $('projectBudgetProject').value
+  if (!projectId) return
+  const body = { budgetId: $('projectBudgetBudget').value }
+  state.selectedProjectId = projectId
+  await projectMutation(`/projects/${encodeURIComponent(projectId)}/budget/links`, body,
+    'projectBudgetStatusText', 'Budget linked')
+}
+
 // ---------------------------------------------------------------- realtime
 
 function loadSocketClient() {
@@ -3510,6 +3909,8 @@ function connectRealtime() {
     for (const event of SERVICE_EVENTS) socket.on(event, onServiceEvent)
     // Phase 11 HR events are ID/classification-only company-room signals.
     for (const event of HR_EVENTS) socket.on(event, onHrEvent)
+    // Phase 12 projects events are ID/classification-only company-room signals.
+    for (const event of PROJECT_EVENTS) socket.on(event, onProjectEvent)
   })
 }
 
@@ -3543,6 +3944,7 @@ function showView(view) {
   else if (view === 'procurement') loadProcurement()
   else if (view === 'service') loadService()
   else if (view === 'hr') loadHr()
+  else if (view === 'projects') loadProjects()
 }
 
 $('tabInbox').onclick = () => showView('inbox')
@@ -3558,6 +3960,7 @@ $('tabInventory').onclick = () => showView('inventory')
 $('tabProcurement').onclick = () => showView('procurement')
 $('tabService').onclick = () => showView('service')
 $('tabHr').onclick = () => showView('hr')
+$('tabProjects').onclick = () => showView('projects')
 
 // ------------------------------------------------------------------- boot
 

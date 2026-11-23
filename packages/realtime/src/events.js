@@ -75,6 +75,15 @@ const HR_EVENT_TYPES = new Set([
   'PayrollRunApproved',
 ])
 
+// Phase 12 project events are ID/classification-only company-wide signals —
+// never branch, user, thread or inbox rooms. ERP clients refetch all values.
+const PROJECT_EVENT_TYPES = new Set([
+  'ProjectCreated',
+  'ProjectTaskCompleted',
+  'MilestoneMet',
+  'TimeEntryApproved',
+])
+
 function eventRooms(event) {
   const prefix = `company:${event.companyId}`
   const data = event.data || {}
@@ -145,6 +154,9 @@ function eventRooms(event) {
 
   // --------------------------------------------------------------- phase 11 HR
   if (HR_EVENT_TYPES.has(event.type)) return unique([prefix])
+
+  // ---------------------------------------------------------- phase 12 projects
+  if (PROJECT_EVENT_TYPES.has(event.type)) return unique([prefix])
   return []
 }
 
@@ -200,6 +212,10 @@ function socketEventFor(type) {
     PayrollRateVerified: 'hr:rate',
     PayrollRunCalculated: 'hr:payroll',
     PayrollRunApproved: 'hr:payroll',
+    ProjectCreated: 'projects:project',
+    ProjectTaskCompleted: 'projects:task',
+    MilestoneMet: 'projects:milestone',
+    TimeEntryApproved: 'projects:time',
   }[type] || null
 }
 

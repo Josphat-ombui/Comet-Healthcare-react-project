@@ -442,6 +442,37 @@ export const PayrollRunApprovedDataSchema = HrEntityRefSchema.extend({
   classification: ClassificationSchema,
 }).strict()
 
+// Phase 12 project events are strict ID/classification-only invalidation
+// signals. Project names, task titles, milestone due dates, hours, rates,
+// amounts, statuses, notes and finance invoice references never enter events.
+const ProjectEntityRefSchema = z.object({
+  entityType: z.enum(['PROJECT', 'PROJECT_TASK', 'MILESTONE', 'TIME_ENTRY']),
+  entityId: z.string(),
+})
+
+export const ProjectCreatedDataSchema = ProjectEntityRefSchema.extend({
+  projectId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const ProjectTaskCompletedDataSchema = ProjectEntityRefSchema.extend({
+  taskId: z.string(),
+  projectId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const MilestoneMetDataSchema = ProjectEntityRefSchema.extend({
+  milestoneId: z.string(),
+  projectId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const TimeEntryApprovedDataSchema = ProjectEntityRefSchema.extend({
+  timeEntryId: z.string(),
+  projectId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
 export const DomainEventSchemas = {
   MessageSent: MessageSentDataSchema,
   ThreadAssigned: ThreadAssignedDataSchema,
@@ -500,6 +531,10 @@ export const DomainEventSchemas = {
   PayrollRateVerified: PayrollRateVerifiedDataSchema,
   PayrollRunCalculated: PayrollRunCalculatedDataSchema,
   PayrollRunApproved: PayrollRunApprovedDataSchema,
+  ProjectCreated: ProjectCreatedDataSchema,
+  ProjectTaskCompleted: ProjectTaskCompletedDataSchema,
+  MilestoneMet: MilestoneMetDataSchema,
+  TimeEntryApproved: TimeEntryApprovedDataSchema,
 }
 
 export function parseEventEnvelope(input) {

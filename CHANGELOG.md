@@ -8,6 +8,62 @@ The format follows a phase-gate model: each enterprise phase ends with passing t
 
 ## [Unreleased]
 
+### Phase 12 — Projects
+
+**Added**
+
+- Tenant/branch-scoped projects domain with strict Zod contracts and safe integer-cent arithmetic:
+  projects, membership, tasks, milestones, time entries and finance budget links in
+  `packages/api/lib/projects.js`. Hours are rounded once, half-up, to two decimals at the service
+  boundary; all money stays in safe integer cents. Optional client numbers are checked for
+  tenant-uniqueness; otherwise the service allocates a sequential number.
+- `/api/projects` endpoints for all six tables, including nested child resources, generic status
+  transitions, time approval/rejection, time invoicing and budget usage/links. Fourteen new
+  `projects.*` permissions are enforced with bearer auth; client-supplied `companyId`, statuses,
+  timestamps and calculated columns are rejected. Billing additionally requires
+  `finance.invoice.write` and `finance.invoice.issue`; budget usage/links require the matching
+  finance read/write permission.
+- Budget usage is delegated to finance's `getBudgetUsage`. Finance failures produce explicit
+  `unavailable` metadata (`BUDGET_NOT_FOUND`, `FINANCE_CONFLICT`, `FINANCE_UNAVAILABLE`) with no
+  lines or totals invented. Invoicing delegates all tax arithmetic and eTIMS queueing to finance,
+  requires `APPROVED` + billable + positive amount + customer, and resolves a VERIFIED effective
+  VAT rate before any write. See ADR-0017.
+- Migration `20261123000600_phase12_projects` with six new RLS-protected tables, 21 indexes and
+  an idempotent dynamic `tenant_branch_scope` policy, generated via the shadow-DB method.
+  Idempotent `cmp_comet`-only fixtures seed a PLANNED project, milestone and TODO task.
+- ERP Projects tab with projects, members, milestones, tasks, time and budget usage, simple forms
+  and row actions. Socket frames only invalidate the open view; content is always refetched through
+  the authenticated API.
+- Strict shared project event schemas and company-room-only sockets: `projects:project`,
+  `projects:task`, `projects:milestone` and `projects:time`. Domain events (`ProjectCreated`,
+  `ProjectTaskCompleted`, `MilestoneMet`, `TimeEntryApproved`) and socket frames carry IDs and
+  classification only. OpenAPI `0.12.0-phase.12`, ADR-0017, README and OpenAPI README updates.
+- `packages/api/tests/phase12-projects.test.js` with 20 tests covering lifecycle guards, date and
+  tenant scoping, cent/hours math, DLP fail-closed, strict schemas, separation of duties, strict
+  ID-only events/sockets, DTO safety and finance delegation/unavailable metadata.
+
+**Changed**
+
+- Optional document numbers are now honoured when supplied and checked for tenant-uniqueness;
+  omitted numbers continue to be allocated by the service. This aligns the validation schemas,
+  ERP forms and OpenAPI contract.
+- `Idempotency-Key` remains scoped to messaging sends; project writes are not replay-safe.
+
+**Verification**
+
+- `npm test` — 189 passed (20 Phase 12), 0 failed; `npm run test:smoke` — 31 passed (7 files).
+- `npm run lint` passes with 21 non-blocking warnings, all in pre-existing web/API files; no Phase 12
+  warnings. `npm run build` passes (`✓ built in 2.83s`, 2335 modules transformed).
+- `node --check` passes for `packages/erp/public/app.js`, `packages/api/lib/projects.js`,
+  `packages/api/lib/validation.js`, `packages/api/routes/projects.routes.js` and
+  `packages/api/tests/phase12-projects.test.js`.
+- OpenAPI YAML parses as `0.12.0-phase.12` with 213 paths (17 / 25 operations under
+  `/api/projects`), 245 schemas, 14 parameters and 842 `$ref`s resolving with 0 missing.
+- Cross-tenant RLS probe with `comet_app`: `cmp_other` sees 0 rows in all six project tables;
+  `cmp_comet` sees 1 project / 1 milestone / 1 task and 0 in the remaining three.
+- `npm run db:deploy` and `npm run db:generate` pass; `npm run db:seed` is idempotent and reports
+  `✓ Seeded PLANNED project with PLANNED milestone and TODO task fixtures`.
+
 ### Phase 11 — HR
 
 **Added**

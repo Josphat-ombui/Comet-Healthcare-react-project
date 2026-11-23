@@ -1,6 +1,6 @@
 # OpenAPI Contract
 
-Comet Healthcare Enterprise Platform — Phase 11 contract complete (`0.11.0-phase.11`)
+Comet Healthcare Enterprise Platform — Phase 12 contract complete (`0.12.0-phase.12`)
 
 This directory holds the versioned REST and webhook contracts. Phase 1 created the skeleton;
 Phase 3 added identity/organisation/audit, Phase 4 added messaging and realtime, Phase 5
@@ -8,7 +8,7 @@ completed the shared-services surface (files, workflow, notifications, search, d
 Phase 6 added the tenant/branch-scoped finance surface under `/api/finance`, Phase 7 added
 the sales lifecycle under `/api/sales`, Phase 8 added inventory under `/api/inventory`,
 Phase 9 added procurement under `/api/procurement`, Phase 10 added service under `/api/service`,
-and Phase 11 adds HR under `/api/hr`.
+Phase 11 added HR under `/api/hr`, and Phase 12 adds projects under `/api/projects`.
 
 ## Files
 
@@ -35,6 +35,34 @@ and Phase 11 adds HR under `/api/hr`.
 - Response envelopes follow the implementation: named collections such as `files`,
   `definitions`, `instances`, `tasks`, `notifications` and `preferences` are used rather than a
   generic `items` key. `GET /api/search` and `GET /api/documents` use `items` as before.
+
+## Phase 12 scope
+
+- `Projects` tag paths (17 paths / 25 operations): `/api/projects` (list/create), `/{id}`
+  (get/patch), `/{id}/status`, `/{id}/members` (list/create), `/{id}/members/{memberId}`
+  (get/patch), `/{id}/milestones` (list/create), `/{id}/milestones/{milestoneId}` (get) with
+  `/{milestoneId}/status`, `/{id}/tasks` (list/create), `/{id}/tasks/{taskId}` (get/patch) with
+  `/{taskId}/status`, `/{id}/time` (list/create), `/{id}/time/{timeId}` (get) with `/decision`
+  and `/invoice`, and `/{id}/budget` plus `/{id}/budget/links`.
+- All Phase 3–11 paths and schemas remain intact. Every operation declares
+  `security: [{ bearerAuth: [] }]` and an `x-permission` from the 14-entry `projects.*` set;
+  billing, usage and linking additionally document the required finance permissions. Strict
+  request schemas reject client-supplied `companyId`, statuses and calculated columns; free text
+  is DLP-checked and fails closed.
+- Hours are positive floats rounded once, half-up, to two decimals at the service boundary. All
+  money is safe integer cents. `Project.financeInvoiceId` and `TimeEntry.financeInvoiceId` are
+  opaque scalar references; finance owns the invoice and all tax arithmetic. Invoice creation
+  requires APPROVED + billable + positive amount + customer and resolves a VERIFIED VAT rate
+  before any write. See ADR-0017.
+- Budget usage is delegated to finance's `getBudgetUsage`. Finance failures yield explicit
+  `unavailable` metadata; the projects module never estimates, zeroes or fabricates totals.
+- Domain events are `ProjectCreated`, `ProjectTaskCompleted`, `MilestoneMet` and
+  `TimeEntryApproved`. Socket events are `projects:project`, `projects:task`,
+  `projects:milestone` and `projects:time`. Frames carry IDs/classification only and are routed
+  to the company room only — never user, thread, inbox or branch rooms. Clients refetch through
+  `/api/projects`; see `x-realtime`.
+- `Idempotency-Key` remains scoped to `POST /api/messaging/threads/{id}/messages` only; no
+  `/api/projects` endpoint consumes it.
 
 ## Phase 11 scope
 
@@ -228,6 +256,9 @@ and Phase 11 adds HR under `/api/hr`.
 15. Phase 11 HR frames are ID/classification-only invalidation signals routed to the company room.
     Adding employee names, bank or KRA references, pay amounts, rate percentages, leave reasons,
     payroll numbers or statuses is a contract violation.
+16. Phase 12 projects frames are ID/classification-only invalidation signals routed to the company
+    room. Adding project names, task titles, milestone dates, hours, rates, amounts, statuses,
+    notes or finance references is a contract violation.
 
 ## Security schemes
 
@@ -248,8 +279,10 @@ and Phase 11 adds HR under `/api/hr`.
    ```
 
    An OpenAPI-aware linter (for example `npx @redocly/cli lint docs/openapi/openapi.yaml`) is
-   optional when network access to the generator is available. At the Phase 11 gate the parsed
-   document has version `0.11.0-phase.11`, 196 paths (21 under `/api/hr`) and 203 schemas.
+   optional when network access to the generator is available. At the Phase 12 gate the parsed
+   document has version `0.12.0-phase.12`, 213 paths (17 under `/api/projects`) and 245 schemas.
+   At the Phase 11 gate it had version `0.11.0-phase.11`, 196 paths (21 under `/api/hr`) and 203
+   schemas.
    At the Phase 10 gate it had version `0.10.0-phase.10`, 175 paths and 179 schemas; at the Phase 9
    gate, 148 paths and 145 schemas; at the Phase 8 gate, 130 paths and 114 schemas.
 4. Confirm all `$ref` targets resolve and that no Phase 3/4/5/6/7/8/9/10 path was removed. A local check:
@@ -284,8 +317,10 @@ and Phase 11 adds HR under `/api/hr`.
     ID-only events and tenant scope; Phase 10 service tests cover SLA arithmetic, lifecycle
     guards, DLP, strict ID-only events, cent totals, stock-conflict fallback, verified-rate
     invoicing and tenant scope; Phase 11 HR tests cover version selection, verified-rate gating,
-    integer-cent payroll math, masked/encrypted DTOs, strict ID-only events and tenant scope.
-    At the Phase 11 gate 721 refs resolve.
+    integer-cent payroll math, masked/encrypted DTOs, strict ID-only events and tenant scope;
+    Phase 12 projects tests (20) cover lifecycle guards, cent/hours math, DLP, strict ID-only
+    events, permission separation, finance delegation/unavailable metadata and tenant scope.
+    At the Phase 12 gate 842 refs resolve; at the Phase 11 gate 721 refs resolved.
 
 ## Phase gate requirement
 

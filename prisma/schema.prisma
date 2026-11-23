@@ -542,6 +542,13 @@ model Company {
   payrollLines             PayrollLine[]
   leaveRequests            LeaveRequest[]
   attendanceRecords        AttendanceRecord[]
+  // Phase 12 projects
+  projects                 Project[]
+  projectMembers           ProjectMember[]
+  projectTasks             ProjectTask[]
+  milestones               Milestone[]
+  timeEntries              TimeEntry[]
+  projectBudgetLinks       ProjectBudgetLink[]
 }
 
 model Branch {
@@ -619,6 +626,13 @@ model Branch {
   payrollLines             PayrollLine[]
   leaveRequests            LeaveRequest[]
   attendanceRecords        AttendanceRecord[]
+  // Phase 12 projects
+  projects                 Project[]
+  projectMembers           ProjectMember[]
+  projectTasks             ProjectTask[]
+  milestones               Milestone[]
+  timeEntries              TimeEntry[]
+  projectBudgetLinks       ProjectBudgetLink[]
 
   @@unique([companyId, code])
   @@index([companyId, isActive])
@@ -806,6 +820,17 @@ model User {
   hrLeaveRequestsCreated      LeaveRequest[]        @relation("LeaveRequestCreatedBy")
   hrLeaveRequestsApproved     LeaveRequest[]        @relation("LeaveRequestApprovedBy")
   hrAttendanceRecordsCreated  AttendanceRecord[]    @relation("AttendanceRecordCreatedBy")
+  // Phase 12 projects
+  projectsCreated         Project[]           @relation("ProjectCreatedBy")
+  projectMemberships      ProjectMember[]     @relation("ProjectMemberUser")
+  projectMembershipsCreated ProjectMember[]   @relation("ProjectMemberCreatedBy")
+  projectTasksAssigned    ProjectTask[]       @relation("ProjectTaskAssignee")
+  projectTasksCreated     ProjectTask[]       @relation("ProjectTaskCreatedBy")
+  milestonesCreated       Milestone[]         @relation("MilestoneCreatedBy")
+  timeEntriesLogged       TimeEntry[]         @relation("TimeEntryUser")
+  timeEntriesApproved     TimeEntry[]         @relation("TimeEntryApprovedBy")
+  timeEntriesCreated      TimeEntry[]         @relation("TimeEntryCreatedBy")
+  projectBudgetLinksCreated ProjectBudgetLink[] @relation("ProjectBudgetLinkCreatedBy")
 
   @@unique([companyId, email])
   @@unique([companyId, identityProvider, externalId])
@@ -1743,6 +1768,8 @@ model FinanceParty {
   // Phase 10 service: customers are FinanceParty rows of type CUSTOMER.
   serviceContracts     ServiceContract[]     @relation("ServiceContractCustomer")
   serviceTickets       ServiceTicket[]       @relation("ServiceTicketCustomer")
+  // Phase 12 projects: customers are FinanceParty rows of type CUSTOMER.
+  projects             Project[]             @relation("ProjectCustomer")
 
   @@index([companyId, type])
   @@index([companyId, name])
@@ -1874,6 +1901,9 @@ model FinanceInvoice {
   threeWayMatches ThreeWayMatch[]  @relation("ThreeWayMatchInvoice")
   // Phase 10: scalar link only; service invoices are created through finance.
   workOrders      WorkOrder[]      @relation("WorkOrderInvoice")
+  // Phase 12: scalar links only; project invoices are created through finance.
+  projects        Project[]        @relation("ProjectInvoice")
+  timeEntries     TimeEntry[]      @relation("TimeEntryInvoice")
 
   @@unique([companyId, number])
   @@index([companyId, direction, status])
@@ -1966,7 +1996,9 @@ model FinanceBudget {
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
 
-  lines FinanceBudgetLine[]
+  lines         FinanceBudgetLine[]
+  // Phase 12: usage is computed by the finance helper, never duplicated here.
+  projectLinks  ProjectBudgetLink[] @relation("ProjectBudgetLinkBudget")
 
   @@unique([companyId, code])
 }
@@ -2100,7 +2132,9 @@ model SalesOrder {
   createdAt        DateTime           @default(now())
   updatedAt        DateTime           @updatedAt
 
-  lines SalesOrderLine[]
+  lines    SalesOrderLine[]
+  // Phase 12: scalar link only; the project references a confirmed sales order.
+  projects Project[]       @relation("ProjectSalesOrder")
 
   @@unique([companyId, number])
   @@index([companyId, status, orderDate])
@@ -3449,4 +3483,243 @@ model AttendanceRecord {
 
   @@unique([companyId, employeeId, date])
   @@index([companyId, date])
+}
+
+// ---------------------------------------------------------------------------
+// Phase 12 projects
+//
+// Projects, membership, tasks, milestones, time and finance budget links. Every
+// table is tenant/branch scoped. Money is integer cents; hours are numeric and
+// rounded once at the service boundary. Finance owns budget usage arithmetic and
+// invoice tax arithmetic: this module keeps references and IDs only.
+// ---------------------------------------------------------------------------
+
+enum ProjectStatus {
+  PLANNED
+  ACTIVE
+  ON_HOLD
+  COMPLETED
+  CANCELLED
+}
+
+enum ProjectTaskStatus {
+  TODO
+  IN_PROGRESS
+  BLOCKED
+  DONE
+  CANCELLED
+}
+
+enum MilestoneStatus {
+  PLANNED
+  IN_PROGRESS
+  MET
+  MISSED
+}
+
+enum TimeEntryStatus {
+  DRAFT
+  APPROVED
+  BILLED
+  REJECTED
+}
+
+enum ProjectMemberRole {
+  OWNER
+  MANAGER
+  MEMBER
+  VIEWER
+}
+
+model Project {
+  id               String             @id @default(cuid())
+  companyId        String             @default("cmp_comet")
+  tenant           Company            @relation(fields: [companyId], references: [id])
+  branchId         String?
+  branch           Branch?            @relation(fields: [branchId], references: [id])
+  number           String
+  name             String
+  description      String?
+  status           ProjectStatus      @default(PLANNED)
+  customerId       String?
+  customer         FinanceParty?      @relation("ProjectCustomer", fields: [customerId], references: [id])
+  salesOrderId     String?
+  salesOrder       SalesOrder?        @relation("ProjectSalesOrder", fields: [salesOrderId], references: [id])
+  // Finance owns the invoice; this is an opaque scalar reference only.
+  financeInvoiceId String?
+  financeInvoice   FinanceInvoice?    @relation("ProjectInvoice", fields: [financeInvoiceId], references: [id])
+  budgetCents      Int                @default(0)
+  currency         String             @default("KES")
+  plannedStart     DateTime?
+  plannedEnd       DateTime?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  cancelledAt      DateTime?
+  classification   DataClassification @default(INTERNAL)
+  createdById      String?
+  createdBy        User?              @relation("ProjectCreatedBy", fields: [createdById], references: [id])
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  members     ProjectMember[]
+  tasks       ProjectTask[]
+  milestones  Milestone[]
+  timeEntries TimeEntry[]
+  budgetLinks ProjectBudgetLink[]
+
+  @@unique([companyId, number])
+  @@index([companyId, status])
+  @@index([companyId, branchId])
+  @@index([companyId, customerId])
+}
+
+model ProjectMember {
+  id             String             @id @default(cuid())
+  companyId      String             @default("cmp_comet")
+  tenant         Company            @relation(fields: [companyId], references: [id])
+  branchId       String?
+  branch         Branch?            @relation(fields: [branchId], references: [id])
+  projectId      String
+  project        Project            @relation(fields: [projectId], references: [id])
+  userId         String
+  user           User               @relation("ProjectMemberUser", fields: [userId], references: [id])
+  role           ProjectMemberRole  @default(MEMBER)
+  joinedAt       DateTime           @default(now())
+  leftAt         DateTime?
+  classification DataClassification @default(INTERNAL)
+  createdById    String?
+  createdBy      User?              @relation("ProjectMemberCreatedBy", fields: [createdById], references: [id])
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  timeEntries TimeEntry[] @relation("TimeEntryMember")
+
+  @@unique([projectId, userId])
+  @@index([companyId, projectId])
+  @@index([companyId, userId])
+}
+
+model Milestone {
+  id             String             @id @default(cuid())
+  companyId      String             @default("cmp_comet")
+  tenant         Company            @relation(fields: [companyId], references: [id])
+  branchId       String?
+  branch         Branch?            @relation(fields: [branchId], references: [id])
+  projectId      String
+  project        Project            @relation(fields: [projectId], references: [id])
+  number         String
+  name           String
+  description    String?
+  status         MilestoneStatus    @default(PLANNED)
+  dueAt          DateTime?
+  metAt          DateTime?
+  missedAt       DateTime?
+  classification DataClassification @default(INTERNAL)
+  createdById    String?
+  createdBy      User?              @relation("MilestoneCreatedBy", fields: [createdById], references: [id])
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  tasks ProjectTask[] @relation("TaskMilestone")
+
+  @@unique([companyId, number])
+  @@index([companyId, projectId])
+  @@index([companyId, status])
+}
+
+model ProjectTask {
+  id             String             @id @default(cuid())
+  companyId      String             @default("cmp_comet")
+  tenant         Company            @relation(fields: [companyId], references: [id])
+  branchId       String?
+  branch         Branch?            @relation(fields: [branchId], references: [id])
+  projectId      String
+  project        Project            @relation(fields: [projectId], references: [id])
+  number         String
+  title          String
+  description    String?
+  status         ProjectTaskStatus  @default(TODO)
+  assigneeId     String?
+  assignee       User?              @relation("ProjectTaskAssignee", fields: [assigneeId], references: [id])
+  milestoneId    String?
+  milestone      Milestone?         @relation("TaskMilestone", fields: [milestoneId], references: [id])
+  dueAt          DateTime?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  cancelledAt    DateTime?
+  position       Int                @default(0)
+  classification DataClassification @default(INTERNAL)
+  createdById    String?
+  createdBy      User?              @relation("ProjectTaskCreatedBy", fields: [createdById], references: [id])
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  timeEntries TimeEntry[] @relation("TimeEntryTask")
+
+  @@unique([companyId, number])
+  @@index([companyId, projectId])
+  @@index([companyId, assigneeId])
+  @@index([companyId, status])
+}
+
+model TimeEntry {
+  id             String             @id @default(cuid())
+  companyId      String             @default("cmp_comet")
+  tenant         Company            @relation(fields: [companyId], references: [id])
+  branchId       String?
+  branch         Branch?            @relation(fields: [branchId], references: [id])
+  projectId      String
+  project        Project            @relation(fields: [projectId], references: [id])
+  taskId         String?
+  task           ProjectTask?       @relation("TimeEntryTask", fields: [taskId], references: [id])
+  memberId       String?
+  member         ProjectMember?     @relation("TimeEntryMember", fields: [memberId], references: [id])
+  userId         String
+  user           User               @relation("TimeEntryUser", fields: [userId], references: [id])
+  number         String
+  workDate       String
+  // Numeric hours rounded to two decimals at the service boundary.
+  hours          Float
+  billable       Boolean            @default(false)
+  hourlyRateCents Int               @default(0)
+  amountCents    Int                @default(0)
+  status         TimeEntryStatus    @default(DRAFT)
+  approvedById   String?
+  approvedBy     User?              @relation("TimeEntryApprovedBy", fields: [approvedById], references: [id])
+  approvedAt     DateTime?
+  rejectedAt     DateTime?
+  billedAt       DateTime?
+  // Finance owns the invoice; this is an opaque scalar reference only.
+  financeInvoiceId String?
+  financeInvoice   FinanceInvoice?  @relation("TimeEntryInvoice", fields: [financeInvoiceId], references: [id])
+  classification   DataClassification @default(INTERNAL)
+  createdById      String?
+  createdBy        User?            @relation("TimeEntryCreatedBy", fields: [createdById], references: [id])
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@unique([companyId, number])
+  @@index([companyId, projectId])
+  @@index([companyId, status])
+  @@index([companyId, workDate])
+}
+
+model ProjectBudgetLink {
+  id             String             @id @default(cuid())
+  companyId      String             @default("cmp_comet")
+  tenant         Company            @relation(fields: [companyId], references: [id])
+  branchId       String?
+  branch         Branch?            @relation(fields: [branchId], references: [id])
+  projectId      String
+  project        Project            @relation(fields: [projectId], references: [id])
+  budgetId       String
+  budget         FinanceBudget      @relation("ProjectBudgetLinkBudget", fields: [budgetId], references: [id])
+  classification DataClassification @default(INTERNAL)
+  createdById    String?
+  createdBy      User?              @relation("ProjectBudgetLinkCreatedBy", fields: [createdById], references: [id])
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  @@unique([projectId, budgetId])
+  @@index([companyId, budgetId])
 }

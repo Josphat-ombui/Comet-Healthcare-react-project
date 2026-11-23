@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Comet Healthcare Enterprise API
-  version: 0.11.0-phase.11
+  version: 0.12.0-phase.12
   summary: REST and webhook contract for the Comet Healthcare enterprise platform.
   description: |
     Phase 3 adds local identity, sessions, MFA, OIDC, organisation directory and audit.
@@ -149,6 +149,27 @@ info:
     records but cannot verify rates or post payroll; compliance verifies rates, and posting
     additionally requires finance journal-posting permission. `Idempotency-Key` remains scoped to
     messaging sends only; HR writes are not replay-safe.
+
+    Phase 12 adds projects under `/api/projects`: projects, membership, tasks, milestones,
+    time entries and finance budget links. All six Phase 12 tables are tenant/branch scoped
+    with RLS. Hours are Float values rounded once, half-up, to two decimals at the service
+    boundary; all money remains safe integer cents. Project budget usage is delegated to
+    finance's `getBudgetUsage`; when finance cannot supply it, the API returns explicit
+    unavailable metadata with no substituted totals or line items. See ADR-0017.
+
+    Invoice creation from time requires an APPROVED, billable entry with a positive amount
+    and a project customer. The service resolves a VERIFIED, effective VAT rate before any
+    invoice write, then delegates all tax arithmetic and eTIMS queueing to finance. No live
+    filing, payment or email is performed. Free text fails closed through DLP.
+
+    Phase 12 permissions: `projects.project.read/write`, `projects.member.read/write`,
+    `projects.task.read/write`, `projects.milestone.read/write`, `projects.time.read/write/approve/bill`
+    and `projects.budget.read/link`. Billing also requires finance invoice write/issue; reading
+    usage requires finance budget read; linking requires finance budget write. Domain events
+    (`ProjectCreated`, `ProjectTaskCompleted`, `MilestoneMet`, `TimeEntryApproved`) and sockets
+    (`projects:project`, `projects:task`, `projects:milestone`, `projects:time`) carry IDs and
+    classification only and are routed to the company room only. `Idempotency-Key` remains
+    scoped to messaging sends only; Phase 12 writes are not replay-safe.
   contact:
     name: Comet Healthcare Platform Team
   license:
@@ -183,6 +204,8 @@ tags:
     description: Service contracts/SLAs, tickets, work orders, visits, part usage and optional finance invoice creation. Added in Phase 10.
   - name: HR
     description: Employee records, contracts, verified payroll rates, leave, attendance and payroll runs. Added in Phase 11.
+  - name: Projects
+    description: Projects, members, tasks, milestones, time entries and finance-owned budget usage. Added in Phase 12.
 x-phase-roadmap:
   phase1: Architecture and this skeleton only
   phase2: ERD, migrations, workspace split, shared contracts
@@ -195,7 +218,7 @@ x-phase-roadmap:
   phase9: Complete - /api/procurement (requisitions, orders, goods receipts, supplier returns, three-way matches)
   phase10: Complete - /api/service (contracts/SLAs, tickets, work orders, visits, part usage, optional invoice creation)
   phase11: Complete - /api/hr (employees, contracts, verified payroll rates, leave, attendance, payroll runs and lines)
-  phase12: /api/projects
+  phase12: Complete - /api/projects (projects, members, tasks, milestones, time entries and finance budget links)
   phase13: /api/manufacturing
   phase14: /api/reporting
   phase15: /api/public/v1 and /api/webhooks
@@ -263,6 +286,10 @@ x-realtime:
     hr:leave: 'LeaveApproved; refetch GET /api/hr/leave.'
     hr:rate: 'PayrollRateVerified; refetch GET /api/hr/rates.'
     hr:payroll: 'PayrollRunCalculated/Approved; refetch GET /api/hr/payroll/runs.'
+    projects:project: 'ProjectCreated; refetch GET /api/projects.'
+    projects:task: 'ProjectTaskCompleted; refetch GET /api/projects/{id}/tasks.'
+    projects:milestone: 'MilestoneMet; refetch GET /api/projects/{id}/milestones.'
+    projects:time: 'TimeEntryApproved; refetch GET /api/projects/{id}/time.'
   eventPayload:
     eventId: string
     type: string
@@ -6934,6 +6961,617 @@ paths:
         '403': { description: Missing `hr.payroll.post` or `finance.journal.post`. }
         '404': { description: Tenant-scoped record not found. }
         '409': { description: Only APPROVED runs can be posted, totals are unbalanced, or system accounts are missing. }
+  /api/projects:
+    get:
+      tags: [Projects]
+      summary: List projects in the caller's tenant and branch scope
+      operationId: listProjects
+      x-permission: projects.project.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectLimit'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ProjectStatus' }
+        - name: branchId
+          in: query
+          schema: { type: string, maxLength: 80 }
+        - name: customerId
+          in: query
+          schema: { type: string, maxLength: 80 }
+      responses:
+        '200':
+          description: Tenant-scoped projects.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectList' }
+        '400': { description: "Invalid query or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `projects.project.read`. }
+    post:
+      tags: [Projects]
+      summary: Create a planned project
+      operationId: createProject
+      x-permission: projects.project.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProjectCreate' }
+      responses:
+        '201':
+          description: Project created in PLANNED status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectEnvelope' }
+        '400': { description: "Invalid request, DLP finding, or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `projects.project.write`. }
+        '404': { description: Referenced branch, customer or sales order not found in scope. }
+  /api/projects/{id}:
+    get:
+      tags: [Projects]
+      summary: Read a tenant-scoped project
+      operationId: getProject
+      x-permission: projects.project.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectDocumentId'
+      description: A read audit records the project ID and classification only.
+      responses:
+        '200':
+          description: Project DTO.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `projects.project.read`. }
+        '404': { description: Tenant-scoped project not found. }
+    patch:
+      tags: [Projects]
+      summary: Update project metadata
+      operationId: updateProject
+      x-permission: projects.project.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectDocumentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProjectUpdate' }
+      responses:
+        '200':
+          description: Updated project DTO.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectEnvelope' }
+        '400': { description: Invalid request or strict schema violation. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `projects.project.write`. }
+        '404': { description: Tenant-scoped project not found. }
+  /api/projects/{id}/status:
+    post:
+      tags: [Projects]
+      summary: Transition a project status
+      operationId: transitionProjectStatus
+      x-permission: projects.project.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectDocumentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProjectStatusChange' }
+      responses:
+        '200':
+          description: Project with its new status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectEnvelope' }
+        '400': { description: Invalid status. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `projects.project.write`. }
+        '404': { description: Tenant-scoped project not found. }
+        '409': { description: Lifecycle transition is not allowed. }
+  /api/projects/{id}/members:
+    get:
+      tags: [Projects]
+      summary: List project members
+      operationId: listProjectMembers
+      x-permission: projects.member.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectDocumentId'
+      responses:
+        '200':
+          description: Tenant-scoped project members.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectMemberList' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `projects.member.read`. }
+        '404': { description: Tenant-scoped project not found. }
+    post:
+      tags: [Projects]
+      summary: Add a project member
+      operationId: createProjectMember
+      x-permission: projects.member.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectDocumentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProjectMemberCreate' }
+      responses:
+        '201':
+          description: Member added.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectMemberEnvelope' }
+        '400': { description: Invalid request or strict schema violation. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `projects.member.write`. }
+        '404': { description: Project or user not found in scope. }
+        '409': { description: User is already a member of the project. }
+  /api/projects/{id}/members/{memberId}:
+    get:
+      tags: [Projects]
+      summary: Read a project member
+      operationId: getProjectMember
+      x-permission: projects.member.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectDocumentId'
+        - $ref: '#/components/parameters/ProjectMemberId'
+      description: A read audit records the member ID and classification only.
+      responses:
+        '200':
+          description: Project member DTO.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectMemberEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `projects.member.read`. }
+        '404': { description: Tenant-scoped member not found. }
+    patch:
+      tags: [Projects]
+      summary: Update a project member's role or leave date
+      operationId: updateProjectMember
+      x-permission: projects.member.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectDocumentId'
+        - $ref: '#/components/parameters/ProjectMemberId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProjectMemberUpdate' }
+      responses:
+        '200':
+          description: Updated member DTO.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectMemberEnvelope' }
+        '400': { description: Invalid request or strict schema violation. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `projects.member.write`. }
+        '404': { description: Tenant-scoped member not found. }
+  /api/projects/{id}/milestones:
+    get:
+      tags: [Projects]
+      summary: List project milestones
+      operationId: listProjectMilestones
+      x-permission: projects.milestone.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectDocumentId'
+        - $ref: '#/components/parameters/ProjectLimit'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/MilestoneStatus' }
+      responses:
+        '200':
+          description: Tenant-scoped milestones.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectMilestoneList' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `projects.milestone.read`. }
+        '404': { description: Tenant-scoped project not found. }
+    post:
+      tags: [Projects]
+      summary: Create a planned milestone
+      operationId: createProjectMilestone
+      x-permission: projects.milestone.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectDocumentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProjectMilestoneCreate' }
+      responses:
+        '201':
+          description: Milestone created in PLANNED status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectMilestoneEnvelope' }
+        '400': { description: Invalid request or strict schema violation. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `projects.milestone.write`. }
+        '404': { description: Tenant-scoped project not found. }
+  /api/projects/{id}/milestones/{milestoneId}:
+    get:
+      tags: [Projects]
+      summary: Read a project milestone
+      operationId: getProjectMilestone
+      x-permission: projects.milestone.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectDocumentId'
+        - $ref: '#/components/parameters/ProjectMilestoneId'
+      description: A read audit records the milestone ID and classification only.
+      responses:
+        '200':
+          description: Milestone DTO.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectMilestoneEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `projects.milestone.read`. }
+        '404': { description: Tenant-scoped milestone not found. }
+  /api/projects/{id}/milestones/{milestoneId}/status:
+    post:
+      tags: [Projects]
+      summary: Transition a milestone status
+      operationId: transitionProjectMilestoneStatus
+      x-permission: projects.milestone.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectDocumentId'
+        - $ref: '#/components/parameters/ProjectMilestoneId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProjectMilestoneStatusChange' }
+      responses:
+        '200':
+          description: Milestone with its new status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectMilestoneEnvelope' }
+        '400': { description: Invalid status. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `projects.milestone.write`. }
+        '404': { description: Tenant-scoped milestone not found. }
+        '409': { description: Lifecycle transition is not allowed. }
+  /api/projects/{id}/tasks:
+    get:
+      tags: [Projects]
+      summary: List project tasks
+      operationId: listProjectTasks
+      x-permission: projects.task.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectDocumentId'
+        - $ref: '#/components/parameters/ProjectLimit'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ProjectTaskStatus' }
+        - name: assigneeId
+          in: query
+          schema: { type: string, maxLength: 80 }
+        - name: milestoneId
+          in: query
+          schema: { type: string, maxLength: 80 }
+      responses:
+        '200':
+          description: Tenant-scoped tasks.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectTaskList' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `projects.task.read`. }
+        '404': { description: Tenant-scoped project not found. }
+    post:
+      tags: [Projects]
+      summary: Create a task
+      operationId: createProjectTask
+      x-permission: projects.task.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectDocumentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProjectTaskCreate' }
+      responses:
+        '201':
+          description: Task created in TODO status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectTaskEnvelope' }
+        '400': { description: Invalid request or strict schema violation. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `projects.task.write`. }
+        '404': { description: Project, assignee or milestone not found in scope. }
+  /api/projects/{id}/tasks/{taskId}:
+    get:
+      tags: [Projects]
+      summary: Read a project task
+      operationId: getProjectTask
+      x-permission: projects.task.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectDocumentId'
+        - $ref: '#/components/parameters/ProjectTaskId'
+      description: A read audit records the task ID and classification only.
+      responses:
+        '200':
+          description: Task DTO.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectTaskEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `projects.task.read`. }
+        '404': { description: Tenant-scoped task not found. }
+    patch:
+      tags: [Projects]
+      summary: Update a project task
+      operationId: updateProjectTask
+      x-permission: projects.task.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectDocumentId'
+        - $ref: '#/components/parameters/ProjectTaskId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProjectTaskUpdate' }
+      responses:
+        '200':
+          description: Updated task DTO.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectTaskEnvelope' }
+        '400': { description: Invalid request or strict schema violation. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `projects.task.write`. }
+        '404': { description: Tenant-scoped task not found. }
+  /api/projects/{id}/tasks/{taskId}/status:
+    post:
+      tags: [Projects]
+      summary: Transition a task status
+      operationId: transitionProjectTaskStatus
+      x-permission: projects.task.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectDocumentId'
+        - $ref: '#/components/parameters/ProjectTaskId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProjectTaskStatusChange' }
+      responses:
+        '200':
+          description: Task with its new status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectTaskEnvelope' }
+        '400': { description: Invalid status. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `projects.task.write`. }
+        '404': { description: Tenant-scoped task not found. }
+        '409': { description: Lifecycle transition is not allowed. }
+  /api/projects/{id}/time:
+    get:
+      tags: [Projects]
+      summary: List project time entries
+      operationId: listProjectTimeEntries
+      x-permission: projects.time.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectDocumentId'
+        - $ref: '#/components/parameters/ProjectLimit'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/TimeEntryStatus' }
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Tenant-scoped time entries.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectTimeList' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `projects.time.read`. }
+        '404': { description: Tenant-scoped project not found. }
+    post:
+      tags: [Projects]
+      summary: Record a draft time entry
+      operationId: createProjectTimeEntry
+      x-permission: projects.time.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectDocumentId'
+      description: The authenticated user owns the entry; hours are rounded once to two decimals.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProjectTimeCreate' }
+      responses:
+        '201':
+          description: Time entry created in DRAFT status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectTimeEnvelope' }
+        '400': { description: Invalid request or strict schema violation. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `projects.time.write`. }
+        '404': { description: Project, task or member not found in scope. }
+        '409': { description: Time cannot be recorded on a closed project. }
+  /api/projects/{id}/time/{timeId}:
+    get:
+      tags: [Projects]
+      summary: Read a project time entry
+      operationId: getProjectTimeEntry
+      x-permission: projects.time.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectDocumentId'
+        - $ref: '#/components/parameters/ProjectTimeId'
+      description: A read audit records the time entry ID and classification only.
+      responses:
+        '200':
+          description: Time entry DTO.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectTimeEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `projects.time.read`. }
+        '404': { description: Tenant-scoped time entry not found. }
+  /api/projects/{id}/time/{timeId}/decision:
+    post:
+      tags: [Projects]
+      summary: Approve or reject a draft time entry
+      operationId: decideProjectTimeEntry
+      x-permission: projects.time.approve
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectDocumentId'
+        - $ref: '#/components/parameters/ProjectTimeId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProjectTimeDecision' }
+      responses:
+        '200':
+          description: Time entry with APPROVED or REJECTED status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectTimeEnvelope' }
+        '400': { description: Invalid request or strict schema violation. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `projects.time.approve`. }
+        '404': { description: Tenant-scoped time entry not found. }
+        '409': { description: Only DRAFT entries can be decided. }
+  /api/projects/{id}/time/{timeId}/invoice:
+    post:
+      tags: [Projects]
+      summary: Create and issue a finance invoice from approved billable time
+      operationId: invoiceProjectTimeEntry
+      x-permission: projects.time.bill
+      x-additional-permission: finance.invoice.write+finance.invoice.issue
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectDocumentId'
+        - $ref: '#/components/parameters/ProjectTimeId'
+      description: Requires `projects.time.bill`, `finance.invoice.write` and `finance.invoice.issue`. Resolves a VERIFIED VAT rate before writes; finance owns all tax arithmetic and eTIMS queueing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProjectTimeInvoice' }
+      responses:
+        '200':
+          description: Billed time entry and opaque invoice summary.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectTimeInvoiceResult' }
+        '400': { description: Invalid request or strict schema violation. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing a required projects or finance invoice permission. }
+        '404': { description: Tenant-scoped time entry not found. }
+        '409': { description: Entry is not APPROVED/billable/positive, project has no customer, or no VERIFIED VAT rate is effective. }
+  /api/projects/{id}/budget:
+    get:
+      tags: [Projects]
+      summary: Read finance-owned usage for linked budgets
+      operationId: getProjectBudgetUsage
+      x-permission: projects.budget.read
+      x-additional-permission: finance.budget.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectDocumentId'
+      description: Requires both `projects.budget.read` and `finance.budget.read`. Usage comes only from finance; failures yield explicit unavailable metadata, never substituted totals.
+      responses:
+        '200':
+          description: Project budget links and finance usage metadata.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectBudgetEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `projects.budget.read` or `finance.budget.read`. }
+        '404': { description: Tenant-scoped project not found. }
+  /api/projects/{id}/budget/links:
+    post:
+      tags: [Projects]
+      summary: Link an approved finance budget to a project
+      operationId: linkProjectBudget
+      x-permission: projects.budget.link
+      x-additional-permission: finance.budget.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectDocumentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProjectBudgetLinkCreate' }
+      responses:
+        '201':
+          description: Budget link created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectBudgetLinkEnvelope' }
+        '400': { description: Invalid request or strict schema violation. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `projects.budget.link` or `finance.budget.write`. }
+        '404': { description: Project or finance budget not found in scope. }
+        '409': { description: Budget is not APPROVED or is already linked. }
 components:
   securitySchemes:
     bearerAuth:
@@ -7015,6 +7653,40 @@ components:
       description: Opaque HR record ID scoped to the caller's tenant and branch.
       schema: { type: string, minLength: 1, maxLength: 80 }
     HrLimit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    ProjectDocumentId:
+      name: id
+      in: path
+      required: true
+      description: Opaque project ID scoped to the caller's tenant and branch.
+      schema: { type: string, minLength: 1, maxLength: 80 }
+    ProjectMemberId:
+      name: memberId
+      in: path
+      required: true
+      description: Opaque project member ID scoped to the parent project.
+      schema: { type: string, minLength: 1, maxLength: 80 }
+    ProjectMilestoneId:
+      name: milestoneId
+      in: path
+      required: true
+      description: Opaque milestone ID scoped to the parent project.
+      schema: { type: string, minLength: 1, maxLength: 80 }
+    ProjectTaskId:
+      name: taskId
+      in: path
+      required: true
+      description: Opaque task ID scoped to the parent project.
+      schema: { type: string, minLength: 1, maxLength: 80 }
+    ProjectTimeId:
+      name: timeId
+      in: path
+      required: true
+      description: Opaque time entry ID scoped to the parent project.
+      schema: { type: string, minLength: 1, maxLength: 80 }
+    ProjectLimit:
       name: limit
       in: query
       schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
@@ -9678,5 +10350,384 @@ components:
         payrollRuns:
           type: array
           items: { $ref: '#/components/schemas/HrPayrollRun' }
+    ProjectStatus:
+      type: string
+      enum: [PLANNED, ACTIVE, ON_HOLD, COMPLETED, CANCELLED]
+    ProjectTaskStatus:
+      type: string
+      enum: [TODO, IN_PROGRESS, BLOCKED, DONE, CANCELLED]
+    MilestoneStatus:
+      type: string
+      enum: [PLANNED, IN_PROGRESS, MET, MISSED]
+    TimeEntryStatus:
+      type: string
+      enum: [DRAFT, APPROVED, BILLED, REJECTED]
+    ProjectMemberRole:
+      type: string
+      enum: [OWNER, MANAGER, MEMBER, VIEWER]
+    Project:
+      type: object
+      required: [id, number, name, status, budgetCents, currency, classification]
+      properties:
+        id: { type: string }
+        number: { type: string }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        status: { $ref: '#/components/schemas/ProjectStatus' }
+        customerId: { type: string, nullable: true }
+        salesOrderId: { type: string, nullable: true }
+        financeInvoiceId: { type: string, nullable: true }
+        budgetCents: { type: integer, minimum: 0 }
+        currency: { type: string }
+        plannedStart: { type: string, format: date-time, nullable: true }
+        plannedEnd: { type: string, format: date-time, nullable: true }
+        startedAt: { type: string, format: date-time, nullable: true }
+        completedAt: { type: string, format: date-time, nullable: true }
+        cancelledAt: { type: string, format: date-time, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ProjectEnvelope:
+      type: object
+      required: [project]
+      properties:
+        project: { $ref: '#/components/schemas/Project' }
+    ProjectList:
+      type: object
+      required: [projects]
+      properties:
+        projects:
+          type: array
+          items: { $ref: '#/components/schemas/Project' }
+    ProjectCreate:
+      type: object
+      additionalProperties: false
+      required: [name]
+      description: Number is optional; the service allocates a tenant-unique number when omitted.
+      properties:
+        number: { type: string, minLength: 2, maxLength: 60, pattern: '^[A-Za-z0-9_-]+$' }
+        name: { type: string, minLength: 2, maxLength: 180 }
+        description: { type: string, maxLength: 1000, nullable: true }
+        branchId: { type: string, maxLength: 80, nullable: true }
+        customerId: { type: string, maxLength: 80, nullable: true }
+        salesOrderId: { type: string, maxLength: 80, nullable: true }
+        budgetCents: { type: integer, minimum: 0, default: 0 }
+        currency: { type: string, minLength: 1, maxLength: 8, default: KES }
+        plannedStart: { type: string, format: date, nullable: true }
+        plannedEnd: { type: string, format: date, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification', default: INTERNAL }
+    ProjectUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        number: { type: string, minLength: 2, maxLength: 60, pattern: '^[A-Za-z0-9_-]+$' }
+        name: { type: string, minLength: 2, maxLength: 180 }
+        description: { type: string, maxLength: 1000, nullable: true }
+        branchId: { type: string, maxLength: 80, nullable: true }
+        customerId: { type: string, maxLength: 80, nullable: true }
+        salesOrderId: { type: string, maxLength: 80, nullable: true }
+        budgetCents: { type: integer, minimum: 0 }
+        currency: { type: string, minLength: 1, maxLength: 8 }
+        plannedStart: { type: string, format: date, nullable: true }
+        plannedEnd: { type: string, format: date, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    ProjectStatusChange:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { $ref: '#/components/schemas/ProjectStatus' }
+    ProjectMember:
+      type: object
+      required: [id, projectId, userId, role, classification]
+      properties:
+        id: { type: string }
+        projectId: { type: string }
+        userId: { type: string }
+        role: { $ref: '#/components/schemas/ProjectMemberRole' }
+        joinedAt: { type: string, format: date-time }
+        leftAt: { type: string, format: date-time, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    ProjectMemberEnvelope:
+      type: object
+      required: [member]
+      properties:
+        member: { $ref: '#/components/schemas/ProjectMember' }
+    ProjectMemberList:
+      type: object
+      required: [members]
+      properties:
+        members:
+          type: array
+          items: { $ref: '#/components/schemas/ProjectMember' }
+    ProjectMemberCreate:
+      type: object
+      additionalProperties: false
+      required: [userId]
+      properties:
+        userId: { type: string, minLength: 1, maxLength: 80 }
+        role: { $ref: '#/components/schemas/ProjectMemberRole', default: MEMBER }
+        branchId: { type: string, maxLength: 80, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification', default: INTERNAL }
+    ProjectMemberUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        role: { $ref: '#/components/schemas/ProjectMemberRole' }
+        leftAt: { type: string, format: date, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    ProjectMilestone:
+      type: object
+      required: [id, projectId, number, name, status, classification]
+      properties:
+        id: { type: string }
+        projectId: { type: string }
+        number: { type: string }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        status: { $ref: '#/components/schemas/MilestoneStatus' }
+        dueAt: { type: string, format: date-time, nullable: true }
+        metAt: { type: string, format: date-time, nullable: true }
+        missedAt: { type: string, format: date-time, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    ProjectMilestoneEnvelope:
+      type: object
+      required: [milestone]
+      properties:
+        milestone: { $ref: '#/components/schemas/ProjectMilestone' }
+    ProjectMilestoneList:
+      type: object
+      required: [milestones]
+      properties:
+        milestones:
+          type: array
+          items: { $ref: '#/components/schemas/ProjectMilestone' }
+    ProjectMilestoneCreate:
+      type: object
+      additionalProperties: false
+      required: [name]
+      description: Number is optional; the service allocates a tenant-unique number when omitted.
+      properties:
+        number: { type: string, minLength: 2, maxLength: 60, pattern: '^[A-Za-z0-9_-]+$' }
+        name: { type: string, minLength: 2, maxLength: 180 }
+        description: { type: string, maxLength: 1000, nullable: true }
+        dueAt: { type: string, format: date, nullable: true }
+        branchId: { type: string, maxLength: 80, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification', default: INTERNAL }
+    ProjectMilestoneStatusChange:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { $ref: '#/components/schemas/MilestoneStatus' }
+    ProjectTask:
+      type: object
+      required: [id, projectId, number, title, status, position, classification]
+      properties:
+        id: { type: string }
+        projectId: { type: string }
+        number: { type: string }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        status: { $ref: '#/components/schemas/ProjectTaskStatus' }
+        assigneeId: { type: string, nullable: true }
+        milestoneId: { type: string, nullable: true }
+        dueAt: { type: string, format: date-time, nullable: true }
+        startedAt: { type: string, format: date-time, nullable: true }
+        completedAt: { type: string, format: date-time, nullable: true }
+        cancelledAt: { type: string, format: date-time, nullable: true }
+        position: { type: integer, minimum: 0 }
+        classification: { $ref: '#/components/schemas/Classification' }
+    ProjectTaskEnvelope:
+      type: object
+      required: [task]
+      properties:
+        task: { $ref: '#/components/schemas/ProjectTask' }
+    ProjectTaskList:
+      type: object
+      required: [tasks]
+      properties:
+        tasks:
+          type: array
+          items: { $ref: '#/components/schemas/ProjectTask' }
+    ProjectTaskCreate:
+      type: object
+      additionalProperties: false
+      required: [title]
+      description: Number is optional; the service allocates a tenant-unique number when omitted.
+      properties:
+        number: { type: string, minLength: 2, maxLength: 60, pattern: '^[A-Za-z0-9_-]+$' }
+        title: { type: string, minLength: 2, maxLength: 180 }
+        description: { type: string, maxLength: 1000, nullable: true }
+        assigneeId: { type: string, maxLength: 80, nullable: true }
+        milestoneId: { type: string, maxLength: 80, nullable: true }
+        dueAt: { type: string, format: date, nullable: true }
+        position: { type: integer, minimum: 0, maximum: 1000000, default: 0 }
+        branchId: { type: string, maxLength: 80, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification', default: INTERNAL }
+    ProjectTaskUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        title: { type: string, minLength: 2, maxLength: 180 }
+        description: { type: string, maxLength: 1000, nullable: true }
+        assigneeId: { type: string, maxLength: 80, nullable: true }
+        milestoneId: { type: string, maxLength: 80, nullable: true }
+        dueAt: { type: string, format: date, nullable: true }
+        position: { type: integer, minimum: 0, maximum: 1000000 }
+        branchId: { type: string, maxLength: 80, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    ProjectTaskStatusChange:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { $ref: '#/components/schemas/ProjectTaskStatus' }
+    TimeEntry:
+      type: object
+      required: [id, projectId, userId, number, workDate, hours, amountCents, status, classification]
+      properties:
+        id: { type: string }
+        projectId: { type: string }
+        taskId: { type: string, nullable: true }
+        memberId: { type: string, nullable: true }
+        userId: { type: string }
+        number: { type: string }
+        workDate: { type: string, format: date }
+        hours: { type: number, description: Positive hours rounded once half-up to two decimals. }
+        billable: { type: boolean }
+        hourlyRateCents: { type: integer, minimum: 0 }
+        amountCents: { type: integer, minimum: 0 }
+        status: { $ref: '#/components/schemas/TimeEntryStatus' }
+        approvedById: { type: string, nullable: true }
+        approvedAt: { type: string, format: date-time, nullable: true }
+        rejectedAt: { type: string, format: date-time, nullable: true }
+        billedAt: { type: string, format: date-time, nullable: true }
+        financeInvoiceId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    ProjectTimeEnvelope:
+      type: object
+      required: [timeEntry]
+      properties:
+        timeEntry: { $ref: '#/components/schemas/TimeEntry' }
+    ProjectTimeList:
+      type: object
+      required: [timeEntries]
+      properties:
+        timeEntries:
+          type: array
+          items: { $ref: '#/components/schemas/TimeEntry' }
+    ProjectTimeCreate:
+      type: object
+      additionalProperties: false
+      required: [workDate, hours]
+      description: Number is optional; the service allocates a tenant-unique number when omitted.
+      properties:
+        number: { type: string, minLength: 2, maxLength: 60, pattern: '^[A-Za-z0-9_-]+$' }
+        workDate: { type: string, format: date }
+        hours: { type: number, exclusiveMinimum: 0, maximum: 1000 }
+        billable: { type: boolean, default: false }
+        hourlyRateCents: { type: integer, minimum: 0, default: 0 }
+        taskId: { type: string, maxLength: 80, nullable: true }
+        memberId: { type: string, maxLength: 80, nullable: true }
+        branchId: { type: string, maxLength: 80, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification', default: INTERNAL }
+    ProjectTimeDecision:
+      type: object
+      additionalProperties: false
+      required: [decision]
+      properties:
+        decision: { type: string, enum: [APPROVE, REJECT] }
+        note: { type: string, maxLength: 2000, nullable: true }
+    ProjectTimeInvoice:
+      type: object
+      additionalProperties: false
+      required: [description]
+      properties:
+        description: { type: string, minLength: 3, maxLength: 500 }
+        issueDate: { type: string, format: date }
+        dueDate: { type: string, format: date, nullable: true }
+        taxRateId: { type: string, maxLength: 80, nullable: true }
+    ProjectInvoiceSummary:
+      type: object
+      required: [id, number, status, totalCents, currency]
+      properties:
+        id: { type: string }
+        number: { type: string }
+        status: { type: string }
+        totalCents: { type: integer }
+        currency: { type: string }
+        issuedAt: { type: string, format: date-time, nullable: true }
+    ProjectTimeInvoiceResult:
+      type: object
+      required: [timeEntry, invoice]
+      properties:
+        timeEntry: { $ref: '#/components/schemas/TimeEntry' }
+        invoice: { $ref: '#/components/schemas/ProjectInvoiceSummary' }
+    ProjectBudgetLink:
+      type: object
+      required: [id, projectId, budgetId, classification]
+      properties:
+        id: { type: string }
+        projectId: { type: string }
+        budgetId: { type: string }
+        classification: { $ref: '#/components/schemas/Classification' }
+    ProjectBudgetLinkEnvelope:
+      type: object
+      required: [link]
+      properties:
+        link: { $ref: '#/components/schemas/ProjectBudgetLink' }
+    ProjectBudgetLinkCreate:
+      type: object
+      additionalProperties: false
+      required: [budgetId]
+      properties:
+        budgetId: { type: string, minLength: 1, maxLength: 80 }
+    BudgetUsageTotals:
+      type: object
+      description: Copied from finance; the projects module never computes or substitutes these values.
+      properties:
+        budgetCents: { type: integer }
+        actualCents: { type: integer }
+        varianceCents: { type: integer }
+    ProjectBudgetUsage:
+      type: object
+      required: [budgetId, usage, unavailable]
+      properties:
+        budgetId: { type: string }
+        usage:
+          type: object
+          nullable: true
+          description: Present only when finance supplies it.
+          properties:
+            lines: { type: array, items: { type: object } }
+            totals: { $ref: '#/components/schemas/BudgetUsageTotals' }
+        unavailable:
+          type: object
+          nullable: true
+          description: Explicit metadata when finance cannot supply usage; never contains estimated totals.
+          properties:
+            code: { type: string }
+            reason: { type: string }
+    ProjectBudget:
+      type: object
+      required: [projectId, projectBudgetCents, links, budgets]
+      properties:
+        projectId: { type: string }
+        projectBudgetCents: { type: integer, minimum: 0 }
+        links:
+          type: array
+          items: { $ref: '#/components/schemas/ProjectBudgetLink' }
+        budgets:
+          type: array
+          items: { $ref: '#/components/schemas/ProjectBudgetUsage' }
+    ProjectBudgetEnvelope:
+      type: object
+      required: [budget]
+      properties:
+        budget: { $ref: '#/components/schemas/ProjectBudget' }
 security:
   - bearerAuth: []

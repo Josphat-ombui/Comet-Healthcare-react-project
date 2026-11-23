@@ -8,7 +8,7 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand"><span class="mark">C</span> Comet Healthcare <small>ERP · Phase 6</small></div>
+    <div class="brand"><span class="mark">C</span> Comet Healthcare <small>ERP · Phase 12</small></div>
     <div class="header-actions">
       <button id="unreadBadge" class="pill unread-badge" type="button" title="Unread notifications" aria-label="Unread notifications" hidden>0</button>
       <div id="identity" class="identity"></div>
@@ -1339,6 +1339,137 @@
               </table>
             </div>
             <p class="muted">Calculation requires a VERIFIED rate for every component and an active contract for every employee on the run. Posting creates a balanced finance journal and requires finance journal-posting permission.</p>
+          </section>
+        </div>
+      </section>
+
+      <section id="projectsView" hidden>
+        <p class="finance-banner" role="note">Projects are company/branch scoped. Hours are rounded once to two decimals; all money is integer cents. Budget usage comes only from finance — when finance cannot supply it, the API reports explicit unavailable metadata instead of invented totals. Socket frames carry IDs/classification only — every value below is refetched through the authenticated API.</p>
+        <p id="projectsError" class="error" role="alert"></p>
+        <p id="projectsActionStatus" class="muted" aria-live="polite"></p>
+        <div class="grid">
+          <section class="card span-2">
+            <div class="card-head"><h2>Projects</h2><button id="refreshProjects" class="link" type="button">Refresh</button></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Name</th><th>Status</th><th>Budget (cents)</th><th>Customer</th><th>Classification</th><th>Actions</th></tr></thead>
+                <tbody id="projectRows"></tbody>
+              </table>
+            </div>
+            <form id="projectForm">
+              <div class="field-row finance-field-row">
+                <label>Name<input id="projectName" required maxlength="180" /></label>
+                <label>Number (optional)<input id="projectNumber" maxlength="60" pattern="[A-Za-z0-9_-]+" placeholder="Allocated when blank" /></label>
+              </div>
+              <label>Description<textarea id="projectDescription" rows="2" maxlength="1000"></textarea></label>
+              <div class="field-row finance-field-row">
+                <label>Budget (cents)<input id="projectBudgetCents" type="number" min="0" step="1" value="0" required /></label>
+                <label>Planned start<input id="projectPlannedStart" type="date" /></label>
+                <label>Planned end<input id="projectPlannedEnd" type="date" /></label>
+                <label>Classification
+                  <select id="projectClassification">
+                    <option value="INTERNAL" selected>Internal</option><option value="PUBLIC">Public</option>
+                    <option value="CONFIDENTIAL">Confidential</option><option value="RESTRICTED">Restricted</option>
+                  </select>
+                </label>
+              </div>
+              <div class="form-actions"><button type="submit">Create project</button><span id="projectStatusText" class="muted" aria-live="polite"></span></div>
+            </form>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Milestones</h2><span id="projectMilestoneCount" class="pill"></span></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Name</th><th>Due</th><th>Status</th><th>Actions</th></tr></thead>
+                <tbody id="projectMilestoneRows"></tbody>
+              </table>
+            </div>
+            <form id="projectMilestoneForm">
+              <div class="field-row finance-field-row">
+                <label>Project<select id="projectMilestoneProject" required></select></label>
+                <label>Name<input id="projectMilestoneName" required maxlength="180" /></label>
+                <label>Due date<input id="projectMilestoneDue" type="date" /></label>
+              </div>
+              <div class="form-actions"><button type="submit">Create milestone</button><span id="projectMilestoneStatusText" class="muted" aria-live="polite"></span></div>
+            </form>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Tasks</h2><span id="projectTaskCount" class="pill"></span></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Title</th><th>Milestone</th><th>Position</th><th>Status</th><th>Actions</th></tr></thead>
+                <tbody id="projectTaskRows"></tbody>
+              </table>
+            </div>
+            <form id="projectTaskForm">
+              <div class="field-row finance-field-row">
+                <label>Project<select id="projectTaskProject" required></select></label>
+                <label>Title<input id="projectTaskTitle" required maxlength="180" /></label>
+                <label>Milestone (optional)<select id="projectTaskMilestone"><option value="">No milestone</option></select></label>
+              </div>
+              <div class="field-row finance-field-row">
+                <label>Position<input id="projectTaskPosition" type="number" min="0" max="1000000" step="1" value="0" /></label>
+                <label>Due date<input id="projectTaskDue" type="date" /></label>
+              </div>
+              <div class="form-actions"><button type="submit">Create task</button><span id="projectTaskStatusText" class="muted" aria-live="polite"></span></div>
+            </form>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Time entries</h2><span id="projectTimeCount" class="pill"></span></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Work date</th><th>Hours</th><th>Amount (cents)</th><th>Billable</th><th>Status</th><th>Actions</th></tr></thead>
+                <tbody id="projectTimeRows"></tbody>
+              </table>
+            </div>
+            <form id="projectTimeForm">
+              <div class="field-row finance-field-row">
+                <label>Project<select id="projectTimeProject" required></select></label>
+                <label>Task (optional)<select id="projectTimeTask"><option value="">No task</option></select></label>
+                <label>Work date<input id="projectTimeWorkDate" type="date" required /></label>
+              </div>
+              <div class="field-row finance-field-row">
+                <label>Hours<input id="projectTimeHours" type="number" min="0.01" max="1000" step="0.01" value="1" required /></label>
+                <label>Hourly rate (cents)<input id="projectTimeRateCents" type="number" min="0" step="1" value="0" /></label>
+                <label class="inline-check"><input id="projectTimeBillable" type="checkbox" /> Billable</label>
+              </div>
+              <div class="form-actions"><button type="submit">Record time</button><span id="projectTimeStatusText" class="muted" aria-live="polite"></span></div>
+            </form>
+            <p class="muted">Invoicing requires APPROVED, billable time with a positive amount, a project customer and a VERIFIED statutory VAT rate. The finance module owns tax arithmetic and eTIMS queueing only.</p>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Members and finance budget</h2><button id="refreshProjectBudget" class="link" type="button">Refresh usage</button></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>User</th><th>Role</th><th>Joined</th><th>Left</th></tr></thead>
+                <tbody id="projectMemberRows"></tbody>
+              </table>
+            </div>
+            <form id="projectMemberForm">
+              <div class="field-row finance-field-row">
+                <label>Project<select id="projectMemberProject" required></select></label>
+                <label>User<select id="projectMemberUser" required></select></label>
+                <label>Role
+                  <select id="projectMemberRole">
+                    <option value="MEMBER" selected>Member</option><option value="OWNER">Owner</option>
+                    <option value="MANAGER">Manager</option><option value="VIEWER">Viewer</option>
+                  </select>
+                </label>
+              </div>
+              <div class="form-actions"><button type="submit">Add member</button><span id="projectMemberStatusText" class="muted" aria-live="polite"></span></div>
+            </form>
+            <form id="projectBudgetLinkForm">
+              <div class="field-row finance-field-row">
+                <label>Project<select id="projectBudgetProject" required></select></label>
+                <label>Approved finance budget<select id="projectBudgetBudget" required></select></label>
+              </div>
+              <div class="form-actions"><button type="submit">Link budget</button><span id="projectBudgetStatusText" class="muted" aria-live="polite"></span></div>
+            </form>
+            <pre id="projectBudgetUsage" class="finance-payload" aria-live="polite">Select a project to load finance-owned budget usage.</pre>
           </section>
         </div>
       </section>
