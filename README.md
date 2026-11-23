@@ -108,6 +108,14 @@ Phase 5 does not change the seed accounts or their passwords.
   business tolerance in basis points — never a statutory rate. No finance journal or payment is
   created. The ERP at `:5174` has a Procurement tab. Contract: `docs/openapi/openapi.yaml`
   (`0.9.0-phase.9`); decision: `docs/decisions/ADR-0014-procurement-matching.md`.
+- **Service (Phase 10)** — tenant/branch-scoped service contracts, SLA tickets, work orders,
+  visits and part usage. Contracts and direct-customer tickets carry whole-hour commercial SLA
+  targets (defaults 4h response / 48h resolution); SLA state is derived from persisted
+  timestamps and never from a statutory rate. Part usage posts through the Phase 8 inventory
+  ledger or is flagged for manual issue; optional work-order invoices delegate tax arithmetic
+  to finance and require a VERIFIED effective VAT rate. The ERP at `:5174` has a Service tab.
+  Contract: `docs/openapi/openapi.yaml` (`0.10.0-phase.10`); decision:
+  `docs/decisions/ADR-0015-service-sla.md`.
 
 > **Rate warning:** verify statutory rates against current KRA/Government publications before
 > use — fixture rates are `UNVERIFIED`. Sales may reference an unverified rate on a draft, but
@@ -116,7 +124,7 @@ Phase 5 does not change the seed accounts or their passwords.
 
 ### API namespaces
 
-| Namespace | Phase 5/6/7/8/9 endpoints (summary) |
+| Namespace | Phase 5/6/7/8/9/10 endpoints (summary) |
 | --- | --- |
 | `/api/files` | `POST /uploads`, `POST /uploads/:id/confirm`, `GET /?purpose&status&limit`, `GET /:id`, `GET /:id/download`, `POST /:id/versions`, `DELETE /:id`. Local fallback ticket URLs: `/local-upload/:token`, `/local-download/:token`. |
 | `/api/workflow` | `GET|POST /definitions`, `GET|POST /instances`, `GET /tasks?mine=1`, `POST /tasks/:id/decide`, `POST /tasks/:id/delegate`. |
@@ -127,8 +135,9 @@ Phase 5 does not change the seed accounts or their passwords.
 | `/api/sales` | `GET|POST /quotes`, `GET|PATCH /quotes/:id`, `POST /quotes/:id/convert`, `GET|POST /orders`, `GET|PATCH /orders/:id`, `POST /orders/:id/confirm`, `POST /orders/:id/invoice`, `GET|POST /deliveries`, `GET|PATCH /deliveries/:id`, `POST /deliveries/:id/issue`, `POST /deliveries/:id/deliver`, `GET|POST /returns`, `GET|PATCH /returns/:id`, `POST /returns/:id/approve`, `POST /returns/:id/receive`. |
 | `/api/inventory` | `GET|POST /items`, `GET|PATCH /items/:id`, `GET|POST /warehouses`, `GET|PATCH /warehouses/:id`, `GET|POST /batches`, `GET|PATCH /batches/:id`, `GET /balances`, `GET /movements`, `GET /alerts`, `POST /stock/receipts`, `POST /stock/issues`, `POST /stock/adjustments`, `GET|POST /transfers`, `GET /transfers/:id`, `POST /transfers/:id/{approve,receive,cancel}`, `GET|POST /counts`, `GET /counts/:id`, `POST /counts/:id/{record,approve,cancel}`. |
 | `/api/procurement` | `GET|POST /requisitions`, `GET /requisitions/:id`, `POST /requisitions/:id/{submit,approve,convert}`, `GET|POST /orders`, `GET /orders/:id`, `POST /orders/:id/{approve,send}`, `GET|POST /receipts`, `GET /receipts/:id`, `POST /receipts/:id/inspect`, `GET|POST /returns`, `GET /returns/:id`, `POST /returns/:id/approve`, `GET|POST /matches`, `GET /matches/:id`, `POST /matches/:id/approve`. |
+| `/api/service` | `GET|POST /contracts`, `GET /contracts/:id`, `POST /contracts/:id/{activate,suspend,cancel}`, `GET|POST /tickets`, `GET /tickets/:id`, `POST /tickets/:id/{assign,start,wait,resolve,close,cancel}`, `GET|POST /work-orders`, `GET /work-orders/:id`, `POST /work-orders/:id/{schedule,start,complete,cancel,invoice}`, `GET|POST /visits`, `GET /visits/:id`, `POST /visits/:id/{check-in,complete,cancel}`, `GET|POST /parts`, `GET /parts/:id`. |
 
-`Idempotency-Key` is required only for Phase 4 messaging sends; Phase 5, Phase 6, Phase 7, Phase 8 and Phase 9 writes do not use it.
+`Idempotency-Key` is required only for Phase 4 messaging sends; Phase 5, Phase 6, Phase 7, Phase 8, Phase 9 and Phase 10 writes do not use it.
 The `finance.etims.submit` worker queue records `PENDING` submissions for a certified provider and
 creates in-app notifications only — no live KRA filing occurs.
 

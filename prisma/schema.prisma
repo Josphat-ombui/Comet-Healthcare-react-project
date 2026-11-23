@@ -526,6 +526,14 @@ model Company {
   supplierReturns          SupplierReturn[]
   supplierReturnLines      SupplierReturnLine[]
   threeWayMatches          ThreeWayMatch[]
+  // Phase 10 service
+  serviceContracts         ServiceContract[]
+  serviceContractLines     ServiceContractLine[]
+  serviceTickets           ServiceTicket[]
+  workOrders               WorkOrder[]
+  workOrderLines           WorkOrderLine[]
+  serviceVisits            ServiceVisit[]
+  servicePartUsages        ServicePartUsage[]
 }
 
 model Branch {
@@ -587,6 +595,14 @@ model Branch {
   supplierReturns          SupplierReturn[]
   supplierReturnLines      SupplierReturnLine[]
   threeWayMatches          ThreeWayMatch[]
+  // Phase 10 service
+  serviceContracts         ServiceContract[]
+  serviceContractLines     ServiceContractLine[]
+  serviceTickets           ServiceTicket[]
+  workOrders               WorkOrder[]
+  workOrderLines           WorkOrderLine[]
+  serviceVisits            ServiceVisit[]
+  servicePartUsages        ServicePartUsage[]
 
   @@unique([companyId, code])
   @@index([companyId, isActive])
@@ -749,6 +765,17 @@ model User {
   supplierReturnLinesCreated      SupplierReturnLine[]      @relation("SupplierReturnLineCreatedBy")
   threeWayMatchesCreated          ThreeWayMatch[]           @relation("ThreeWayMatchCreatedBy")
   threeWayMatchesApproved         ThreeWayMatch[]           @relation("ThreeWayMatchApprovedBy")
+  // Phase 10 service
+  serviceContractsCreated     ServiceContract[]     @relation("ServiceContractCreatedBy")
+  serviceContractLinesCreated ServiceContractLine[] @relation("ServiceContractLineCreatedBy")
+  serviceTicketsCreated       ServiceTicket[]       @relation("ServiceTicketCreatedBy")
+  serviceTicketsAssigned      ServiceTicket[]       @relation("ServiceTicketAssignee")
+  workOrdersCreated           WorkOrder[]           @relation("WorkOrderCreatedBy")
+  workOrdersAssigned          WorkOrder[]           @relation("WorkOrderTechnician")
+  workOrderLinesCreated       WorkOrderLine[]       @relation("WorkOrderLineCreatedBy")
+  serviceVisitsCreated        ServiceVisit[]        @relation("ServiceVisitCreatedBy")
+  serviceVisitsAssigned       ServiceVisit[]        @relation("ServiceVisitTechnician")
+  servicePartUsagesCreated    ServicePartUsage[]    @relation("ServicePartUsageCreatedBy")
 
   @@unique([companyId, email])
   @@unique([companyId, identityProvider, externalId])
@@ -1683,6 +1710,9 @@ model FinanceParty {
   goodsReceipts        GoodsReceipt[]        @relation("GoodsReceiptSupplier")
   supplierReturns      SupplierReturn[]      @relation("SupplierReturnSupplier")
   threeWayMatches      ThreeWayMatch[]       @relation("ThreeWayMatchSupplier")
+  // Phase 10 service: customers are FinanceParty rows of type CUSTOMER.
+  serviceContracts     ServiceContract[]     @relation("ServiceContractCustomer")
+  serviceTickets       ServiceTicket[]       @relation("ServiceTicketCustomer")
 
   @@index([companyId, type])
   @@index([companyId, name])
@@ -1811,6 +1841,8 @@ model FinanceInvoice {
   purchaseOrders  PurchaseOrder[]  @relation("PurchaseOrderInvoice")
   goodsReceipts   GoodsReceipt[]   @relation("GoodsReceiptInvoice")
   threeWayMatches ThreeWayMatch[]  @relation("ThreeWayMatchInvoice")
+  // Phase 10: scalar link only; service invoices are created through finance.
+  workOrders      WorkOrder[]      @relation("WorkOrderInvoice")
 
   @@unique([companyId, number])
   @@index([companyId, direction, status])
@@ -2213,6 +2245,10 @@ model InventoryItem {
   purchaseOrderLines       PurchaseOrderLine[]       @relation("PurchaseOrderLineItem")
   goodsReceiptLines        GoodsReceiptLine[]        @relation("GoodsReceiptLineItem")
   supplierReturnLines      SupplierReturnLine[]      @relation("SupplierReturnLineItem")
+  // Phase 10 service
+  serviceContractLines     ServiceContractLine[]     @relation("ServiceContractLineItem")
+  workOrderLines           WorkOrderLine[]           @relation("WorkOrderLineItem")
+  servicePartUsages        ServicePartUsage[]        @relation("ServicePartUsageItem")
 
   @@unique([companyId, code])
   @@index([companyId, type, isActive])
@@ -2244,6 +2280,8 @@ model Warehouse {
   purchaseOrderLines       PurchaseOrderLine[]       @relation("PurchaseOrderLineWarehouse")
   goodsReceiptLines        GoodsReceiptLine[]        @relation("GoodsReceiptLineWarehouse")
   supplierReturnLines      SupplierReturnLine[]      @relation("SupplierReturnLineWarehouse")
+  // Phase 10 service
+  servicePartUsages        ServicePartUsage[]        @relation("ServicePartUsageWarehouse")
 
   @@unique([companyId, code])
   @@index([companyId, isActive])
@@ -2275,6 +2313,8 @@ model InventoryBatch {
   // Phase 9 procurement
   goodsReceiptLines   GoodsReceiptLine[]   @relation("GoodsReceiptLineBatch")
   supplierReturnLines SupplierReturnLine[] @relation("SupplierReturnLineBatch")
+  // Phase 10 service
+  servicePartUsages   ServicePartUsage[]   @relation("ServicePartUsageBatch")
 
   @@unique([companyId, itemId, batchNumber])
   @@index([companyId, status])
@@ -2809,4 +2849,280 @@ model ThreeWayMatch {
   @@unique([companyId, number])
   @@index([companyId, status])
   @@index([companyId, orderId])
+}
+
+// ---------------------------------------------------------------------------
+// Phase 10 service
+// ---------------------------------------------------------------------------
+
+enum ServiceContractStatus {
+  DRAFT
+  ACTIVE
+  SUSPENDED
+  EXPIRED
+  CANCELLED
+}
+
+enum ServiceTicketStatus {
+  OPEN
+  ASSIGNED
+  IN_PROGRESS
+  WAITING
+  RESOLVED
+  CLOSED
+  CANCELLED
+}
+
+enum ServiceTicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum WorkOrderStatus {
+  DRAFT
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum ServiceVisitStatus {
+  PLANNED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+model ServiceContract {
+  id                 String                @id @default(cuid())
+  companyId          String                @default("cmp_comet")
+  tenant             Company               @relation(fields: [companyId], references: [id])
+  branchId           String?
+  branch             Branch?               @relation(fields: [branchId], references: [id])
+  number             String
+  status             ServiceContractStatus @default(DRAFT)
+  customerId         String
+  customer           FinanceParty          @relation("ServiceContractCustomer", fields: [customerId], references: [id])
+  startDate          String
+  endDate            String?
+  currency           String                @default("KES")
+  monthlyFeeCents    Int                   @default(0)
+  // Commercial SLA targets in whole hours; not statutory rates.
+  responseSlaHours   Int
+  resolutionSlaHours Int
+  notes              String?
+  classification     DataClassification    @default(INTERNAL)
+  activatedAt        DateTime?
+  suspendedAt        DateTime?
+  cancelledAt        DateTime?
+  createdById        String?
+  createdBy          User?                 @relation("ServiceContractCreatedBy", fields: [createdById], references: [id])
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+
+  lines   ServiceContractLine[]
+  tickets ServiceTicket[]
+
+  @@unique([companyId, number])
+  @@index([companyId, status, startDate])
+  @@index([companyId, customerId])
+}
+
+model ServiceContractLine {
+  id               String             @id @default(cuid())
+  companyId        String             @default("cmp_comet")
+  tenant           Company            @relation(fields: [companyId], references: [id])
+  branchId         String?
+  branch           Branch?            @relation(fields: [branchId], references: [id])
+  contractId       String
+  contract         ServiceContract    @relation(fields: [contractId], references: [id])
+  itemId           String?
+  item             InventoryItem?     @relation("ServiceContractLineItem", fields: [itemId], references: [id])
+  description      String
+  coverageQty      Int                @default(1)
+  unitPriceCents   Int                @default(0)
+  position         Int                @default(0)
+  classification   DataClassification @default(INTERNAL)
+  createdById      String?
+  createdBy        User?              @relation("ServiceContractLineCreatedBy", fields: [createdById], references: [id])
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  @@index([contractId])
+  @@index([companyId, itemId])
+}
+
+model ServiceTicket {
+  id                String              @id @default(cuid())
+  companyId         String              @default("cmp_comet")
+  tenant            Company             @relation(fields: [companyId], references: [id])
+  branchId          String?
+  branch            Branch?             @relation(fields: [branchId], references: [id])
+  number            String
+  status            ServiceTicketStatus @default(OPEN)
+  priority          ServiceTicketPriority @default(MEDIUM)
+  contractId        String?
+  contract          ServiceContract?    @relation(fields: [contractId], references: [id])
+  customerId        String
+  customer          FinanceParty        @relation("ServiceTicketCustomer", fields: [customerId], references: [id])
+  subject           String
+  description       String?
+  openedAt          DateTime
+  responseDueAt     DateTime
+  resolutionDueAt   DateTime
+  assignedToId      String?
+  assignedTo        User?               @relation("ServiceTicketAssignee", fields: [assignedToId], references: [id])
+  assignedAt        DateTime?
+  respondedAt       DateTime?
+  resolvedAt        DateTime?
+  resolutionNotes   String?
+  closedAt          DateTime?
+  cancelledAt       DateTime?
+  classification    DataClassification  @default(INTERNAL)
+  createdById       String?
+  createdBy         User?               @relation("ServiceTicketCreatedBy", fields: [createdById], references: [id])
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  workOrders    WorkOrder[]
+  visits        ServiceVisit[]
+  partUsages    ServicePartUsage[]
+
+  @@unique([companyId, number])
+  @@index([companyId, status, priority])
+  @@index([companyId, contractId])
+  @@index([companyId, assignedToId])
+}
+
+model WorkOrder {
+  id               String             @id @default(cuid())
+  companyId        String             @default("cmp_comet")
+  tenant           Company            @relation(fields: [companyId], references: [id])
+  branchId         String?
+  branch           Branch?            @relation(fields: [branchId], references: [id])
+  number           String
+  status           WorkOrderStatus    @default(DRAFT)
+  ticketId         String
+  ticket           ServiceTicket      @relation(fields: [ticketId], references: [id])
+  technicianId     String?
+  technician       User?              @relation("WorkOrderTechnician", fields: [technicianId], references: [id])
+  summary          String
+  labourCents      Int                @default(0)
+  partsCents       Int                @default(0)
+  totalCents       Int                @default(0)
+  currency         String             @default("KES")
+  scheduledAt      DateTime?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  cancelledAt      DateTime?
+  notes            String?
+  classification   DataClassification @default(INTERNAL)
+  // Optional finance link; service delegates all tax calculation to finance.
+  financeInvoiceId String?
+  financeInvoice   FinanceInvoice?    @relation("WorkOrderInvoice", fields: [financeInvoiceId], references: [id])
+  createdById      String?
+  createdBy        User?              @relation("WorkOrderCreatedBy", fields: [createdById], references: [id])
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  lines      WorkOrderLine[]
+  visits     ServiceVisit[]
+  partUsages ServicePartUsage[]
+
+  @@unique([companyId, number])
+  @@index([companyId, status, scheduledAt])
+  @@index([companyId, ticketId])
+}
+
+model WorkOrderLine {
+  id               String             @id @default(cuid())
+  companyId        String             @default("cmp_comet")
+  tenant           Company            @relation(fields: [companyId], references: [id])
+  branchId         String?
+  branch           Branch?            @relation(fields: [branchId], references: [id])
+  workOrderId      String
+  workOrder        WorkOrder          @relation(fields: [workOrderId], references: [id])
+  itemId           String?
+  item             InventoryItem?     @relation("WorkOrderLineItem", fields: [itemId], references: [id])
+  description      String
+  qty              Float
+  unitPriceCents   Int
+  totalCents       Int
+  position         Int                @default(0)
+  classification   DataClassification @default(INTERNAL)
+  createdById      String?
+  createdBy        User?              @relation("WorkOrderLineCreatedBy", fields: [createdById], references: [id])
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  @@index([workOrderId])
+  @@index([companyId, itemId])
+}
+
+model ServiceVisit {
+  id               String             @id @default(cuid())
+  companyId        String             @default("cmp_comet")
+  tenant           Company            @relation(fields: [companyId], references: [id])
+  branchId         String?
+  branch           Branch?            @relation(fields: [branchId], references: [id])
+  number           String
+  status           ServiceVisitStatus @default(PLANNED)
+  workOrderId      String
+  workOrder        WorkOrder          @relation(fields: [workOrderId], references: [id])
+  ticketId         String?
+  ticket           ServiceTicket?     @relation(fields: [ticketId], references: [id])
+  technicianId     String?
+  technician       User?              @relation("ServiceVisitTechnician", fields: [technicianId], references: [id])
+  plannedAt        DateTime
+  checkInAt        DateTime?
+  checkOutAt       DateTime?
+  completedAt      DateTime?
+  cancelledAt      DateTime?
+  notes            String?
+  classification   DataClassification @default(INTERNAL)
+  createdById      String?
+  createdBy        User?              @relation("ServiceVisitCreatedBy", fields: [createdById], references: [id])
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  @@unique([companyId, number])
+  @@index([companyId, status, plannedAt])
+  @@index([companyId, workOrderId])
+}
+
+model ServicePartUsage {
+  id                  String             @id @default(cuid())
+  companyId           String             @default("cmp_comet")
+  tenant              Company            @relation(fields: [companyId], references: [id])
+  branchId            String?
+  branch              Branch?            @relation(fields: [branchId], references: [id])
+  workOrderId         String
+  workOrder           WorkOrder          @relation(fields: [workOrderId], references: [id])
+  ticketId            String?
+  ticket              ServiceTicket?     @relation(fields: [ticketId], references: [id])
+  itemId              String
+  item                InventoryItem      @relation("ServicePartUsageItem", fields: [itemId], references: [id])
+  warehouseId         String?
+  warehouse           Warehouse?         @relation("ServicePartUsageWarehouse", fields: [warehouseId], references: [id])
+  batchId             String?
+  batch               InventoryBatch?    @relation("ServicePartUsageBatch", fields: [batchId], references: [id])
+  qty                 Float
+  unitCostCents       Int
+  unitPriceCents      Int
+  totalCents          Int
+  inventoryIssued     Boolean            @default(false)
+  manualIssueRequired Boolean            @default(true)
+  issuedMovementId    String?
+  notes               String?
+  classification      DataClassification @default(INTERNAL)
+  createdById         String?
+  createdBy           User?              @relation("ServicePartUsageCreatedBy", fields: [createdById], references: [id])
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  @@index([workOrderId])
+  @@index([companyId, itemId])
+  @@index([companyId, inventoryIssued])
 }

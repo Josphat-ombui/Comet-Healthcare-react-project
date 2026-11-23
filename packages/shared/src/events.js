@@ -360,6 +360,54 @@ export const ThreeWayMatchFlaggedDataSchema = ProcurementEntityRefSchema.extend(
   classification: ClassificationSchema,
 }).strict()
 
+// Phase 10 service events are strict ID/classification-only invalidation
+// signals. Contract/ticket numbers, subjects, SLA hours or breach states,
+// technician names, visit notes, part quantities, prices, finance invoice
+// references and any free text stay behind the authenticated /api/service API.
+const ServiceEntityRefSchema = z.object({
+  entityType: z.enum([
+    'SERVICE_CONTRACT', 'SERVICE_TICKET', 'WORK_ORDER', 'SERVICE_VISIT',
+  ]),
+  entityId: z.string(),
+})
+
+export const ServiceContractActivatedDataSchema = ServiceEntityRefSchema.extend({
+  contractId: z.string(),
+  customerId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const ServiceTicketOpenedDataSchema = ServiceEntityRefSchema.extend({
+  ticketId: z.string(),
+  contractId: z.string().optional(),
+  customerId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const ServiceTicketAssignedDataSchema = ServiceEntityRefSchema.extend({
+  ticketId: z.string(),
+  assigneeId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const ServiceTicketResolvedDataSchema = ServiceEntityRefSchema.extend({
+  ticketId: z.string(),
+  workOrderId: z.string().optional(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const WorkOrderCompletedDataSchema = ServiceEntityRefSchema.extend({
+  workOrderId: z.string(),
+  ticketId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const ServiceVisitCompletedDataSchema = ServiceEntityRefSchema.extend({
+  visitId: z.string(),
+  workOrderId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
 export const DomainEventSchemas = {
   MessageSent: MessageSentDataSchema,
   ThreadAssigned: ThreadAssignedDataSchema,
@@ -407,6 +455,12 @@ export const DomainEventSchemas = {
   GoodsReceiptReceived: GoodsReceiptReceivedDataSchema,
   SupplierReturnApproved: SupplierReturnApprovedDataSchema,
   ThreeWayMatchFlagged: ThreeWayMatchFlaggedDataSchema,
+  ServiceContractActivated: ServiceContractActivatedDataSchema,
+  ServiceTicketOpened: ServiceTicketOpenedDataSchema,
+  ServiceTicketAssigned: ServiceTicketAssignedDataSchema,
+  ServiceTicketResolved: ServiceTicketResolvedDataSchema,
+  WorkOrderCompleted: WorkOrderCompletedDataSchema,
+  ServiceVisitCompleted: ServiceVisitCompletedDataSchema,
 }
 
 export function parseEventEnvelope(input) {

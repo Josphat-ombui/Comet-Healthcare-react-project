@@ -1179,6 +1179,69 @@ async function main() {
   }
   console.log('✓ Seeded draft purchase requisition, order, goods receipt and supplier return fixtures')
 
+  // ---------------------------------------------------------------- phase 10
+  // Service fixtures stay DRAFT/OPEN and post no stock or invoices: activation,
+  // assignment, visits, part issue and invoicing remain service-owned. All rows
+  // are cmp_comet-only and use company-scoped numbers so repeated seeds update
+  // rather than duplicate.
+  await prisma.serviceContract.upsert({
+    where: { companyId_number: { companyId, number: 'SVC-2026-F001' } },
+    update: {},
+    create: {
+      companyId, number: 'SVC-2026-F001', status: 'DRAFT',
+      customerId: customerParty.id, startDate: '2026-04-01', endDate: '2027-03-31',
+      currency: 'KES', monthlyFeeCents: 1_200_000,
+      responseSlaHours: 4, resolutionSlaHours: 48,
+      notes: 'Service phase 10 fixture — activate to open contract-linked tickets.',
+      classification: 'INTERNAL', createdById: admin.id,
+      lines: {
+        create: [{
+          companyId, itemId: apiItem.id,
+          description: 'Preventive maintenance coverage',
+          coverageQty: 1, unitPriceCents: 1_200_000, position: 0,
+          classification: 'INTERNAL', createdById: admin.id,
+        }],
+      },
+    },
+  })
+
+  const serviceTicketFixture = await prisma.serviceTicket.upsert({
+    where: { companyId_number: { companyId, number: 'TKT-2026-F001' } },
+    update: {},
+    create: {
+      companyId, number: 'TKT-2026-F001', status: 'OPEN', priority: 'HIGH',
+      customerId: customerParty.id,
+      subject: 'Phase 10 fixture — laboratory analyser fault',
+      description: 'Direct-customer fixture using the documented default SLA targets.',
+      openedAt: new Date('2026-04-02T08:00:00.000Z'),
+      responseDueAt: new Date('2026-04-02T12:00:00.000Z'),
+      resolutionDueAt: new Date('2026-04-04T08:00:00.000Z'),
+      classification: 'INTERNAL', createdById: admin.id,
+    },
+  })
+
+  await prisma.workOrder.upsert({
+    where: { companyId_number: { companyId, number: 'WO-2026-F001' } },
+    update: {},
+    create: {
+      companyId, number: 'WO-2026-F001', status: 'DRAFT',
+      ticketId: serviceTicketFixture.id,
+      summary: 'Phase 10 fixture — diagnose and repair analyser',
+      labourCents: 10_000, partsCents: 0, totalCents: 10_000, currency: 'KES',
+      notes: 'Service phase 10 fixture — schedule and complete to exercise totals.',
+      classification: 'INTERNAL', createdById: admin.id,
+      lines: {
+        create: [{
+          companyId, itemId: apiItem.id,
+          description: 'Technician labour',
+          qty: 2, unitPriceCents: 5_000, totalCents: 10_000, position: 0,
+          classification: 'INTERNAL', createdById: admin.id,
+        }],
+      },
+    },
+  })
+  console.log('✓ Seeded draft service contract, ticket and work order fixtures')
+
   console.log('\nSeed complete ✔')
 }
 

@@ -53,6 +53,17 @@ const PROCUREMENT_EVENT_TYPES = new Set([
   'ThreeWayMatchFlagged',
 ])
 
+// Phase 10 service events are ID/classification-only company-wide signals —
+// never user, thread, inbox or branch rooms. ERP clients refetch all values.
+const SERVICE_EVENT_TYPES = new Set([
+  'ServiceContractActivated',
+  'ServiceTicketOpened',
+  'ServiceTicketAssigned',
+  'ServiceTicketResolved',
+  'WorkOrderCompleted',
+  'ServiceVisitCompleted',
+])
+
 function eventRooms(event) {
   const prefix = `company:${event.companyId}`
   const data = event.data || {}
@@ -117,6 +128,9 @@ function eventRooms(event) {
 
   // ---------------------------------------------------- phase 9 procurement
   if (PROCUREMENT_EVENT_TYPES.has(event.type)) return unique([prefix])
+
+  // ---------------------------------------------------------- phase 10 service
+  if (SERVICE_EVENT_TYPES.has(event.type)) return unique([prefix])
   return []
 }
 
@@ -161,6 +175,12 @@ function socketEventFor(type) {
     GoodsReceiptReceived: 'procurement:receipt',
     SupplierReturnApproved: 'procurement:return',
     ThreeWayMatchFlagged: 'procurement:match',
+    ServiceContractActivated: 'service:contract',
+    ServiceTicketOpened: 'service:ticket',
+    ServiceTicketAssigned: 'service:ticket',
+    ServiceTicketResolved: 'service:ticket',
+    WorkOrderCompleted: 'service:workorder',
+    ServiceVisitCompleted: 'service:visit',
   }[type] || null
 }
 

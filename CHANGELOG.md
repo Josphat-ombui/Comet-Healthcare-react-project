@@ -8,6 +8,66 @@ The format follows a phase-gate model: each enterprise phase ends with passing t
 
 ## [Unreleased]
 
+### Phase 10 — Service
+
+**Added**
+
+- Tenant/branch-scoped service domain with strict Zod contracts and integer-cent arithmetic:
+  service contracts, SLA tickets, work orders, site visits and part usage in
+  `packages/api/lib/service.js`. Contracts and direct-customer tickets carry whole-hour commercial
+  SLA targets (defaults 4h response / 48h resolution); due dates are persisted at ticket open and
+  SLA state is derived from timestamps into `PENDING`, `AT_RISK`, `MET` and `BREACHED`.
+- `/api/service` endpoints for contracts, tickets, work orders, visits and part usage, including
+  activate/suspend/cancel, assign/start/wait/resolve/close/cancel, schedule/start/complete/cancel,
+  visit check-in/complete/cancel and optional work-order invoicing. Fourteen new `service.*`
+  permissions are enforced with bearer auth; client-supplied `companyId`, statuses, SLA dues and
+  calculated totals are rejected.
+- Part usage delegates stock effects to the Phase 8 inventory ledger with
+  `referenceType: 'SERVICE_PART_USAGE'`. Business stock conflicts are recorded as
+  `manualIssueRequired` without failing the service record; DLP/validation failures still fail
+  closed. Optional invoicing delegates tax arithmetic to finance and accepts only a VERIFIED,
+  effective VAT rate; service never copies `rateBps` or hardcodes tax.
+- Migration `20261123000400_phase10_service` with seven new RLS-protected tables and an idempotent
+  dynamic `tenant_branch_scope` policy, generated via the shadow-DB method. Idempotent
+  `cmp_comet`-only service fixtures are seeded against the existing customer, item and warehouse
+  records.
+- ERP Service tab with contracts, tickets, work orders, visits and part usage, simple forms and row
+  actions. Socket frames only invalidate the open view; content is always refetched through the
+  authenticated API.
+- Strict shared service event schemas and company-room-only sockets: `service:contract`,
+  `service:ticket`, `service:workorder` and `service:visit`. Domain events
+  (`ServiceContractActivated`, `ServiceTicketOpened`, `ServiceTicketAssigned`,
+  `ServiceTicketResolved`, `WorkOrderCompleted`, `ServiceVisitCompleted`) and socket frames carry
+  IDs/classification only. OpenAPI `0.10.0-phase.10`, ADR-0015, README and OpenAPI README updates.
+- `packages/api/tests/phase10-service.test.js` with 15 tests covering SLA arithmetic/state,
+  lifecycle guards, cent totals, strict schemas, DLP fail-closed, DTO redaction, verified-rate
+  guards, permissions, ID-only events/sockets and tenant scoping.
+
+**Changed**
+
+- SLA hours are operational commercial targets, never statutory rates or tax percentages. Direct
+  tickets without a contract use documented 4h/48h defaults; a contract amendment never rewrites an
+  existing ticket's persisted due dates.
+- Visits require check-in before completion; `PLANNED -> COMPLETED` is rejected so check-in time
+  cannot be fabricated.
+- `Idempotency-Key` remains scoped to messaging sends; service writes are not replay-safe.
+
+**Verification**
+
+- `npm test` — 152 passed (15 Phase 10), 0 failed; `npm run test:smoke` — 31 passed (7 files).
+- `npm run lint` passes with 21 non-blocking warnings, all in pre-existing web/API files; no Phase 10
+  warnings. `npm run build` passes (`✓ built in 6.39s`, 2335 modules transformed).
+- `node --check packages/api/lib/service.js` and `node --check packages/erp/public/app.js` pass.
+  OpenAPI YAML parses and all refs resolve: version `0.10.0-phase.10`, 175 paths (27 Service paths
+  / 32 operations), 179 schemas, 609 refs, 0 missing refs and 0 invalid `required` entries. All Phase
+  3–9 paths are retained.
+- `npm run db:deploy`, `npm run db:generate` and seed runs pass. Final cross-tenant RLS probe with
+  `comet_app`: `cmp_other` sees 0 rows in all seven service tables; `cmp_comet` sees 1/1/1/1/1 contract,
+  line, ticket, work order and work-order line rows and 0 visit/part-usage rows. All seven tables
+  have the `tenant_branch_scope` policy.
+
+---
+
 ### Phase 9 — Procurement
 
 **Added**

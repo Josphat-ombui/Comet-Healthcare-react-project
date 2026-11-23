@@ -45,6 +45,7 @@
         <button id="tabSales" class="tab" type="button">Sales</button>
         <button id="tabInventory" class="tab" type="button">Inventory</button>
         <button id="tabProcurement" class="tab" type="button">Procurement</button>
+        <button id="tabService" class="tab" type="button">Service</button>
         <span id="connection" class="pill connection" aria-live="polite">Connecting…</span>
       </nav>
 
@@ -985,6 +986,128 @@
               <div class="form-actions"><button type="submit">Run match</button><span id="procMatchStatus" class="muted" aria-live="polite"></span></div>
             </form>
             <p class="muted">A match compares order price, received quantity and (when linked) the finance invoice amount in whole cents. Tolerance is configured, not calculated from any tax rate.</p>
+          </section>
+        </div>
+      </section>
+
+      <section id="serviceView" hidden>
+        <p class="procurement-banner" role="note">Service stores money in integer cents and SLA targets in whole commercial hours. SLA state is derived from persisted timestamps, not a statutory rate. Socket frames carry IDs/classification only — every value below is refetched through the authenticated API.</p>
+        <p id="serviceError" class="error" role="alert"></p>
+        <p id="serviceActionStatus" class="muted" aria-live="polite"></p>
+        <div class="grid">
+          <section class="card span-2">
+            <div class="card-head"><h2>Service contracts</h2><button id="refreshService" class="link" type="button">Refresh</button></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Customer</th><th>Period</th><th>SLA (response / resolution)</th><th>Status</th><th>Actions</th></tr></thead>
+                <tbody id="serviceContractRows"></tbody>
+              </table>
+            </div>
+            <form id="serviceContractForm">
+              <div class="field-row finance-field-row">
+                <label>Customer<select id="svcContractCustomer" required></select></label>
+                <label>Start date<input id="svcContractStart" type="date" required /></label>
+                <label>End date<input id="svcContractEnd" type="date" /></label>
+              </div>
+              <div class="field-row finance-field-row">
+                <label>Response SLA (hours)<input id="svcContractResponseHours" type="number" min="1" step="1" value="4" required /></label>
+                <label>Resolution SLA (hours)<input id="svcContractResolutionHours" type="number" min="1" step="1" value="48" required /></label>
+                <label>Monthly fee (cents)<input id="svcContractMonthlyCents" type="number" min="0" step="1" value="0" required /></label>
+                <label>Item (optional)<select id="svcContractItem"><option value="">No linked item</option></select></label>
+              </div>
+              <label>Notes<textarea id="svcContractNotes" rows="2" maxlength="500"></textarea></label>
+              <div class="form-actions"><button type="submit">Create contract</button><span id="svcContractStatus" class="muted" aria-live="polite"></span></div>
+            </form>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Service tickets</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Subject</th><th>Priority</th><th>SLA</th><th>Status</th><th>Actions</th></tr></thead>
+                <tbody id="serviceTicketRows"></tbody>
+              </table>
+            </div>
+            <form id="serviceTicketForm">
+              <div class="field-row finance-field-row">
+                <label>Customer<select id="svcTicketCustomer" required></select></label>
+                <label>Contract (optional)<select id="svcTicketContract"><option value="">Direct customer — use default SLA</option></select></label>
+                <label>Priority
+                  <select id="svcTicketPriority">
+                    <option value="LOW">Low</option><option value="MEDIUM" selected>Medium</option>
+                    <option value="HIGH">High</option><option value="CRITICAL">Critical</option>
+                  </select>
+                </label>
+              </div>
+              <label>Subject<input id="svcTicketSubject" required maxlength="220" /></label>
+              <label>Description<textarea id="svcTicketDescription" rows="2" maxlength="1000"></textarea></label>
+              <div class="form-actions"><button type="submit">Open ticket</button><span id="svcTicketStatus" class="muted" aria-live="polite"></span></div>
+            </form>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Work orders</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Ticket</th><th>Summary</th><th>Labour (cents)</th><th>Parts (cents)</th><th>Total (cents)</th><th>Status</th><th>Actions</th></tr></thead>
+                <tbody id="serviceWorkOrderRows"></tbody>
+              </table>
+            </div>
+            <form id="serviceWorkOrderForm">
+              <div class="field-row finance-field-row">
+                <label>Ticket<select id="svcWorkOrderTicket" required></select></label>
+                <label>Technician (optional)<select id="svcWorkOrderTechnician"><option value="">Unassigned</option></select></label>
+                <label>Item (optional)<select id="svcWorkOrderItem"><option value="">Labour only</option></select></label>
+              </div>
+              <label>Summary<input id="svcWorkOrderSummary" required maxlength="240" /></label>
+              <div class="field-row finance-field-row">
+                <label>Quantity<input id="svcWorkOrderQty" type="number" min="0.001" step="0.001" value="1" required /></label>
+                <label>Unit price (cents)<input id="svcWorkOrderUnitPriceCents" type="number" min="1" step="1" value="5000" required /></label>
+              </div>
+              <div class="form-actions"><button type="submit">Create work order</button><span id="svcWorkOrderStatus" class="muted" aria-live="polite"></span></div>
+            </form>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Service visits</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Work order</th><th>Planned</th><th>Technician</th><th>Status</th><th>Actions</th></tr></thead>
+                <tbody id="serviceVisitRows"></tbody>
+              </table>
+            </div>
+            <form id="serviceVisitForm">
+              <div class="field-row finance-field-row">
+                <label>Work order<select id="svcVisitWorkOrder" required></select></label>
+                <label>Technician (optional)<select id="svcVisitTechnician"><option value="">Work order default</option></select></label>
+                <label>Planned at<input id="svcVisitPlannedAt" type="datetime-local" required /></label>
+              </div>
+              <div class="form-actions"><button type="submit">Plan visit</button><span id="svcVisitStatus" class="muted" aria-live="polite"></span></div>
+            </form>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Service part usage</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Work order</th><th>Item</th><th>Quantity</th><th>Total (cents)</th><th>Inventory issue</th></tr></thead>
+                <tbody id="servicePartRows"></tbody>
+              </table>
+            </div>
+            <form id="servicePartForm">
+              <div class="field-row finance-field-row">
+                <label>Work order<select id="svcPartWorkOrder" required></select></label>
+                <label>Item<select id="svcPartItem" required></select></label>
+                <label>Warehouse (optional)<select id="svcPartWarehouse"><option value="">Default warehouse</option></select></label>
+              </div>
+              <div class="field-row finance-field-row">
+                <label>Quantity<input id="svcPartQty" type="number" min="0.001" step="0.001" value="1" required /></label>
+                <label>Unit cost (cents)<input id="svcPartUnitCostCents" type="number" min="1" step="1" value="1000" required /></label>
+                <label>Unit price (cents)<input id="svcPartUnitPriceCents" type="number" min="1" step="1" value="1500" required /></label>
+              </div>
+              <div class="form-actions"><button type="submit">Record part usage</button><span id="svcPartStatus" class="muted" aria-live="polite"></span></div>
+            </form>
+            <p class="muted">Issuing tries the inventory ledger. On a business stock conflict the usage is kept and flagged for manual issue; validation and DLP failures are not swallowed. Invoicing is available through the authenticated API for completed work orders.</p>
           </section>
         </div>
       </section>

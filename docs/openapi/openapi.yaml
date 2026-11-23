@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Comet Healthcare Enterprise API
-  version: 0.9.0-phase.9
+  version: 0.10.0-phase.10
   summary: REST and webhook contract for the Comet Healthcare enterprise platform.
   description: |
     Phase 3 adds local identity, sessions, MFA, OIDC, organisation directory and audit.
@@ -101,6 +101,26 @@ info:
     Clients refetch all values through the authenticated API. `Idempotency-Key` remains scoped to
     messaging sends only; procurement writes are not replay-safe.
 
+    Phase 10 adds the service lifecycle under `/api/service`: service contracts/SLAs, tickets,
+    work orders, visits and part usage. Contracts carry whole-hour response and resolution SLA
+    targets; due dates are persisted when a ticket opens and never rewritten by a later contract
+    change. Direct-customer tickets use documented defaults of 4h response / 48h resolution —
+    commercial targets, not statutory or tax rates. SLA state is derived from persisted timestamps.
+    Status transitions are explicit for contracts, tickets, work orders and visits. Part usage
+    delegates stock issues to the Phase 8 inventory ledger with referenceType SERVICE_PART_USAGE;
+    a business stock conflict is recorded with manualIssueRequired rather than failing the service
+    record, while DLP and validation failures fail closed. Invoice creation from a COMPLETED work
+    order delegates all tax arithmetic to finance; a supplied taxRateId must resolve to an effective
+    VERIFIED VAT rate, and omitting it leaves finance's verified-rate guard in place. No live filing,
+    payment or email is performed. See ADR-0015.
+
+    Phase 10 permissions: `service.contract.read/write`, `service.ticket.read/write/assign/resolve`,
+    `service.workorder.read/write/schedule/complete`, `service.visit.read/write` and
+    `service.part.read/write`. All endpoints require a bearer token and enforce tenant/branch scope
+    in addition to RLS. Service domain events and sockets carry IDs and classification only and are
+    routed to the company room only. Clients refetch all values through the authenticated API.
+    `Idempotency-Key` remains scoped to messaging sends only; service writes are not replay-safe.
+
     Phase 6 permissions: `finance.account.read/write`, `finance.journal.read/write/post`,
     `finance.party.read/write`, `finance.invoice.read/write/issue`,
     `finance.payment.read/write`, `finance.budget.read/write`,
@@ -137,6 +157,8 @@ tags:
     description: Items, warehouses, batches, stock balances, movements, transfers, counts and reorder alerts. Added in Phase 8.
   - name: Procurement
     description: Requisitions, purchase orders, goods receipts, supplier returns and three-way matching. Added in Phase 9.
+  - name: Service
+    description: Service contracts/SLAs, tickets, work orders, visits, part usage and optional finance invoice creation. Added in Phase 10.
 x-phase-roadmap:
   phase1: Architecture and this skeleton only
   phase2: ERD, migrations, workspace split, shared contracts
@@ -147,7 +169,7 @@ x-phase-roadmap:
   phase7: Complete - /api/sales (quotes, orders, delivery notes, returns, invoice creation from confirmed orders)
   phase8: Complete - /api/inventory (items, warehouses, batches, balances, movements, transfers, counts, reorder alerts)
   phase9: Complete - /api/procurement (requisitions, orders, goods receipts, supplier returns, three-way matches)
-  phase10: /api/service
+  phase10: Complete - /api/service (contracts/SLAs, tickets, work orders, visits, part usage, optional invoice creation)
   phase11: /api/hr
   phase12: /api/projects
   phase13: /api/manufacturing
@@ -209,6 +231,10 @@ x-realtime:
     procurement:receipt: 'GoodsReceiptReceived; refetch GET /api/procurement/receipts.'
     procurement:return: 'SupplierReturnApproved; refetch GET /api/procurement/returns.'
     procurement:match: 'ThreeWayMatchFlagged; refetch GET /api/procurement/matches.'
+    service:contract: 'ServiceContractActivated; refetch GET /api/service/contracts.'
+    service:ticket: 'ServiceTicketOpened/Assigned/Resolved; refetch GET /api/service/tickets.'
+    service:workorder: 'WorkOrderCompleted; refetch GET /api/service/work-orders.'
+    service:visit: 'ServiceVisitCompleted; refetch GET /api/service/visits.'
   eventPayload:
     eventId: string
     type: string
@@ -309,6 +335,23 @@ x-realtime:
   phase9Fallback: |
     Authenticated polling of /api/procurement requisitions, orders, receipts, returns and matches
     when sockets are unavailable. Event data is never rendered directly.
+  phase10EventMap:
+    ServiceContractActivated: service:contract
+    ServiceTicketOpened: service:ticket
+    ServiceTicketAssigned: service:ticket
+    ServiceTicketResolved: service:ticket
+    WorkOrderCompleted: service:workorder
+    ServiceVisitCompleted: service:visit
+  phase10Rooms:
+    - company:{companyId} only (never user, thread, inbox or branch rooms)
+  phase10PayloadRule: |
+    Service domain events and socket frames carry IDs and classification only. No subject,
+    description, resolution notes, SLA timestamp, amount, status text, customer name, part
+    quantity or finance invoice reference is placed on an event; clients always refetch through
+    the authenticated /api/service endpoints.
+  phase10Fallback: |
+    Authenticated polling of /api/service contracts, tickets, work orders, visits and part usage
+    when sockets are unavailable. Event data is never rendered directly.
 x-idempotency:
   requiredFor:
     - POST /api/messaging/threads/{id}/messages
@@ -330,6 +373,10 @@ x-idempotency:
     Not required. No /api/procurement endpoint consumes an Idempotency-Key. Conversions, receipt
     posts, return approvals and match decisions are not replay-safe; clients must inspect the
     returned document status before retrying.
+  phase10: |
+    Not required. No /api/service endpoint consumes an Idempotency-Key. Contract activation,
+    ticket transitions, work order completion, visit completion, part issues and invoice creation
+    are not replay-safe; clients must inspect the returned status before retrying.
 x-finance:
   money: All finance API monetary fields are integer cents (`*Cents`); reports use the same unit. The eTIMS payload is a separate external-style representation using decimal strings and is not a finance money field.
   rates: |
@@ -489,6 +536,52 @@ x-procurement:
     - procurement:return
     - procurement:match
   idempotency: Idempotency-Key is scoped to messaging sends only; procurement writes are not replay-safe.
+x-service:
+  money: All service monetary fields are integer cents (`*Cents`). Quantities are positive floats persisted to three decimals.
+  dates: Document dates are strict `YYYY-MM-DD`; timestamps are ISO date-times.
+  sla: |
+    `responseSlaHours` and `resolutionSlaHours` are whole-hour commercial targets, never statutory
+    or tax rates. `openedAt`, `responseDueAt` and `resolutionDueAt` are persisted at ticket open.
+    `sla.response.state` / `sla.resolution.state` are PENDING, AT_RISK, MET or BREACHED, derived from
+    persisted timestamps only. Direct-customer tickets without a contract use DEFAULT_RESPONSE_SLA_HOURS=4
+    and DEFAULT_RESOLUTION_SLA_HOURS=48.
+  tenantScope: companyId comes from the bearer token; strict schemas reject a client-supplied companyId, status, SLA due dates or calculated totals. Branch scope allows organisation-wide (null branch) rows.
+  dlp: Free text is inspected with the shared DLP patterns and fails closed with 422 and finding types only.
+  events: IDs and classification only; company-room sockets are invalidation signals.
+  inventory: |
+    Part usage calls the Phase 8 inventory ledger with referenceType SERVICE_PART_USAGE. On a
+    business stock conflict (insufficient stock or unusable location) the usage row is still stored
+    with inventoryIssued=false and manualIssueRequired=true. Validation and DLP errors propagate.
+  invoicing: |
+    Only a COMPLETED work order can be invoiced. Service builds billable lines and delegates all
+    tax arithmetic to finance. A supplied taxRateId must resolve to an effective VERIFIED VAT rate;
+    if omitted, finance's own verified-rate guard applies. No live filing, payment or email occurs.
+  transitions:
+    contract: 'DRAFT -> ACTIVE -> SUSPENDED/EXPIRED/CANCELLED; SUSPENDED -> ACTIVE'
+    ticket: 'OPEN -> ASSIGNED/IN_PROGRESS -> WAITING -> RESOLVED -> CLOSED; RESOLVED -> IN_PROGRESS'
+    workOrder: 'DRAFT -> SCHEDULED -> IN_PROGRESS -> COMPLETED'
+    visit: 'PLANNED -> IN_PROGRESS -> COMPLETED'
+  permissions:
+    - service.contract.read
+    - service.contract.write
+    - service.ticket.read
+    - service.ticket.write
+    - service.ticket.assign
+    - service.ticket.resolve
+    - service.workorder.read
+    - service.workorder.write
+    - service.workorder.schedule
+    - service.workorder.complete
+    - service.visit.read
+    - service.visit.write
+    - service.part.read
+    - service.part.write
+  socketEvents:
+    - service:contract
+    - service:ticket
+    - service:workorder
+    - service:visit
+  idempotency: Idempotency-Key is scoped to messaging sends only; service writes are not replay-safe.
 paths:
   /api/health/live:
     get:
@@ -4788,6 +4881,1120 @@ paths:
                 properties:
                   match: { $ref: '#/components/schemas/ProcurementMatch' }
         '409': { description: Match is not open or is already decided. }
+
+
+
+
+
+  /api/service/contracts:
+    post:
+      tags: [Service]
+      summary: Create a service contract
+      operationId: createServiceContract
+      x-permission: service.contract.write
+      security:
+        - bearerAuth: []
+      description: Requires `service.contract.write`. Strict, DLP-checked body. Tenant and branch scope come from the bearer token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceContractCreate'
+      responses:
+        '201':
+          description: Created.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [contract]
+                properties:
+                  contract:
+                    $ref: '#/components/schemas/ServiceContract'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Lifecycle guard, business conflict or missing verified VAT rate. }
+    get:
+      tags: [Service]
+      summary: List service contracts
+      operationId: listServiceContracts
+      x-permission: service.contract.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      description: Requires `service.contract.read`. Filter query is validated by `ServiceContractQuery`; companyId is never accepted.
+      responses:
+        '200':
+          description: Success.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceContractList'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+  /api/service/contracts/{id}:
+    get:
+      tags: [Service]
+      summary: Get a service contract
+      operationId: getServiceContract
+      x-permission: service.contract.read
+      security:
+        - bearerAuth: []
+      description: Requires `service.contract.read`. Read is audited with IDs and classification only.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 80 }
+      responses:
+        '200':
+          description: Success.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [contract]
+                properties:
+                  contract:
+                    $ref: '#/components/schemas/ServiceContract'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+  /api/service/contracts/{id}/activate:
+    post:
+      tags: [Service]
+      summary: Activate a service contract
+      operationId: activateServiceContract
+      x-permission: service.contract.write
+      security:
+        - bearerAuth: []
+      description: Requires `service.contract.write`. Explicit status guard; emits ID-only domain events where applicable.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 80 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceAction'
+      responses:
+        '200':
+          description: Transition completed.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [contract]
+                properties:
+                  contract:
+                    $ref: '#/components/schemas/ServiceContract'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Invalid status transition or business conflict. }
+  /api/service/contracts/{id}/suspend:
+    post:
+      tags: [Service]
+      summary: Suspend a service contract
+      operationId: suspendServiceContract
+      x-permission: service.contract.write
+      security:
+        - bearerAuth: []
+      description: Requires `service.contract.write`. Explicit status guard; emits ID-only domain events where applicable.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 80 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceAction'
+      responses:
+        '200':
+          description: Transition completed.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [contract]
+                properties:
+                  contract:
+                    $ref: '#/components/schemas/ServiceContract'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Invalid status transition or business conflict. }
+  /api/service/contracts/{id}/cancel:
+    post:
+      tags: [Service]
+      summary: Cancel a service contract
+      operationId: cancelServiceContract
+      x-permission: service.contract.write
+      security:
+        - bearerAuth: []
+      description: Requires `service.contract.write`. Explicit status guard; emits ID-only domain events where applicable.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 80 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceAction'
+      responses:
+        '200':
+          description: Transition completed.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [contract]
+                properties:
+                  contract:
+                    $ref: '#/components/schemas/ServiceContract'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Invalid status transition or business conflict. }
+  /api/service/tickets:
+    post:
+      tags: [Service]
+      summary: Open a service ticket
+      operationId: createServiceTicket
+      x-permission: service.ticket.write
+      security:
+        - bearerAuth: []
+      description: Requires `service.ticket.write`. Strict, DLP-checked body. Tenant and branch scope come from the bearer token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceTicketCreate'
+      responses:
+        '201':
+          description: Created.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ticket]
+                properties:
+                  ticket:
+                    $ref: '#/components/schemas/ServiceTicket'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Lifecycle guard, business conflict or missing verified VAT rate. }
+    get:
+      tags: [Service]
+      summary: List service tickets
+      operationId: listServiceTickets
+      x-permission: service.ticket.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      description: Requires `service.ticket.read`. Filter query is validated by `ServiceTicketQuery`; companyId is never accepted.
+      responses:
+        '200':
+          description: Success.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceTicketList'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+  /api/service/tickets/{id}:
+    get:
+      tags: [Service]
+      summary: Get a service ticket with derived SLA state
+      operationId: getServiceTicket
+      x-permission: service.ticket.read
+      security:
+        - bearerAuth: []
+      description: Requires `service.ticket.read`. Read is audited with IDs and classification only.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 80 }
+      responses:
+        '200':
+          description: Success.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ticket]
+                properties:
+                  ticket:
+                    $ref: '#/components/schemas/ServiceTicket'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+  /api/service/tickets/{id}/assign:
+    post:
+      tags: [Service]
+      summary: Assign a service ticket
+      operationId: assignServiceTicket
+      x-permission: service.ticket.assign
+      security:
+        - bearerAuth: []
+      description: Requires `service.ticket.assign`. Explicit status guard; emits ID-only domain events where applicable.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 80 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceTicketAssign'
+      responses:
+        '200':
+          description: Transition completed.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ticket]
+                properties:
+                  ticket:
+                    $ref: '#/components/schemas/ServiceTicket'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Invalid status transition or business conflict. }
+  /api/service/tickets/{id}/start:
+    post:
+      tags: [Service]
+      summary: Start work on a service ticket
+      operationId: startServiceTicket
+      x-permission: service.ticket.write
+      security:
+        - bearerAuth: []
+      description: Requires `service.ticket.write`. Explicit status guard; emits ID-only domain events where applicable.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 80 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceAction'
+      responses:
+        '200':
+          description: Transition completed.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ticket]
+                properties:
+                  ticket:
+                    $ref: '#/components/schemas/ServiceTicket'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Invalid status transition or business conflict. }
+  /api/service/tickets/{id}/wait:
+    post:
+      tags: [Service]
+      summary: Put a service ticket in WAITING
+      operationId: waitServiceTicket
+      x-permission: service.ticket.write
+      security:
+        - bearerAuth: []
+      description: Requires `service.ticket.write`. Explicit status guard; emits ID-only domain events where applicable.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 80 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceAction'
+      responses:
+        '200':
+          description: Transition completed.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ticket]
+                properties:
+                  ticket:
+                    $ref: '#/components/schemas/ServiceTicket'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Invalid status transition or business conflict. }
+  /api/service/tickets/{id}/resolve:
+    post:
+      tags: [Service]
+      summary: Resolve a service ticket
+      operationId: resolveServiceTicket
+      x-permission: service.ticket.resolve
+      security:
+        - bearerAuth: []
+      description: Requires `service.ticket.resolve`. Explicit status guard; emits ID-only domain events where applicable.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 80 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceTicketResolve'
+      responses:
+        '200':
+          description: Transition completed.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ticket]
+                properties:
+                  ticket:
+                    $ref: '#/components/schemas/ServiceTicket'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Invalid status transition or business conflict. }
+  /api/service/tickets/{id}/close:
+    post:
+      tags: [Service]
+      summary: Close a service ticket
+      operationId: closeServiceTicket
+      x-permission: service.ticket.resolve
+      security:
+        - bearerAuth: []
+      description: Requires `service.ticket.resolve`. Explicit status guard; emits ID-only domain events where applicable.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 80 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceAction'
+      responses:
+        '200':
+          description: Transition completed.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ticket]
+                properties:
+                  ticket:
+                    $ref: '#/components/schemas/ServiceTicket'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Invalid status transition or business conflict. }
+  /api/service/tickets/{id}/cancel:
+    post:
+      tags: [Service]
+      summary: Cancel a service ticket
+      operationId: cancelServiceTicket
+      x-permission: service.ticket.write
+      security:
+        - bearerAuth: []
+      description: Requires `service.ticket.write`. Explicit status guard; emits ID-only domain events where applicable.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 80 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceAction'
+      responses:
+        '200':
+          description: Transition completed.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ticket]
+                properties:
+                  ticket:
+                    $ref: '#/components/schemas/ServiceTicket'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Invalid status transition or business conflict. }
+  /api/service/work-orders:
+    post:
+      tags: [Service]
+      summary: Create a work order
+      operationId: createServiceWorkOrder
+      x-permission: service.workorder.write
+      security:
+        - bearerAuth: []
+      description: Requires `service.workorder.write`. Strict, DLP-checked body. Tenant and branch scope come from the bearer token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkOrderCreate'
+      responses:
+        '201':
+          description: Created.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workOrder]
+                properties:
+                  workOrder:
+                    $ref: '#/components/schemas/WorkOrder'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Lifecycle guard, business conflict or missing verified VAT rate. }
+    get:
+      tags: [Service]
+      summary: List work orders
+      operationId: listServiceWorkOrders
+      x-permission: service.workorder.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      description: Requires `service.workorder.read`. Filter query is validated by `WorkOrderQuery`; companyId is never accepted.
+      responses:
+        '200':
+          description: Success.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkOrderList'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+  /api/service/work-orders/{id}:
+    get:
+      tags: [Service]
+      summary: Get a work order with lines and part usage
+      operationId: getServiceWorkOrder
+      x-permission: service.workorder.read
+      security:
+        - bearerAuth: []
+      description: Requires `service.workorder.read`. Read is audited with IDs and classification only.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 80 }
+      responses:
+        '200':
+          description: Success.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workOrder]
+                properties:
+                  workOrder:
+                    $ref: '#/components/schemas/WorkOrder'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+  /api/service/work-orders/{id}/schedule:
+    post:
+      tags: [Service]
+      summary: Schedule a work order
+      operationId: scheduleServiceWorkOrder
+      x-permission: service.workorder.schedule
+      security:
+        - bearerAuth: []
+      description: Requires `service.workorder.schedule`. Explicit status guard; emits ID-only domain events where applicable.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 80 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkOrderSchedule'
+      responses:
+        '200':
+          description: Transition completed.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workOrder]
+                properties:
+                  workOrder:
+                    $ref: '#/components/schemas/WorkOrder'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Invalid status transition or business conflict. }
+  /api/service/work-orders/{id}/start:
+    post:
+      tags: [Service]
+      summary: Start a work order
+      operationId: startServiceWorkOrder
+      x-permission: service.workorder.write
+      security:
+        - bearerAuth: []
+      description: Requires `service.workorder.write`. Explicit status guard; emits ID-only domain events where applicable.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 80 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceAction'
+      responses:
+        '200':
+          description: Transition completed.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workOrder]
+                properties:
+                  workOrder:
+                    $ref: '#/components/schemas/WorkOrder'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Invalid status transition or business conflict. }
+  /api/service/work-orders/{id}/complete:
+    post:
+      tags: [Service]
+      summary: Complete a work order
+      operationId: completeServiceWorkOrder
+      x-permission: service.workorder.complete
+      security:
+        - bearerAuth: []
+      description: Requires `service.workorder.complete`. Explicit status guard; emits ID-only domain events where applicable.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 80 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkOrderComplete'
+      responses:
+        '200':
+          description: Transition completed.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workOrder]
+                properties:
+                  workOrder:
+                    $ref: '#/components/schemas/WorkOrder'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Invalid status transition or business conflict. }
+  /api/service/work-orders/{id}/cancel:
+    post:
+      tags: [Service]
+      summary: Cancel a work order
+      operationId: cancelServiceWorkOrder
+      x-permission: service.workorder.write
+      security:
+        - bearerAuth: []
+      description: Requires `service.workorder.write`. Explicit status guard; emits ID-only domain events where applicable.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 80 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceAction'
+      responses:
+        '200':
+          description: Transition completed.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workOrder]
+                properties:
+                  workOrder:
+                    $ref: '#/components/schemas/WorkOrder'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Invalid status transition or business conflict. }
+  /api/service/work-orders/{id}/invoice:
+    post:
+      tags: [Service]
+      summary: Create and issue a sales invoice from a completed work order
+      operationId: invoiceServiceWorkOrder
+      x-permission: service.workorder.complete
+      security:
+        - bearerAuth: []
+      description: Requires `service.workorder.complete`. Explicit status guard; emits ID-only domain events where applicable.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 80 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceInvoiceCreate'
+      responses:
+        '201':
+          description: Invoice created and issued.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceInvoiceResult'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Invalid status transition or business conflict. }
+  /api/service/visits:
+    post:
+      tags: [Service]
+      summary: Plan a service visit
+      operationId: createServiceVisit
+      x-permission: service.visit.write
+      security:
+        - bearerAuth: []
+      description: Requires `service.visit.write`. Strict, DLP-checked body. Tenant and branch scope come from the bearer token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceVisitCreate'
+      responses:
+        '201':
+          description: Created.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [visit]
+                properties:
+                  visit:
+                    $ref: '#/components/schemas/ServiceVisit'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Lifecycle guard, business conflict or missing verified VAT rate. }
+    get:
+      tags: [Service]
+      summary: List service visits
+      operationId: listServiceVisits
+      x-permission: service.visit.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      description: Requires `service.visit.read`. Filter query is validated by `ServiceVisitQuery`; companyId is never accepted.
+      responses:
+        '200':
+          description: Success.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceVisitList'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+  /api/service/visits/{id}:
+    get:
+      tags: [Service]
+      summary: Get a service visit
+      operationId: getServiceVisit
+      x-permission: service.visit.read
+      security:
+        - bearerAuth: []
+      description: Requires `service.visit.read`. Read is audited with IDs and classification only.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 80 }
+      responses:
+        '200':
+          description: Success.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [visit]
+                properties:
+                  visit:
+                    $ref: '#/components/schemas/ServiceVisit'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+  /api/service/visits/{id}/check-in:
+    post:
+      tags: [Service]
+      summary: Check in to a service visit
+      operationId: checkInServiceVisit
+      x-permission: service.visit.write
+      security:
+        - bearerAuth: []
+      description: Requires `service.visit.write`. Explicit status guard; emits ID-only domain events where applicable.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 80 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceAction'
+      responses:
+        '200':
+          description: Transition completed.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [visit]
+                properties:
+                  visit:
+                    $ref: '#/components/schemas/ServiceVisit'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Invalid status transition or business conflict. }
+  /api/service/visits/{id}/complete:
+    post:
+      tags: [Service]
+      summary: Complete a service visit
+      operationId: completeServiceVisit
+      x-permission: service.visit.write
+      security:
+        - bearerAuth: []
+      description: Requires `service.visit.write`. Explicit status guard; emits ID-only domain events where applicable.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 80 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceVisitCheckOut'
+      responses:
+        '200':
+          description: Transition completed.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [visit]
+                properties:
+                  visit:
+                    $ref: '#/components/schemas/ServiceVisit'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Invalid status transition or business conflict. }
+  /api/service/visits/{id}/cancel:
+    post:
+      tags: [Service]
+      summary: Cancel a service visit
+      operationId: cancelServiceVisit
+      x-permission: service.visit.write
+      security:
+        - bearerAuth: []
+      description: Requires `service.visit.write`. Explicit status guard; emits ID-only domain events where applicable.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 80 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceAction'
+      responses:
+        '200':
+          description: Transition completed.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [visit]
+                properties:
+                  visit:
+                    $ref: '#/components/schemas/ServiceVisit'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Invalid status transition or business conflict. }
+  /api/service/parts:
+    post:
+      tags: [Service]
+      summary: Record service part usage
+      operationId: createServicePartUsage
+      x-permission: service.part.write
+      security:
+        - bearerAuth: []
+      description: Requires `service.part.write`. Strict, DLP-checked body. Tenant and branch scope come from the bearer token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServicePartUsageCreate'
+      responses:
+        '201':
+          description: Created.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [partUsage]
+                properties:
+                  partUsage:
+                    $ref: '#/components/schemas/ServicePartUsage'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Lifecycle guard, business conflict or missing verified VAT rate. }
+    get:
+      tags: [Service]
+      summary: List service part usage
+      operationId: listServicePartUsages
+      x-permission: service.part.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      description: Requires `service.part.read`. Filter query is validated by `ServicePartUsageQuery`; companyId is never accepted.
+      responses:
+        '200':
+          description: Success.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServicePartUsageList'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
+  /api/service/parts/{id}:
+    get:
+      tags: [Service]
+      summary: Get a service part usage record
+      operationId: getServicePartUsage
+      x-permission: service.part.read
+      security:
+        - bearerAuth: []
+      description: Requires `service.part.read`. Read is audited with IDs and classification only.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 80 }
+      responses:
+        '200':
+          description: Success.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [partUsage]
+                properties:
+                  partUsage:
+                    $ref: '#/components/schemas/ServicePartUsage'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required service permission. }
+        '404': { description: Tenant-scoped record not found. }
 components:
   securitySchemes:
     bearerAuth:
@@ -6792,5 +7999,394 @@ components:
         notes: { type: string, maxLength: 2000, nullable: true, description: DLP-checked. }
         branchId: { type: string, nullable: true }
         classification: { $ref: '#/components/schemas/Classification', default: INTERNAL }
+
+
+
+
+
+    ServiceSlaComponent:
+      type: object
+      required: [dueAt, completedAt, state, breached]
+      description: Due dates and state are persisted/derived; `state` is PENDING, AT_RISK, MET or BREACHED.
+      properties:
+        dueAt: { type: string, format: date-time, nullable: true }
+        completedAt: { type: string, format: date-time, nullable: true }
+        state: { type: string, enum: [PENDING, AT_RISK, MET, BREACHED] }
+        breached: { type: boolean }
+    ServiceSlaState:
+      type: object
+      required: [response, resolution, breached]
+      properties:
+        response: { $ref: '#/components/schemas/ServiceSlaComponent' }
+        resolution: { $ref: '#/components/schemas/ServiceSlaComponent' }
+        breached: { type: boolean }
+    ServiceContractLineDto:
+      type: object
+      required: [description, coverageQty, unitPriceCents, position, classification]
+      properties:
+        id: { type: string }
+        itemId: { type: string, nullable: true }
+        itemCode: { type: string, nullable: true }
+        description: { type: string }
+        coverageQty: { type: integer, minimum: 1 }
+        unitPriceCents: { type: integer, minimum: 0 }
+        position: { type: integer }
+        classification: { $ref: '#/components/schemas/Classification' }
+    ServiceContract:
+      type: object
+      required: [id, number, status, customerId, startDate, currency, monthlyFeeCents, responseSlaHours, resolutionSlaHours, lines]
+      description: SLA hours are whole commercial targets, never statutory or tax rates.
+      properties:
+        id: { type: string }
+        number: { type: string }
+        status: { type: string, enum: [DRAFT, ACTIVE, SUSPENDED, EXPIRED, CANCELLED] }
+        customerId: { type: string }
+        startDate: { type: string, format: date }
+        endDate: { type: string, format: date, nullable: true }
+        currency: { type: string }
+        monthlyFeeCents: { type: integer, minimum: 0 }
+        responseSlaHours: { type: integer, minimum: 1 }
+        resolutionSlaHours: { type: integer, minimum: 1 }
+        notes: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        activatedAt: { type: string, format: date-time, nullable: true }
+        suspendedAt: { type: string, format: date-time, nullable: true }
+        cancelledAt: { type: string, format: date-time, nullable: true }
+        lines:
+          type: array
+          items: { $ref: '#/components/schemas/ServiceContractLineDto' }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    ServiceContractList:
+      type: object
+      required: [contracts]
+      properties:
+        contracts:
+          type: array
+          items: { $ref: '#/components/schemas/ServiceContract' }
+    ServiceTicket:
+      type: object
+      required: [id, number, status, priority, customerId, subject, openedAt, responseDueAt, resolutionDueAt, sla]
+      properties:
+        id: { type: string }
+        number: { type: string }
+        status: { type: string, enum: [OPEN, ASSIGNED, IN_PROGRESS, WAITING, RESOLVED, CLOSED, CANCELLED] }
+        priority: { type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL] }
+        contractId: { type: string, nullable: true }
+        customerId: { type: string }
+        subject: { type: string }
+        description: { type: string, nullable: true }
+        openedAt: { type: string, format: date-time }
+        responseDueAt: { type: string, format: date-time }
+        resolutionDueAt: { type: string, format: date-time }
+        assignedToId: { type: string, nullable: true }
+        assignedAt: { type: string, format: date-time, nullable: true }
+        respondedAt: { type: string, format: date-time, nullable: true }
+        resolvedAt: { type: string, format: date-time, nullable: true }
+        resolutionNotes: { type: string, nullable: true }
+        closedAt: { type: string, format: date-time, nullable: true }
+        cancelledAt: { type: string, format: date-time, nullable: true }
+        sla: { $ref: '#/components/schemas/ServiceSlaState' }
+        classification: { $ref: '#/components/schemas/Classification' }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    ServiceTicketList:
+      type: object
+      required: [tickets]
+      properties:
+        tickets:
+          type: array
+          items: { $ref: '#/components/schemas/ServiceTicket' }
+    WorkOrderLineDto:
+      type: object
+      required: [description, qty, unitPriceCents, totalCents, position, classification]
+      properties:
+        id: { type: string }
+        itemId: { type: string, nullable: true }
+        itemCode: { type: string, nullable: true }
+        description: { type: string }
+        qty: { type: number }
+        unitPriceCents: { type: integer, minimum: 0 }
+        totalCents: { type: integer, minimum: 0 }
+        position: { type: integer }
+        classification: { $ref: '#/components/schemas/Classification' }
+    ServicePartUsage:
+      type: object
+      required: [workOrderId, itemId, qty, unitCostCents, unitPriceCents, totalCents, inventoryIssued, manualIssueRequired]
+      properties:
+        id: { type: string }
+        workOrderId: { type: string }
+        ticketId: { type: string, nullable: true }
+        itemId: { type: string }
+        warehouseId: { type: string, nullable: true }
+        batchId: { type: string, nullable: true }
+        qty: { type: number }
+        unitCostCents: { type: integer, minimum: 0 }
+        unitPriceCents: { type: integer, minimum: 0 }
+        totalCents: { type: integer, minimum: 0 }
+        inventoryIssued: { type: boolean }
+        manualIssueRequired: { type: boolean }
+        issuedMovementId: { type: string, nullable: true }
+        notes: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    ServicePartUsageList:
+      type: object
+      required: [partUsages]
+      properties:
+        partUsages:
+          type: array
+          items: { $ref: '#/components/schemas/ServicePartUsage' }
+    WorkOrder:
+      type: object
+      required: [id, number, status, ticketId, summary, labourCents, partsCents, totalCents, currency, lines, partUsages]
+      description: "`totalCents` is the safe-integer sum of labour and parts."
+      properties:
+        id: { type: string }
+        number: { type: string }
+        status: { type: string, enum: [DRAFT, SCHEDULED, IN_PROGRESS, COMPLETED, CANCELLED] }
+        ticketId: { type: string }
+        technicianId: { type: string, nullable: true }
+        summary: { type: string }
+        labourCents: { type: integer, minimum: 0 }
+        partsCents: { type: integer, minimum: 0 }
+        totalCents: { type: integer, minimum: 0 }
+        currency: { type: string }
+        scheduledAt: { type: string, format: date-time, nullable: true }
+        startedAt: { type: string, format: date-time, nullable: true }
+        completedAt: { type: string, format: date-time, nullable: true }
+        cancelledAt: { type: string, format: date-time, nullable: true }
+        notes: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        financeInvoiceId: { type: string, nullable: true }
+        lines:
+          type: array
+          items: { $ref: '#/components/schemas/WorkOrderLineDto' }
+        partUsages:
+          type: array
+          items: { $ref: '#/components/schemas/ServicePartUsage' }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    WorkOrderList:
+      type: object
+      required: [workOrders]
+      properties:
+        workOrders:
+          type: array
+          items: { $ref: '#/components/schemas/WorkOrder' }
+    ServiceVisit:
+      type: object
+      required: [id, number, status, workOrderId, plannedAt]
+      properties:
+        id: { type: string }
+        number: { type: string }
+        status: { type: string, enum: [PLANNED, IN_PROGRESS, COMPLETED, CANCELLED] }
+        workOrderId: { type: string }
+        ticketId: { type: string, nullable: true }
+        technicianId: { type: string, nullable: true }
+        plannedAt: { type: string, format: date-time }
+        checkInAt: { type: string, format: date-time, nullable: true }
+        checkOutAt: { type: string, format: date-time, nullable: true }
+        completedAt: { type: string, format: date-time, nullable: true }
+        cancelledAt: { type: string, format: date-time, nullable: true }
+        notes: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    ServiceVisitList:
+      type: object
+      required: [visits]
+      properties:
+        visits:
+          type: array
+          items: { $ref: '#/components/schemas/ServiceVisit' }
+    ServiceInvoiceResult:
+      type: object
+      required: [invoice, workOrder]
+      properties:
+        invoice: { $ref: '#/components/schemas/FinanceInvoice' }
+        workOrder: { $ref: '#/components/schemas/WorkOrder' }
+    ServiceAction:
+      type: object
+      additionalProperties: false
+      description: Empty body for ID-only lifecycle actions.
+      properties: {}
+    ServiceContractLineCreate:
+      type: object
+      additionalProperties: false
+      required: [description, unitPriceCents]
+      properties:
+        itemId: { type: string, minLength: 1, maxLength: 80, nullable: true }
+        description: { type: string, minLength: 1, maxLength: 240, description: DLP-checked. }
+        coverageQty: { type: integer, minimum: 1, maximum: 100000, default: 1 }
+        unitPriceCents: { type: integer, minimum: 0 }
+    ServiceContractCreate:
+      type: object
+      additionalProperties: false
+      required: [customerId, startDate, responseSlaHours, resolutionSlaHours, lines]
+      description: companyId, status, SLA due dates and totals are assigned by the server.
+      properties:
+        customerId: { type: string, minLength: 1, maxLength: 80 }
+        startDate: { type: string, format: date }
+        endDate: { type: string, format: date, nullable: true }
+        responseSlaHours: { type: integer, minimum: 1, maximum: 8760, description: "Commercial target, not statutory." }
+        resolutionSlaHours: { type: integer, minimum: 1, maximum: 8760, description: "Commercial target, not statutory." }
+        monthlyFeeCents: { type: integer, minimum: 0, default: 0 }
+        currency: { type: string, minLength: 1, maxLength: 8, default: KES }
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 60
+          items: { $ref: '#/components/schemas/ServiceContractLineCreate' }
+        notes: { type: string, maxLength: 2000, nullable: true, description: DLP-checked. }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification', default: INTERNAL }
+    ServiceTicketCreate:
+      type: object
+      additionalProperties: false
+      required: [subject]
+      description: Supply contractId or customerId. Without a contract the documented default SLA targets apply.
+      properties:
+        contractId: { type: string, minLength: 1, maxLength: 80 }
+        customerId: { type: string, minLength: 1, maxLength: 80 }
+        subject: { type: string, minLength: 1, maxLength: 220, description: DLP-checked. }
+        description: { type: string, maxLength: 2000, nullable: true, description: DLP-checked. }
+        priority: { type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL], default: MEDIUM }
+        openedAt: { type: string, format: date-time }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification', default: INTERNAL }
+    ServiceTicketAssign:
+      type: object
+      additionalProperties: false
+      required: [assigneeId]
+      properties:
+        assigneeId: { type: string, minLength: 1, maxLength: 80 }
+    ServiceTicketResolve:
+      type: object
+      additionalProperties: false
+      properties:
+        resolutionNotes: { type: string, maxLength: 2000, nullable: true, description: DLP-checked; stored behind the API and never emitted on an event. }
+    WorkOrderLineCreate:
+      type: object
+      additionalProperties: false
+      required: [description, qty, unitPriceCents]
+      properties:
+        itemId: { type: string, minLength: 1, maxLength: 80, nullable: true }
+        description: { type: string, minLength: 1, maxLength: 240, description: DLP-checked. }
+        qty: { type: number, exclusiveMinimum: 0, maximum: 1000000 }
+        unitPriceCents: { type: integer, minimum: 1 }
+    WorkOrderCreate:
+      type: object
+      additionalProperties: false
+      required: [ticketId, summary]
+      properties:
+        ticketId: { type: string, minLength: 1, maxLength: 80 }
+        summary: { type: string, minLength: 1, maxLength: 240, description: DLP-checked. }
+        technicianId: { type: string, minLength: 1, maxLength: 80, nullable: true }
+        scheduledAt: { type: string, format: date-time, nullable: true }
+        lines:
+          type: array
+          maxItems: 60
+          default: []
+          items: { $ref: '#/components/schemas/WorkOrderLineCreate' }
+        notes: { type: string, maxLength: 2000, nullable: true, description: DLP-checked. }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification', default: INTERNAL }
+    WorkOrderSchedule:
+      type: object
+      additionalProperties: false
+      required: [scheduledAt]
+      properties:
+        scheduledAt: { type: string, format: date-time }
+        technicianId: { type: string, minLength: 1, maxLength: 80, nullable: true }
+    WorkOrderComplete:
+      type: object
+      additionalProperties: false
+      properties:
+        notes: { type: string, maxLength: 2000, nullable: true, description: DLP-checked. }
+    ServiceVisitCreate:
+      type: object
+      additionalProperties: false
+      required: [workOrderId, plannedAt]
+      properties:
+        workOrderId: { type: string, minLength: 1, maxLength: 80 }
+        technicianId: { type: string, minLength: 1, maxLength: 80, nullable: true }
+        plannedAt: { type: string, format: date-time }
+        notes: { type: string, maxLength: 2000, nullable: true, description: DLP-checked. }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification', default: INTERNAL }
+    ServiceVisitCheckOut:
+      type: object
+      additionalProperties: false
+      properties:
+        notes: { type: string, maxLength: 2000, nullable: true, description: DLP-checked. }
+    ServicePartUsageCreate:
+      type: object
+      additionalProperties: false
+      required: [workOrderId, itemId, qty, unitCostCents]
+      properties:
+        workOrderId: { type: string, minLength: 1, maxLength: 80 }
+        itemId: { type: string, minLength: 1, maxLength: 80 }
+        warehouseId: { type: string, minLength: 1, maxLength: 80, nullable: true }
+        batchId: { type: string, minLength: 1, maxLength: 80, nullable: true }
+        qty: { type: number, exclusiveMinimum: 0, maximum: 1000000 }
+        unitCostCents: { type: integer, minimum: 1 }
+        unitPriceCents: { type: integer, minimum: 1 }
+        notes: { type: string, maxLength: 2000, nullable: true, description: DLP-checked. }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification', default: INTERNAL }
+    ServiceInvoiceCreate:
+      type: object
+      additionalProperties: false
+      required: [issueDate]
+      description: No tax percentage is accepted. A supplied taxRateId must be a VERIFIED, effective VAT rate.
+      properties:
+        issueDate: { type: string, format: date }
+        dueDate: { type: string, format: date, nullable: true }
+        taxRateId: { type: string, minLength: 1, maxLength: 80, nullable: true }
+        notes: { type: string, maxLength: 2000, nullable: true, description: DLP-checked. }
+    ServiceContractQuery:
+      type: object
+      additionalProperties: false
+      properties:
+        status: { type: string, enum: [DRAFT, ACTIVE, SUSPENDED, EXPIRED, CANCELLED] }
+        customerId: { type: string }
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+        limit: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    ServiceTicketQuery:
+      type: object
+      additionalProperties: false
+      properties:
+        status: { type: string, enum: [OPEN, ASSIGNED, IN_PROGRESS, WAITING, RESOLVED, CLOSED, CANCELLED] }
+        priority: { type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL] }
+        contractId: { type: string }
+        assigneeId: { type: string }
+        limit: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    WorkOrderQuery:
+      type: object
+      additionalProperties: false
+      properties:
+        status: { type: string, enum: [DRAFT, SCHEDULED, IN_PROGRESS, COMPLETED, CANCELLED] }
+        ticketId: { type: string }
+        technicianId: { type: string }
+        limit: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    ServiceVisitQuery:
+      type: object
+      additionalProperties: false
+      properties:
+        status: { type: string, enum: [PLANNED, IN_PROGRESS, COMPLETED, CANCELLED] }
+        workOrderId: { type: string }
+        technicianId: { type: string }
+        limit: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    ServicePartUsageQuery:
+      type: object
+      additionalProperties: false
+      properties:
+        workOrderId: { type: string }
+        itemId: { type: string }
+        inventoryIssued: { type: string, enum: [true, false] }
+        limit: { type: integer, minimum: 1, maximum: 200, default: 50 }
 security:
   - bearerAuth: []

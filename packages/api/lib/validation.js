@@ -1173,3 +1173,176 @@ export const PROCUREMENT_MONEY_FIELDS = [
   'unitCostCents', 'totalCents', 'subtotalCents', 'poTotalCents', 'receiptTotalCents',
   'invoiceTotalCents', 'priceVarianceCents', 'invoiceVarianceCents',
 ]
+
+// ---------------------------------------------------------------- phase 10 service
+//
+// Service keeps money in integer cents, dates as strict YYYY-MM-DD strings and
+// timestamps as ISO date-times. SLA hours are commercial targets supplied by
+// the operator — never statutory or tax rates. Write schemas are strict: a
+// client cannot smuggle companyId, status, SLA due dates, computed totals or a
+// tax percentage into a tenant-scoped write. Free text is DLP-checked and fails
+// closed.
+
+const serviceId = z.string().trim().min(1).max(80)
+const serviceDate = z.string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Use a date in YYYY-MM-DD format')
+  .refine(isValidIsoDate, 'Choose a valid date')
+const serviceDateTime = z.iso.datetime()
+const serviceLimit = z.coerce.number().int().min(1).max(200).default(50)
+const serviceHours = z.number().int().positive().max(8760)
+const serviceMoney = z.number().int().nonnegative()
+const servicePositiveMoney = z.number().int().positive()
+const serviceQty = z.number().finite().positive('Quantity must be greater than zero').max(1_000_000)
+const serviceNotes = dlpSafeText(2000).optional().or(z.literal(''))
+const serviceCurrency = z.string().trim().min(1).max(8).default('KES')
+
+const serviceContractLineCreateSchema = z.object({
+  itemId: serviceId.nullable().optional(),
+  description: dlpSafeText(240),
+  coverageQty: z.number().int().positive().max(100_000).default(1),
+  unitPriceCents: serviceMoney,
+}).strict()
+
+const serviceWorkOrderLineCreateSchema = z.object({
+  itemId: serviceId.nullable().optional(),
+  description: dlpSafeText(240),
+  qty: serviceQty,
+  unitPriceCents: servicePositiveMoney,
+}).strict()
+
+export const serviceContractCreateSchema = z.object({
+  customerId: serviceId,
+  startDate: serviceDate,
+  endDate: serviceDate.nullable().optional(),
+  responseSlaHours: serviceHours,
+  resolutionSlaHours: serviceHours,
+  monthlyFeeCents: serviceMoney.default(0),
+  currency: serviceCurrency,
+  lines: z.array(serviceContractLineCreateSchema).min(1).max(60),
+  notes: serviceNotes,
+  branchId: serviceId.nullable().optional(),
+  classification: classificationSchema.default('INTERNAL'),
+}).strict()
+
+export const serviceTicketCreateSchema = z.object({
+  contractId: serviceId.optional(),
+  customerId: serviceId.optional(),
+  subject: dlpSafeText(220),
+  description: dlpSafeText(2000).optional().or(z.literal('')),
+  priority: z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).default('MEDIUM'),
+  openedAt: serviceDateTime.optional(),
+  branchId: serviceId.nullable().optional(),
+  classification: classificationSchema.default('INTERNAL'),
+}).strict().superRefine((value, ctx) => {
+  if (!value.contractId && !value.customerId) {
+    ctx.addIssue({ code: 'custom', path: ['customerId'], message: 'customerId is required without a contractId' })
+  }
+})
+
+export const serviceTicketAssignSchema = z.object({
+  assigneeId: serviceId,
+}).strict()
+
+export const serviceTicketResolveSchema = z.object({
+  resolutionNotes: dlpSafeText(2000).optional().or(z.literal('')),
+}).strict()
+
+export const serviceWorkOrderCreateSchema = z.object({
+  ticketId: serviceId,
+  summary: dlpSafeText(240),
+  technicianId: serviceId.nullable().optional(),
+  scheduledAt: serviceDateTime.nullable().optional(),
+  lines: z.array(serviceWorkOrderLineCreateSchema).max(60).default([]),
+  notes: serviceNotes,
+  branchId: serviceId.nullable().optional(),
+  classification: classificationSchema.default('INTERNAL'),
+}).strict()
+
+export const serviceWorkOrderScheduleSchema = z.object({
+  scheduledAt: serviceDateTime,
+  technicianId: serviceId.nullable().optional(),
+}).strict()
+
+export const serviceWorkOrderCompleteSchema = z.object({
+  notes: serviceNotes,
+}).strict()
+
+export const serviceVisitCreateSchema = z.object({
+  workOrderId: serviceId,
+  technicianId: serviceId.nullable().optional(),
+  plannedAt: serviceDateTime,
+  notes: serviceNotes,
+  branchId: serviceId.nullable().optional(),
+  classification: classificationSchema.default('INTERNAL'),
+}).strict()
+
+export const serviceVisitCheckOutSchema = z.object({
+  notes: serviceNotes,
+}).strict()
+
+export const servicePartUsageCreateSchema = z.object({
+  workOrderId: serviceId,
+  itemId: serviceId,
+  warehouseId: serviceId.nullable().optional(),
+  batchId: serviceId.nullable().optional(),
+  qty: serviceQty,
+  unitCostCents: servicePositiveMoney,
+  unitPriceCents: servicePositiveMoney.optional(),
+  notes: serviceNotes,
+  branchId: serviceId.nullable().optional(),
+  classification: classificationSchema.default('INTERNAL'),
+}).strict()
+
+export const serviceInvoiceCreateSchema = z.object({
+  issueDate: serviceDate,
+  dueDate: serviceDate.nullable().optional(),
+  taxRateId: serviceId.nullable().optional(),
+  notes: serviceNotes,
+}).strict()
+
+const serviceStatusQuery = (values) => z.enum(values).optional()
+
+export const serviceContractQuerySchema = z.object({
+  status: serviceStatusQuery(['DRAFT', 'ACTIVE', 'SUSPENDED', 'EXPIRED', 'CANCELLED']),
+  customerId: serviceId.optional(),
+  from: serviceDate.optional(),
+  to: serviceDate.optional(),
+  limit: serviceLimit,
+}).strict()
+
+export const serviceTicketQuerySchema = z.object({
+  status: serviceStatusQuery(['OPEN', 'ASSIGNED', 'IN_PROGRESS', 'WAITING', 'RESOLVED', 'CLOSED', 'CANCELLED']),
+  priority: serviceStatusQuery(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']),
+  contractId: serviceId.optional(),
+  assigneeId: serviceId.optional(),
+  limit: serviceLimit,
+}).strict()
+
+export const serviceWorkOrderQuerySchema = z.object({
+  status: serviceStatusQuery(['DRAFT', 'SCHEDULED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED']),
+  ticketId: serviceId.optional(),
+  technicianId: serviceId.optional(),
+  limit: serviceLimit,
+}).strict()
+
+export const serviceVisitQuerySchema = z.object({
+  status: serviceStatusQuery(['PLANNED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED']),
+  workOrderId: serviceId.optional(),
+  technicianId: serviceId.optional(),
+  limit: serviceLimit,
+}).strict()
+
+export const servicePartUsageQuerySchema = z.object({
+  workOrderId: serviceId.optional(),
+  itemId: serviceId.optional(),
+  inventoryIssued: z.enum(['true', 'false']).transform((value) => value === 'true').optional(),
+  limit: serviceLimit,
+}).strict()
+
+export const serviceActionSchema = z.object({}).strict()
+
+export const SERVICE_CLASSIFICATIONS = ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED']
+export const SERVICE_MONEY_FIELDS = [
+  'monthlyFeeCents', 'unitPriceCents', 'labourCents', 'partsCents',
+  'totalCents', 'unitCostCents',
+]

@@ -1,13 +1,13 @@
 # OpenAPI Contract
 
-Comet Healthcare Enterprise Platform — Phase 9 contract complete (`0.9.0-phase.9`)
+Comet Healthcare Enterprise Platform — Phase 10 contract complete (`0.10.0-phase.10`)
 
 This directory holds the versioned REST and webhook contracts. Phase 1 created the skeleton;
 Phase 3 added identity/organisation/audit, Phase 4 added messaging and realtime, Phase 5
 completed the shared-services surface (files, workflow, notifications, search, documents),
 Phase 6 added the tenant/branch-scoped finance surface under `/api/finance`, Phase 7 added
-the sales lifecycle under `/api/sales`, Phase 8 added inventory under `/api/inventory`, and
-Phase 9 adds procurement under `/api/procurement`.
+the sales lifecycle under `/api/sales`, Phase 8 added inventory under `/api/inventory`,
+Phase 9 added procurement under `/api/procurement`, and Phase 10 adds service under `/api/service`.
 
 ## Files
 
@@ -34,6 +34,35 @@ Phase 9 adds procurement under `/api/procurement`.
 - Response envelopes follow the implementation: named collections such as `files`,
   `definitions`, `instances`, `tasks`, `notifications` and `preferences` are used rather than a
   generic `items` key. `GET /api/search` and `GET /api/documents` use `items` as before.
+
+## Phase 10 scope
+
+- `Service` tag paths (27 paths / 32 operations): `/api/service/contracts` (create/list/get) with
+  `/{id}` activate/suspend/cancel, `/api/service/tickets` (create/list/get) with `/{id}`
+  assign/start/wait/resolve/close/cancel, `/api/service/work-orders` (create/list/get) with `/{id}`
+  schedule/start/complete/cancel/invoice, `/api/service/visits` (create/list/get) with `/{id}`
+  check-in/complete/cancel, and `/api/service/parts` (create/list/get).
+- All Phase 3–9 paths and schemas remain intact. Every service operation declares
+  `security: [{ bearerAuth: [] }]` and an `x-permission` from the 14-entry `service.*` set. Strict
+  request schemas reject client-supplied `companyId`, statuses and calculated columns; free text is
+  DLP-checked and fails closed.
+- `responseSlaHours` and `resolutionSlaHours` are whole-hour commercial targets, never statutory or
+  tax rates. Direct-customer tickets without a contract default to 4-hour response and 48-hour
+  resolution. Due dates are persisted at ticket opening; `sla` is derived from timestamps into
+  `PENDING`, `AT_RISK`, `MET` or `BREACHED`.
+- Work-order `labourCents`, `partsCents` and `totalCents` are safe integer cents. Part usage calls
+  the Phase 8 inventory ledger; a business stock conflict is recorded as `manualIssueRequired`
+  rather than failing the record, while DLP/validation failures propagate. Optional invoicing
+  delegates tax arithmetic to finance and accepts only a VERIFIED, effective VAT rate. See ADR-0015.
+- Visits require check-in before completion. All lifecycle writes emit ID-only audits; the six domain
+  events are `ServiceContractActivated`, `ServiceTicketOpened`, `ServiceTicketAssigned`,
+  `ServiceTicketResolved`, `WorkOrderCompleted` and `ServiceVisitCompleted`.
+- Phase 10 socket events are `service:contract`, `service:ticket`, `service:workorder` and
+  `service:visit`. Frames carry IDs/classification only and are routed to the company room only —
+  never user, thread, inbox or branch rooms. Clients refetch through `/api/service`; see
+  `x-realtime` and `x-service`.
+- `Idempotency-Key` remains scoped to `POST /api/messaging/threads/{id}/messages` only; no
+  `/api/service` endpoint consumes it.
 
 ## Phase 9 scope
 
@@ -164,6 +193,9 @@ Phase 9 adds procurement under `/api/procurement`.
 13. Phase 9 procurement frames are ID/classification-only invalidation signals routed to the company
     room. Adding document numbers, quantities, amounts, variances, statuses, supplier names or notes
     is a contract violation.
+14. Phase 10 service frames are ID/classification-only invalidation signals routed to the company
+    room. Adding contract/ticket/work-order/visit numbers, subjects, customer names, SLA hours,
+    amounts, statuses or notes is a contract violation.
 
 ## Security schemes
 
@@ -184,10 +216,11 @@ Phase 9 adds procurement under `/api/procurement`.
    ```
 
    An OpenAPI-aware linter (for example `npx @redocly/cli lint docs/openapi/openapi.yaml`) is
-   optional when network access to the generator is available. At the Phase 9 gate the parsed
-   document has version `0.9.0-phase.9`, 148 paths (18 under `/api/procurement`) and 145 schemas.
-   At the Phase 8 gate it had version `0.8.0-phase.8`, 130 paths and 114 schemas.
-4. Confirm all `$ref` targets resolve and that no Phase 3/4/5/6/7/8 path was removed. A local check:
+   optional when network access to the generator is available. At the Phase 10 gate the parsed
+   document has version `0.10.0-phase.10`, 175 paths (27 under `/api/service`) and 179 schemas.
+   At the Phase 9 gate it had version `0.9.0-phase.9`, 148 paths and 145 schemas; at the Phase 8
+   gate, 130 paths and 114 schemas.
+4. Confirm all `$ref` targets resolve and that no Phase 3/4/5/6/7/8/9 path was removed. A local check:
 
    ```bash
    python - <<'PY'
@@ -216,7 +249,9 @@ Phase 9 adds procurement under `/api/procurement`.
     weighted-average cents, balance movements, transfer/count guards, quarantine, reorder alerts,
     DLP and company-room ID-only events; Phase 9 procurement tests cover conversion, partial/full
     receipts, cent-exact tolerance matching, supplier returns, quarantine guards, DLP, strict
-    ID-only events and tenant scope. At the Phase 9 gate 491 refs resolve.
+    ID-only events and tenant scope; Phase 10 service tests cover SLA arithmetic, lifecycle
+    guards, DLP, strict ID-only events, cent totals, stock-conflict fallback, verified-rate
+    invoicing and tenant scope. At the Phase 10 gate 609 refs resolve.
 
 ## Phase gate requirement
 

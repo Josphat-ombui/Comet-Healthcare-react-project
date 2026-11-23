@@ -1,6 +1,6 @@
 // ERP shell: identity, directory, messaging, platform views (notifications,
 // files, workflow, search, documents), Phase 6 finance, Phase 7 sales,
-// Phase 8 inventory and Phase 9 procurement. Uses the same JSON API as the
+// Phase 8 inventory, Phase 9 procurement and Phase 10 service. Uses the same JSON API as the
 // storefront; no external dependencies. The Socket.IO client is served by the
 // realtime service itself, and the inbox falls back to authenticated polling
 // when sockets are unavailable.
@@ -10,7 +10,7 @@ const API_ORIGIN = API.replace(/\/api\/?$/, '')
 const REALTIME = window.ERP_REALTIME_URL || 'http://localhost:4001'
 const POLL_MS = 6000
 const QUEUE_KEY = 'comet_erp_message_queue'
-const VIEWS = ['inbox', 'directory', 'notifications', 'files', 'workflow', 'search', 'documents', 'finance', 'sales', 'inventory', 'procurement']
+const VIEWS = ['inbox', 'directory', 'notifications', 'files', 'workflow', 'search', 'documents', 'finance', 'sales', 'inventory', 'procurement', 'service']
 const FINANCE_EVENTS = [
   'finance:account', 'finance:journal', 'finance:invoice', 'finance:payment',
   'finance:budget', 'finance:rate', 'finance:etims', 'finance:etims-failed',
@@ -30,6 +30,12 @@ const INVENTORY_EVENTS = [
 const PROCUREMENT_EVENTS = [
   'procurement:requisition', 'procurement:order', 'procurement:receipt',
   'procurement:return', 'procurement:match',
+]
+// Service socket frames carry IDs/classification only. They are pure
+// invalidation signals: contracts, tickets, totals and SLA state are always
+// refetched through the authenticated API.
+const SERVICE_EVENTS = [
+  'service:contract', 'service:ticket', 'service:workorder', 'service:visit',
 ]
 const $ = (id) => document.getElementById(id)
 
@@ -85,11 +91,18 @@ const state = {
   procurementReceipts: [],
   procurementReturns: [],
   procurementMatches: [],
+  serviceContracts: [],
+  serviceTickets: [],
+  serviceWorkOrders: [],
+  serviceVisits: [],
+  servicePartUsages: [],
+  serviceCustomers: [],
 }
 let financeRefreshTimer = null
 let salesRefreshTimer = null
 let inventoryRefreshTimer = null
 let procurementRefreshTimer = null
+let serviceRefreshTimer = null
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -2670,6 +2683,320 @@ $('procurementMatchForm').onsubmit = async (event) => {
   await procurementMutation('/procurement/matches', body, 'procMatchStatus', 'Three-way match completed')
 }
 
+// ------------------------------------------------------------------- service
+
+function serviceToday() {
+  return new Date().toISOString().slice(0, 10)
+}
+
+function serviceNotes(id) {
+  const value = $(id)?.value?.trim()
+  return value ? value : undefined
+}
+
+function serviceOptionalId(id) {
+  const value = $(id)?.value
+  return value ? value : undefined
+}
+
+function serviceMutation(path, body, statusId, message) {
+  setError('serviceError', '')
+  if ($(statusId)) $(statusId).textContent = 'Working…'
+  return request(path, { method: 'POST', body: JSON.stringify(body) })
+    .then(async () => {
+      if ($(statusId)) $(statusId).textContent = message
+      await loadService()
+      return true
+    })
+    .catch((error) => {
+      if ($(statusId)) $(statusId).textContent = ''
+      setError('serviceError', error.status === 409 ? `Transition blocked: ${error.message}` : error.message)
+      return false
+    })
+}
+
+function serviceActionLabel(action) {
+  return {
+    'activate-contract': 'Activate',
+    'start-ticket': 'Start',
+    'resolve-ticket': 'Resolve',
+    'start-workorder': 'Start',
+    'complete-workorder': 'Complete',
+    'checkin-visit': 'Check in',
+    'complete-visit': 'Complete',
+  }[action] || action
+}
+
+function serviceAction(action, id) {
+  return `<button class="link" type="button" data-service-action="${action}" data-service-id="${escapeHtml(id)}">${serviceActionLabel(action)}</button>`
+}
+
+function serviceNumber(id, rows) {
+  const row = rows.find((entry) => entry.id === id)
+  return row ? `<code>${escapeHtml(row.number)}</code>` : '—'
+}
+
+function serviceSla(row) {
+  if (!row?.sla) return '—'
+  const response = row.sla.response?.state || '—'
+  const resolution = row.sla.resolution?.state || '—'
+  return `<span class="pill finance-status">${escapeHtml(`${response} / ${resolution}`)}</span>`
+}
+
+function servicePartyName(id) {
+  const party = state.serviceCustomers.find((entry) => entry.id === id)
+  return escapeHtml(party?.name || String(id || '').slice(0, 8))
+}
+
+function serviceTechnicianName(id) {
+  if (!id) return '—'
+  const user = users.find((entry) => entry.id === id)
+  return escapeHtml(user?.name || user?.email || String(id).slice(0, 8))
+}
+
+function serviceItemOptions() {
+  return state.inventoryItems.map((item) => ({ value: item.id, label: `${item.code} — ${item.name}` }))
+}
+
+function renderService() {
+  const contracts = state.serviceContracts
+  const tickets = state.serviceTickets
+  const workOrders = state.serviceWorkOrders
+
+  renderFinanceRows('serviceContractRows', contracts, [
+    (row) => `<code>${escapeHtml(row.number)}</code>`,
+    (row) => servicePartyName(row.customerId),
+    (row) => escapeHtml(`${row.startDate} — ${row.endDate || 'open'}`),
+    (row) => escapeHtml(`${row.responseSlaHours}h / ${row.resolutionSlaHours}h`),
+    (row) => financeStatus(row.status),
+    (row) => (row.status === 'DRAFT' ? serviceAction('activate-contract', row.id) : ''),
+  ], 'No service contracts for this tenant.')
+
+  renderFinanceRows('serviceTicketRows', tickets, [
+    (row) => `<code>${escapeHtml(row.number)}</code>`,
+    (row) => escapeHtml(row.subject),
+    (row) => financeStatus(row.priority),
+    (row) => serviceSla(row),
+    (row) => financeStatus(row.status),
+    (row) => [
+      ['OPEN', 'ASSIGNED'].includes(row.status) ? serviceAction('start-ticket', row.id) : '',
+      ['IN_PROGRESS', 'WAITING'].includes(row.status) ? serviceAction('resolve-ticket', row.id) : '',
+    ].join(' '),
+  ], 'No service tickets for this tenant.')
+
+  renderFinanceRows('serviceWorkOrderRows', workOrders, [
+    (row) => `<code>${escapeHtml(row.number)}</code>`,
+    (row) => serviceNumber(row.ticketId, tickets),
+    (row) => escapeHtml(row.summary),
+    (row) => escapeHtml(row.labourCents),
+    (row) => escapeHtml(row.partsCents),
+    (row) => escapeHtml(row.totalCents),
+    (row) => financeStatus(row.status),
+    (row) => [
+      ['DRAFT', 'SCHEDULED'].includes(row.status) ? serviceAction('start-workorder', row.id) : '',
+      row.status === 'IN_PROGRESS' ? serviceAction('complete-workorder', row.id) : '',
+    ].join(' '),
+  ], 'No work orders for this tenant.')
+
+  renderFinanceRows('serviceVisitRows', state.serviceVisits, [
+    (row) => `<code>${escapeHtml(row.number)}</code>`,
+    (row) => serviceNumber(row.workOrderId, workOrders),
+    (row) => escapeHtml(String(row.plannedAt || '').replace('T', ' ').slice(0, 16)),
+    (row) => serviceTechnicianName(row.technicianId),
+    (row) => financeStatus(row.status),
+    (row) => [
+      row.status === 'PLANNED' ? serviceAction('checkin-visit', row.id) : '',
+      row.status === 'IN_PROGRESS' ? serviceAction('complete-visit', row.id) : '',
+    ].join(' '),
+  ], 'No service visits for this tenant.')
+
+  renderFinanceRows('servicePartRows', state.servicePartUsages, [
+    (row) => serviceNumber(row.workOrderId, workOrders),
+    (row) => escapeHtml(row.itemId.slice(0, 8)),
+    (row) => escapeHtml(row.qty),
+    (row) => escapeHtml(row.totalCents),
+    (row) => row.inventoryIssued
+      ? '<span class="pill finance-status issued">Issued</span>'
+      : '<span class="pill finance-status pending">Manual issue required</span>',
+  ], 'No service part usage for this tenant.')
+
+  const customerOptions = state.serviceCustomers.map((party) => ({ value: party.id, label: `${party.name} (${party.type})` }))
+  const contractOptions = contracts.map((row) => ({ value: row.id, label: `${row.number} — ${row.status}` }))
+  const ticketOptions = tickets.map((row) => ({ value: row.id, label: `${row.number} — ${row.subject}` }))
+  const workOrderOptions = workOrders.map((row) => ({ value: row.id, label: `${row.number} — ${row.status}` }))
+  const itemOptions = serviceItemOptions()
+  const warehouseOptions = state.inventoryWarehouses.map((warehouse) => ({
+    value: warehouse.id, label: `${warehouse.code} — ${warehouse.name}`,
+  }))
+  const technicianOptions = users.map((user) => ({ value: user.id, label: user.name || user.email || user.id }))
+
+  fillFinanceSelect($('svcContractCustomer'), customerOptions, 'Select a customer')
+  fillFinanceSelect($('svcTicketCustomer'), customerOptions, 'Select a customer')
+  fillFinanceSelect($('svcTicketContract'), contractOptions, 'Direct customer — use default SLA')
+  fillFinanceSelect($('svcWorkOrderTicket'), ticketOptions, 'Select a ticket')
+  fillFinanceSelect($('svcVisitWorkOrder'), workOrderOptions, 'Select a work order')
+  fillFinanceSelect($('svcPartWorkOrder'), workOrderOptions, 'Select a work order')
+  for (const id of ['svcContractItem', 'svcWorkOrderItem', 'svcPartItem']) {
+    fillFinanceSelect($(id), itemOptions, id === 'svcWorkOrderItem' ? 'Labour only' : 'Select an item')
+  }
+  for (const id of ['svcWorkOrderTechnician', 'svcVisitTechnician']) {
+    fillFinanceSelect($(id), technicianOptions, id === 'svcVisitTechnician' ? 'Work order default' : 'Unassigned')
+  }
+  fillFinanceSelect($('svcPartWarehouse'), warehouseOptions, 'Default warehouse')
+  if ($('svcContractStart') && !$('svcContractStart').value) $('svcContractStart').value = serviceToday()
+
+  $('serviceView').querySelectorAll('[data-service-action]').forEach((button) => {
+    button.onclick = () => runServiceAction(button.dataset.serviceAction, button.dataset.serviceId)
+  })
+}
+
+async function loadService() {
+  if (!token) return
+  setError('serviceError', '')
+  const results = await Promise.allSettled([
+    request('/service/contracts?limit=200'),
+    request('/service/tickets?limit=200'),
+    request('/service/work-orders?limit=200'),
+    request('/service/visits?limit=200'),
+    request('/service/parts?limit=200'),
+    request('/finance/parties?type=CUSTOMER&limit=200'),
+    request('/inventory/items?limit=200'),
+    request('/inventory/warehouses?limit=200'),
+  ])
+  const failures = []
+  const assign = (result, label, setter, key) => {
+    if (result.status === 'fulfilled') setter(financeList(result.value, key))
+    else failures.push(`${label}: ${result.reason?.message || 'unavailable'}`)
+  }
+  assign(results[0], 'Contracts', (value) => { state.serviceContracts = value }, 'contracts')
+  assign(results[1], 'Tickets', (value) => { state.serviceTickets = value }, 'tickets')
+  assign(results[2], 'Work orders', (value) => { state.serviceWorkOrders = value }, 'workOrders')
+  assign(results[3], 'Visits', (value) => { state.serviceVisits = value }, 'visits')
+  assign(results[4], 'Part usage', (value) => { state.servicePartUsages = value }, 'partUsages')
+  assign(results[5], 'Customers', (value) => { state.serviceCustomers = value }, 'parties')
+  assign(results[6], 'Items', (value) => { state.inventoryItems = value }, 'items')
+  assign(results[7], 'Warehouses', (value) => { state.inventoryWarehouses = value }, 'warehouses')
+  renderService()
+  if (failures.length) setError('serviceError', failures.join(' · '))
+}
+
+async function runServiceAction(action, id) {
+  if (!id) return false
+  const paths = {
+    'activate-contract': `/service/contracts/${encodeURIComponent(id)}/activate`,
+    'start-ticket': `/service/tickets/${encodeURIComponent(id)}/start`,
+    'resolve-ticket': `/service/tickets/${encodeURIComponent(id)}/resolve`,
+    'start-workorder': `/service/work-orders/${encodeURIComponent(id)}/start`,
+    'complete-workorder': `/service/work-orders/${encodeURIComponent(id)}/complete`,
+    'checkin-visit': `/service/visits/${encodeURIComponent(id)}/check-in`,
+    'complete-visit': `/service/visits/${encodeURIComponent(id)}/complete`,
+  }
+  const path = paths[action]
+  if (!path) return false
+  const body = action === 'resolve-ticket' ? { resolutionNotes: 'Resolved from ERP' } : {}
+  return serviceMutation(path, body, 'serviceActionStatus', `${serviceActionLabel(action)} completed`)
+}
+
+function onServiceEvent() {
+  // Service frames carry IDs/classification only. Never treat a frame as
+  // content — reload through the authenticated API instead.
+  if (state.view !== 'service') return
+  if (serviceRefreshTimer) clearTimeout(serviceRefreshTimer)
+  serviceRefreshTimer = setTimeout(() => {
+    serviceRefreshTimer = null
+    loadService()
+  }, 250)
+}
+
+$('refreshService').onclick = () => loadService()
+
+$('serviceContractForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const itemId = serviceOptionalId('svcContractItem')
+  const item = state.inventoryItems.find((entry) => entry.id === itemId)
+  const monthlyFeeCents = Number($('svcContractMonthlyCents').value)
+  const body = {
+    customerId: $('svcContractCustomer').value,
+    startDate: $('svcContractStart').value,
+    responseSlaHours: Number($('svcContractResponseHours').value),
+    resolutionSlaHours: Number($('svcContractResolutionHours').value),
+    monthlyFeeCents,
+    lines: [{
+      ...(itemId ? { itemId } : {}),
+      description: item ? `${item.code} — ${item.name}` : 'Service coverage line',
+      coverageQty: 1,
+      unitPriceCents: monthlyFeeCents,
+    }],
+  }
+  const endDate = $('svcContractEnd').value
+  if (endDate) body.endDate = endDate
+  const notes = serviceNotes('svcContractNotes')
+  if (notes) body.notes = notes
+  await serviceMutation('/service/contracts', body, 'svcContractStatus', 'Contract created as DRAFT')
+}
+
+$('serviceTicketForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const contractId = serviceOptionalId('svcTicketContract')
+  const body = {
+    ...(contractId ? { contractId } : { customerId: $('svcTicketCustomer').value }),
+    subject: $('svcTicketSubject').value,
+    priority: $('svcTicketPriority').value,
+  }
+  const description = serviceNotes('svcTicketDescription')
+  if (description) body.description = description
+  await serviceMutation('/service/tickets', body, 'svcTicketStatus', 'Ticket opened')
+}
+
+$('serviceWorkOrderForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const itemId = serviceOptionalId('svcWorkOrderItem')
+  const item = state.inventoryItems.find((entry) => entry.id === itemId)
+  const body = {
+    ticketId: $('svcWorkOrderTicket').value,
+    summary: $('svcWorkOrderSummary').value,
+    lines: [{
+      ...(itemId ? { itemId } : {}),
+      description: item ? `${item.code} — ${item.name}` : 'Technician labour',
+      qty: Number($('svcWorkOrderQty').value),
+      unitPriceCents: Number($('svcWorkOrderUnitPriceCents').value),
+    }],
+  }
+  const technicianId = serviceOptionalId('svcWorkOrderTechnician')
+  if (technicianId) body.technicianId = technicianId
+  await serviceMutation('/service/work-orders', body, 'svcWorkOrderStatus', 'Work order created as DRAFT')
+}
+
+$('serviceVisitForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const plannedAt = $('svcVisitPlannedAt').value
+  if (!plannedAt) {
+    setError('serviceError', 'Choose a planned date and time')
+    return
+  }
+  const body = {
+    workOrderId: $('svcVisitWorkOrder').value,
+    plannedAt: new Date(plannedAt).toISOString(),
+  }
+  const technicianId = serviceOptionalId('svcVisitTechnician')
+  if (technicianId) body.technicianId = technicianId
+  await serviceMutation('/service/visits', body, 'svcVisitStatus', 'Visit planned')
+}
+
+$('servicePartForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const body = {
+    workOrderId: $('svcPartWorkOrder').value,
+    itemId: $('svcPartItem').value,
+    qty: Number($('svcPartQty').value),
+    unitCostCents: Number($('svcPartUnitCostCents').value),
+    unitPriceCents: Number($('svcPartUnitPriceCents').value),
+  }
+  const warehouseId = serviceOptionalId('svcPartWarehouse')
+  if (warehouseId) body.warehouseId = warehouseId
+  await serviceMutation('/service/parts', body, 'svcPartStatus', 'Part usage recorded')
+}
+
 // ---------------------------------------------------------------- realtime
 
 function loadSocketClient() {
@@ -2784,6 +3111,8 @@ function connectRealtime() {
     for (const event of INVENTORY_EVENTS) socket.on(event, onInventoryEvent)
     // Phase 9 procurement events are ID/classification-only company-room signals.
     for (const event of PROCUREMENT_EVENTS) socket.on(event, onProcurementEvent)
+    // Phase 10 service events are ID/classification-only company-room signals.
+    for (const event of SERVICE_EVENTS) socket.on(event, onServiceEvent)
   })
 }
 
@@ -2815,6 +3144,7 @@ function showView(view) {
   else if (view === 'sales') loadSales()
   else if (view === 'inventory') loadInventory()
   else if (view === 'procurement') loadProcurement()
+  else if (view === 'service') loadService()
 }
 
 $('tabInbox').onclick = () => showView('inbox')
@@ -2828,6 +3158,7 @@ $('tabFinance').onclick = () => showView('finance')
 $('tabSales').onclick = () => showView('sales')
 $('tabInventory').onclick = () => showView('inventory')
 $('tabProcurement').onclick = () => showView('procurement')
+$('tabService').onclick = () => showView('service')
 
 // ------------------------------------------------------------------- boot
 
