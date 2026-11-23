@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Comet Healthcare Enterprise API
-  version: 0.10.0-phase.10
+  version: 0.11.0-phase.11
   summary: REST and webhook contract for the Comet Healthcare enterprise platform.
   description: |
     Phase 3 adds local identity, sessions, MFA, OIDC, organisation directory and audit.
@@ -127,6 +127,28 @@ info:
     `finance.statutory.read/write/verify`, `finance.statement.read` and
     `finance.etims.read/write`. `Idempotency-Key` remains scoped to messaging sends only;
     no finance endpoint consumes it.
+
+    Phase 11 adds HR under `/api/hr`: employees, employment contracts, versioned payroll rates,
+    leave requests, attendance and payroll runs/lines. All seven HR tables are tenant/branch scoped
+    with RLS. Money is integer cents (`*Cents`); rate percentages are integer basis points in
+    `rateBps`. There are no hardcoded PAYE/NSSF/SHIF/Housing Levy values: every statutory component
+    is resolved from the most recent VERIFIED, effective `PayrollRate` row on the period end date,
+    and a missing component fails calculation with 409. New rate rows are always UNVERIFIED; a
+    separate authorised verify action is required before any calculation can use them. See ADR-0016.
+
+    Bank name/number and KRA PIN are AES-GCM encrypted at rest. DTOs expose only presence flags
+    and masked suffixes (`bankNameMasked`, `bankAccountMasked`, `kraPinMasked`) — never plaintext
+    or encrypted envelopes. DLP fails closed. Domain events and sockets carry IDs and classification
+    only; clients refetch all values through the authenticated API. Payroll posting is ledger-only:
+    it creates a balanced finance journal when the caller also has `hr.payroll.post` and
+    `finance.journal.post`. No external filing, payment, payslip email or bank transfer occurs.
+
+    Phase 11 permissions: `hr.employee.read/write`, `hr.contract.read/write`,
+    `hr.payrollrate.read/write/verify`, `hr.leave.read/write/approve`,
+    `hr.attendance.read/write` and `hr.payroll.read/write/approve/post`. Management can maintain
+    records but cannot verify rates or post payroll; compliance verifies rates, and posting
+    additionally requires finance journal-posting permission. `Idempotency-Key` remains scoped to
+    messaging sends only; HR writes are not replay-safe.
   contact:
     name: Comet Healthcare Platform Team
   license:
@@ -159,6 +181,8 @@ tags:
     description: Requisitions, purchase orders, goods receipts, supplier returns and three-way matching. Added in Phase 9.
   - name: Service
     description: Service contracts/SLAs, tickets, work orders, visits, part usage and optional finance invoice creation. Added in Phase 10.
+  - name: HR
+    description: Employee records, contracts, verified payroll rates, leave, attendance and payroll runs. Added in Phase 11.
 x-phase-roadmap:
   phase1: Architecture and this skeleton only
   phase2: ERD, migrations, workspace split, shared contracts
@@ -170,7 +194,7 @@ x-phase-roadmap:
   phase8: Complete - /api/inventory (items, warehouses, batches, balances, movements, transfers, counts, reorder alerts)
   phase9: Complete - /api/procurement (requisitions, orders, goods receipts, supplier returns, three-way matches)
   phase10: Complete - /api/service (contracts/SLAs, tickets, work orders, visits, part usage, optional invoice creation)
-  phase11: /api/hr
+  phase11: Complete - /api/hr (employees, contracts, verified payroll rates, leave, attendance, payroll runs and lines)
   phase12: /api/projects
   phase13: /api/manufacturing
   phase14: /api/reporting
@@ -235,6 +259,10 @@ x-realtime:
     service:ticket: 'ServiceTicketOpened/Assigned/Resolved; refetch GET /api/service/tickets.'
     service:workorder: 'WorkOrderCompleted; refetch GET /api/service/work-orders.'
     service:visit: 'ServiceVisitCompleted; refetch GET /api/service/visits.'
+    hr:employee: 'EmployeeCreated; refetch GET /api/hr/employees.'
+    hr:leave: 'LeaveApproved; refetch GET /api/hr/leave.'
+    hr:rate: 'PayrollRateVerified; refetch GET /api/hr/rates.'
+    hr:payroll: 'PayrollRunCalculated/Approved; refetch GET /api/hr/payroll/runs.'
   eventPayload:
     eventId: string
     type: string
@@ -352,6 +380,21 @@ x-realtime:
   phase10Fallback: |
     Authenticated polling of /api/service contracts, tickets, work orders, visits and part usage
     when sockets are unavailable. Event data is never rendered directly.
+  phase11EventMap:
+    EmployeeCreated: hr:employee
+    LeaveApproved: hr:leave
+    PayrollRateVerified: hr:rate
+    PayrollRunCalculated: hr:payroll
+    PayrollRunApproved: hr:payroll
+  phase11Rooms:
+    - company:{companyId} only (never user, thread, inbox or branch rooms)
+  phase11PayloadRule: |
+    HR domain events and socket frames carry IDs and classification only. No employee name, bank
+    or tax reference, pay amount, rate percentage, leave reason, status text or document number
+    is placed on an event; clients always refetch through the authenticated /api/hr endpoints.
+  phase11Fallback: |
+    Authenticated polling of /api/hr employees, contracts, rates, leave, attendance and payroll runs
+    when sockets are unavailable. Event data is never rendered directly.
 x-idempotency:
   requiredFor:
     - POST /api/messaging/threads/{id}/messages
@@ -377,6 +420,10 @@ x-idempotency:
     Not required. No /api/service endpoint consumes an Idempotency-Key. Contract activation,
     ticket transitions, work order completion, visit completion, part issues and invoice creation
     are not replay-safe; clients must inspect the returned status before retrying.
+  phase11: |
+    Not required. No /api/hr endpoint consumes an Idempotency-Key. Rate verification, leave decisions,
+    contract transitions and calculate/approve/post actions are not replay-safe; clients must inspect
+    the returned status before retrying.
 x-finance:
   money: All finance API monetary fields are integer cents (`*Cents`); reports use the same unit. The eTIMS payload is a separate external-style representation using decimal strings and is not a finance money field.
   rates: |
@@ -582,6 +629,52 @@ x-service:
     - service:workorder
     - service:visit
   idempotency: Idempotency-Key is scoped to messaging sends only; service writes are not replay-safe.
+x-hr:
+  money: All HR monetary fields are integer cents (`*Cents`). Statutory components and basis-point rates come only from VERIFIED PayrollRate rows.
+  dates: Document dates are strict `YYYY-MM-DD`; timestamps are ISO date-times.
+  rates: |
+    A `PayrollRate` row is always created UNVERIFIED. `verify` is a separate authorised action that
+    stamps `verifiedById`/`verifiedAt`. Payroll resolution selects the most recent VERIFIED row
+    whose effective interval covers the run period end. PAYE, NSSF_EMPLOYEE, NSSF_EMPLOYER, SHIF
+    and HOUSING_LEVY must all resolve or calculation fails with 409; no statutory value is hardcoded.
+  sensitiveData: |
+    Bank name/number and KRA PIN are encrypted at rest (AES-GCM). DTOs expose only presence flags
+    (`hasBankDetails`, `hasKraPin`) and masked suffixes; plaintext and encrypted envelopes are never
+    emitted. This is consistent with the ODPC sensitivity classification of HR/payroll data.
+  dlp: Free text is inspected with the shared DLP patterns and fails closed with 422 and finding types only.
+  tenantScope: companyId comes from the bearer token; strict schemas reject a client-supplied companyId, status, verifiedBy or calculated total. Branch scope allows organisation-wide (null branch) rows.
+  events: IDs and classification only; company-room sockets are invalidation signals.
+  transitions:
+    contract: 'DRAFT -> ACTIVE/CANCELLED; ACTIVE -> EXPIRED/TERMINATED/CANCELLED'
+    leave: 'DRAFT/SUBMITTED -> APPROVED/REJECTED; annual approval decrements the employee leave balance'
+    payrollRun: 'DRAFT -> CALCULATED -> APPROVED -> POSTED'
+  posting: |
+    POST creates one balanced finance journal with system accounts EXPENSE, AP_CONTROL and BANK and
+    requires both `hr.payroll.post` and `finance.journal.post`. It is ledger-only: no filing, payment,
+    payslip email or bank transfer is performed.
+  permissions:
+    - hr.employee.read
+    - hr.employee.write
+    - hr.contract.read
+    - hr.contract.write
+    - hr.payrollrate.read
+    - hr.payrollrate.write
+    - hr.payrollrate.verify
+    - hr.leave.read
+    - hr.leave.write
+    - hr.leave.approve
+    - hr.attendance.read
+    - hr.attendance.write
+    - hr.payroll.read
+    - hr.payroll.write
+    - hr.payroll.approve
+    - hr.payroll.post
+  socketEvents:
+    - hr:employee
+    - hr:leave
+    - hr:rate
+    - hr:payroll
+  idempotency: Idempotency-Key is scoped to messaging sends only; HR writes are not replay-safe.
 paths:
   /api/health/live:
     get:
@@ -5995,6 +6088,852 @@ paths:
         '401': { description: Missing or invalid bearer token. }
         '403': { description: Missing required service permission. }
         '404': { description: Tenant-scoped record not found. }
+  /api/hr/employees:
+    post:
+      tags: [HR]
+      summary: Create an employee
+      operationId: createHrEmployee
+      x-permission: hr.employee.write
+      security:
+        - bearerAuth: []
+      description: Requires `hr.employee.write`. Strict, DLP-checked body; bank/KRA values are encrypted server-side. companyId is derived from the bearer token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HrEmployeeCreate'
+      responses:
+        '201':
+          description: Created; bank/KRA fields appear only as presence flags and masks.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [employee]
+                properties:
+                  employee:
+                    $ref: '#/components/schemas/HrEmployee'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required HR permission. }
+        '404': { description: Tenant-scoped related record not found. }
+    get:
+      tags: [HR]
+      summary: List employees
+      operationId: listHrEmployees
+      x-permission: hr.employee.read
+      security:
+        - bearerAuth: []
+      description: Requires `hr.employee.read`. Optional `status` and `branchId` filters are strictly validated.
+      parameters:
+        - $ref: '#/components/parameters/HrLimit'
+      responses:
+        '200':
+          description: Success.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HrEmployeeList'
+        '400': { description: "Invalid request or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required HR permission. }
+  /api/hr/employees/{id}:
+    get:
+      tags: [HR]
+      summary: Get an employee
+      operationId: getHrEmployee
+      x-permission: hr.employee.read
+      security:
+        - bearerAuth: []
+      description: Requires `hr.employee.read`. Read is audited with IDs and classification only.
+      parameters:
+        - $ref: '#/components/parameters/HrDocumentId'
+      responses:
+        '200':
+          description: Success.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [employee]
+                properties:
+                  employee:
+                    $ref: '#/components/schemas/HrEmployee'
+        '400': { description: "Invalid request or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required HR permission. }
+        '404': { description: Tenant-scoped record not found. }
+    patch:
+      tags: [HR]
+      summary: Update an employee
+      operationId: updateHrEmployee
+      x-permission: hr.employee.write
+      security:
+        - bearerAuth: []
+      description: Requires `hr.employee.write`. Only supplied fields are changed; encrypted fields accept new plaintext but DTOs only return masks.
+      parameters:
+        - $ref: '#/components/parameters/HrDocumentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HrEmployeeUpdate'
+      responses:
+        '200':
+          description: Updated.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [employee]
+                properties:
+                  employee:
+                    $ref: '#/components/schemas/HrEmployee'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required HR permission. }
+        '404': { description: Tenant-scoped record not found. }
+  /api/hr/contracts:
+    post:
+      tags: [HR]
+      summary: Create an employment contract
+      operationId: createHrContract
+      x-permission: hr.contract.write
+      security:
+        - bearerAuth: []
+      description: Requires `hr.contract.write`. New contracts are always DRAFT with a server-assigned number.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HrContractCreate'
+      responses:
+        '201':
+          description: Created as DRAFT.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [contract]
+                properties:
+                  contract:
+                    $ref: '#/components/schemas/HrContract'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required HR permission. }
+        '404': { description: Tenant-scoped employee not found. }
+        '409': { description: Invalid date range or business conflict. }
+    get:
+      tags: [HR]
+      summary: List employment contracts
+      operationId: listHrContracts
+      x-permission: hr.contract.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/HrLimit'
+      responses:
+        '200':
+          description: Success.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HrContractList'
+        '400': { description: "Invalid request or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required HR permission. }
+  /api/hr/contracts/{id}:
+    get:
+      tags: [HR]
+      summary: Get an employment contract
+      operationId: getHrContract
+      x-permission: hr.contract.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/HrDocumentId'
+      responses:
+        '200':
+          description: Success.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [contract]
+                properties:
+                  contract:
+                    $ref: '#/components/schemas/HrContract'
+        '400': { description: "Invalid request or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required HR permission. }
+        '404': { description: Tenant-scoped record not found. }
+  /api/hr/contracts/{id}/activate:
+    post:
+      tags: [HR]
+      summary: Activate an employment contract
+      operationId: activateHrContract
+      x-permission: hr.contract.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/HrDocumentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HrAction'
+      responses:
+        '200':
+          description: Contract activated.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [contract]
+                properties:
+                  contract:
+                    $ref: '#/components/schemas/HrContract'
+        '400': { description: "Invalid request or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required HR permission. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Invalid status transition. }
+  /api/hr/contracts/{id}/expire:
+    post:
+      tags: [HR]
+      summary: Expire an employment contract
+      operationId: expireHrContract
+      x-permission: hr.contract.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/HrDocumentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HrAction'
+      responses:
+        '200':
+          description: Contract expired.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [contract]
+                properties:
+                  contract:
+                    $ref: '#/components/schemas/HrContract'
+        '400': { description: "Invalid request or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required HR permission. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Invalid status transition. }
+  /api/hr/contracts/{id}/terminate:
+    post:
+      tags: [HR]
+      summary: Terminate an employment contract
+      operationId: terminateHrContract
+      x-permission: hr.contract.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/HrDocumentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HrAction'
+      responses:
+        '200':
+          description: Contract terminated.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [contract]
+                properties:
+                  contract:
+                    $ref: '#/components/schemas/HrContract'
+        '400': { description: "Invalid request or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required HR permission. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Invalid status transition. }
+  /api/hr/contracts/{id}/cancel:
+    post:
+      tags: [HR]
+      summary: Cancel an employment contract
+      operationId: cancelHrContract
+      x-permission: hr.contract.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/HrDocumentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HrAction'
+      responses:
+        '200':
+          description: Contract cancelled.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [contract]
+                properties:
+                  contract:
+                    $ref: '#/components/schemas/HrContract'
+        '400': { description: "Invalid request or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required HR permission. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Invalid status transition. }
+  /api/hr/rates:
+    post:
+      tags: [HR]
+      summary: Create a payroll rate
+      operationId: createHrPayrollRate
+      x-permission: hr.payrollrate.write
+      security:
+        - bearerAuth: []
+      description: The new row is always UNVERIFIED and cannot be used by payroll until verified.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HrPayrollRateCreate'
+      responses:
+        '201':
+          description: Created as UNVERIFIED.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rate]
+                properties:
+                  rate:
+                    $ref: '#/components/schemas/HrPayrollRate'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required HR permission. }
+    get:
+      tags: [HR]
+      summary: List payroll rates
+      operationId: listHrPayrollRates
+      x-permission: hr.payrollrate.read
+      security:
+        - bearerAuth: []
+      description: Optional `kind` and `status` filters. `verifiedById` and `verifiedAt` are read-only metadata.
+      parameters:
+        - $ref: '#/components/parameters/HrLimit'
+      responses:
+        '200':
+          description: Success.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HrPayrollRateList'
+        '400': { description: "Invalid request or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required HR permission. }
+  /api/hr/rates/{id}:
+    get:
+      tags: [HR]
+      summary: Get a payroll rate
+      operationId: getHrPayrollRate
+      x-permission: hr.payrollrate.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/HrDocumentId'
+      responses:
+        '200':
+          description: Success.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rate]
+                properties:
+                  rate:
+                    $ref: '#/components/schemas/HrPayrollRate'
+        '400': { description: "Invalid request or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required HR permission. }
+        '404': { description: Tenant-scoped record not found. }
+  /api/hr/rates/{id}/verify:
+    post:
+      tags: [HR]
+      summary: Verify a payroll rate
+      operationId: verifyHrPayrollRate
+      x-permission: hr.payrollrate.verify
+      security:
+        - bearerAuth: []
+      description: Requires `hr.payrollrate.verify`. The authenticated principal is stamped as verifier; UNVERIFIED rows never reach payroll.
+      parameters:
+        - $ref: '#/components/parameters/HrDocumentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HrPayrollRateVerify'
+      responses:
+        '200':
+          description: Rate verified.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rate]
+                properties:
+                  rate:
+                    $ref: '#/components/schemas/HrPayrollRate'
+        '400': { description: "Invalid request or DLP finding." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `hr.payrollrate.verify`. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Rate already verified or no authenticated principal. }
+  /api/hr/leave:
+    post:
+      tags: [HR]
+      summary: Submit a leave request
+      operationId: createHrLeaveRequest
+      x-permission: hr.leave.write
+      security:
+        - bearerAuth: []
+      description: Creates a SUBMITTED request; days may not exceed the inclusive date range.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HrLeaveCreate'
+      responses:
+        '201':
+          description: Created as SUBMITTED.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [leaveRequest]
+                properties:
+                  leaveRequest:
+                    $ref: '#/components/schemas/HrLeaveRequest'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required HR permission. }
+        '404': { description: Tenant-scoped employee not found. }
+        '409': { description: Invalid date range or business conflict. }
+    get:
+      tags: [HR]
+      summary: List leave requests
+      operationId: listHrLeaveRequests
+      x-permission: hr.leave.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/HrLimit'
+      responses:
+        '200':
+          description: Success.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HrLeaveList'
+        '400': { description: "Invalid request or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required HR permission. }
+  /api/hr/leave/{id}:
+    get:
+      tags: [HR]
+      summary: Get a leave request
+      operationId: getHrLeaveRequest
+      x-permission: hr.leave.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/HrDocumentId'
+      responses:
+        '200':
+          description: Success.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [leaveRequest]
+                properties:
+                  leaveRequest:
+                    $ref: '#/components/schemas/HrLeaveRequest'
+        '400': { description: "Invalid request or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required HR permission. }
+        '404': { description: Tenant-scoped record not found. }
+  /api/hr/leave/{id}/decision:
+    post:
+      tags: [HR]
+      summary: Approve or reject a leave request
+      operationId: decideHrLeaveRequest
+      x-permission: hr.leave.approve
+      security:
+        - bearerAuth: []
+      description: An annual-leave approval decrements the employee balance; insufficient balance fails with 409.
+      parameters:
+        - $ref: '#/components/parameters/HrDocumentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HrLeaveDecision'
+      responses:
+        '200':
+          description: Decision recorded.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [leaveRequest]
+                properties:
+                  leaveRequest:
+                    $ref: '#/components/schemas/HrLeaveRequest'
+        '400': { description: "Invalid request or DLP finding." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `hr.leave.approve`. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Invalid decision transition or insufficient leave balance. }
+  /api/hr/attendance:
+    post:
+      tags: [HR]
+      summary: Record attendance
+      operationId: upsertHrAttendance
+      x-permission: hr.attendance.write
+      security:
+        - bearerAuth: []
+      description: Upserts by tenant + employee + date; resubmitting the same day updates the record.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HrAttendanceUpsert'
+      responses:
+        '201':
+          description: Attendance recorded or updated.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [attendance]
+                properties:
+                  attendance:
+                    $ref: '#/components/schemas/HrAttendance'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required HR permission. }
+        '404': { description: Tenant-scoped employee not found. }
+    get:
+      tags: [HR]
+      summary: List attendance records
+      operationId: listHrAttendance
+      x-permission: hr.attendance.read
+      security:
+        - bearerAuth: []
+      description: Optional `employeeId`, `from` and `to` filters.
+      parameters:
+        - $ref: '#/components/parameters/HrLimit'
+      responses:
+        '200':
+          description: Success.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HrAttendanceList'
+        '400': { description: "Invalid request or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required HR permission. }
+  /api/hr/attendance/{id}:
+    get:
+      tags: [HR]
+      summary: Get an attendance record
+      operationId: getHrAttendance
+      x-permission: hr.attendance.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/HrDocumentId'
+      responses:
+        '200':
+          description: Success.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [attendance]
+                properties:
+                  attendance:
+                    $ref: '#/components/schemas/HrAttendance'
+        '400': { description: "Invalid request or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required HR permission. }
+        '404': { description: Tenant-scoped record not found. }
+  /api/hr/payroll/runs:
+    post:
+      tags: [HR]
+      summary: Create a payroll run
+      operationId: createHrPayrollRun
+      x-permission: hr.payroll.write
+      security:
+        - bearerAuth: []
+      description: Snapshots eligible employees; omitting employeeIds selects active/probation/on-leave employees in scope.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HrPayrollRunCreate'
+      responses:
+        '201':
+          description: Created as DRAFT.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [payrollRun]
+                properties:
+                  payrollRun:
+                    $ref: '#/components/schemas/HrPayrollRun'
+        '400': { description: "Invalid request, DLP finding or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required HR permission. }
+        '404': { description: Tenant-scoped employee not found. }
+        '409': { description: No eligible employees or invalid period. }
+    get:
+      tags: [HR]
+      summary: List payroll runs
+      operationId: listHrPayrollRuns
+      x-permission: hr.payroll.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/HrLimit'
+      responses:
+        '200':
+          description: Success.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HrPayrollRunList'
+        '400': { description: "Invalid request or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required HR permission. }
+  /api/hr/payroll/runs/{id}:
+    get:
+      tags: [HR]
+      summary: Get a payroll run with lines
+      operationId: getHrPayrollRun
+      x-permission: hr.payroll.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/HrDocumentId'
+      responses:
+        '200':
+          description: Success; includes persisted calculated lines and their rate snapshots.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [payrollRun]
+                properties:
+                  payrollRun:
+                    $ref: '#/components/schemas/HrPayrollRun'
+        '400': { description: "Invalid request or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required HR permission. }
+        '404': { description: Tenant-scoped record not found. }
+  /api/hr/payroll/runs/{id}/calculate:
+    post:
+      tags: [HR]
+      summary: Calculate a payroll run
+      operationId: calculateHrPayrollRun
+      x-permission: hr.payroll.write
+      security:
+        - bearerAuth: []
+      description: Resolves all five statutory components from VERIFIED effective rates. Missing rates, active contracts or safe-integer headroom fail with 409.
+      parameters:
+        - $ref: '#/components/parameters/HrDocumentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HrAction'
+      responses:
+        '200':
+          description: Calculated; lines and totals are persisted.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [payrollRun]
+                properties:
+                  payrollRun:
+                    $ref: '#/components/schemas/HrPayrollRun'
+        '400': { description: "Invalid request or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing required HR permission. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Missing VERIFIED rate, missing active contract, ineligible employee or invalid state. }
+  /api/hr/payroll/runs/{id}/approve:
+    post:
+      tags: [HR]
+      summary: Approve a calculated payroll run
+      operationId: approveHrPayrollRun
+      x-permission: hr.payroll.approve
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/HrDocumentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HrAction'
+      responses:
+        '200':
+          description: Approved.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [payrollRun]
+                properties:
+                  payrollRun:
+                    $ref: '#/components/schemas/HrPayrollRun'
+        '400': { description: "Invalid request or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `hr.payroll.approve`. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Only CALCULATED runs can be approved. }
+  /api/hr/payroll/runs/{id}/post:
+    post:
+      tags: [HR]
+      summary: Post an approved payroll run to the finance ledger
+      operationId: postHrPayrollRun
+      x-permission: hr.payroll.post
+      x-additional-permission: finance.journal.post
+      security:
+        - bearerAuth: []
+      description: Requires both `hr.payroll.post` and `finance.journal.post`. Creates one balanced journal; no external payment or filing.
+      parameters:
+        - $ref: '#/components/parameters/HrDocumentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HrAction'
+      responses:
+        '200':
+          description: Posted with a linked finance journal.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [payrollRun]
+                properties:
+                  payrollRun:
+                    $ref: '#/components/schemas/HrPayrollRun'
+        '400': { description: "Invalid request or strict schema violation." }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `hr.payroll.post` or `finance.journal.post`. }
+        '404': { description: Tenant-scoped record not found. }
+        '409': { description: Only APPROVED runs can be posted, totals are unbalanced, or system accounts are missing. }
 components:
   securitySchemes:
     bearerAuth:
@@ -6069,6 +7008,16 @@ components:
       required: true
       description: Opaque procurement document ID scoped to the caller's tenant and branch.
       schema: { type: string }
+    HrDocumentId:
+      name: id
+      in: path
+      required: true
+      description: Opaque HR record ID scoped to the caller's tenant and branch.
+      schema: { type: string, minLength: 1, maxLength: 80 }
+    HrLimit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
   schemas:
     Inbox:
       type: object
@@ -8388,5 +9337,346 @@ components:
         itemId: { type: string }
         inventoryIssued: { type: string, enum: [true, false] }
         limit: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    HrAction:
+      type: object
+      additionalProperties: false
+      description: Empty body for ID-only lifecycle actions.
+      properties: {}
+    HrEmployee:
+      type: object
+      description: Bank/KRA values are present only as encrypted-at-rest masks and presence flags.
+      required: [id, employeeNumber, firstName, lastName, status, employmentType, hiredAt, annualLeaveBalanceDays, hasBankDetails, hasKraPin, classification, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        employeeNumber: { type: string }
+        firstName: { type: string }
+        lastName: { type: string }
+        email: { type: string, format: email, nullable: true }
+        phone: { type: string, nullable: true }
+        userId: { type: string, nullable: true }
+        branchId: { type: string, nullable: true }
+        departmentId: { type: string, nullable: true }
+        jobTitleId: { type: string, nullable: true }
+        status: { type: string, enum: [ACTIVE, PROBATION, ON_LEAVE, SUSPENDED, TERMINATED] }
+        employmentType: { type: string, enum: [PERMANENT, CONTRACT, INTERN, CASUAL] }
+        hiredAt: { type: string, format: date-time }
+        terminatedAt: { type: string, format: date-time, nullable: true }
+        annualLeaveBalanceDays: { type: integer, minimum: 0, maximum: 366 }
+        hasBankDetails: { type: boolean }
+        hasKraPin: { type: boolean }
+        bankNameMasked: { type: string, nullable: true, description: "Masked suffix only, e.g. ••••1234." }
+        bankAccountMasked: { type: string, nullable: true, description: "Masked suffix only, e.g. ••••1234." }
+        kraPinMasked: { type: string, nullable: true, description: "Masked suffix only, e.g. ••••1234." }
+        notes: { type: string, nullable: true, description: DLP-checked. }
+        classification: { $ref: '#/components/schemas/Classification' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    HrEmployeeCreate:
+      type: object
+      additionalProperties: false
+      required: [employeeNumber, firstName, lastName, hiredAt]
+      description: companyId, masks and classification-derived metadata are assigned by the server.
+      properties:
+        employeeNumber: { type: string, minLength: 2, maxLength: 60, pattern: '^[A-Za-z0-9_-]+$' }
+        firstName: { type: string, minLength: 1, maxLength: 120, description: DLP-checked. }
+        lastName: { type: string, minLength: 1, maxLength: 120, description: DLP-checked. }
+        email: { type: string, format: email, maxLength: 190, nullable: true }
+        phone: { type: string, maxLength: 40, nullable: true }
+        userId: { type: string, maxLength: 80, nullable: true }
+        branchId: { type: string, maxLength: 80, nullable: true }
+        departmentId: { type: string, maxLength: 80, nullable: true }
+        jobTitleId: { type: string, maxLength: 80, nullable: true }
+        status: { type: string, enum: [ACTIVE, PROBATION, ON_LEAVE, SUSPENDED, TERMINATED], default: PROBATION }
+        employmentType: { type: string, enum: [PERMANENT, CONTRACT, INTERN, CASUAL], default: PERMANENT }
+        hiredAt: { type: string, format: date }
+        annualLeaveBalanceDays: { type: integer, minimum: 0, maximum: 366, default: 0 }
+        bankName: { type: string, maxLength: 120, nullable: true, description: "Encrypted at rest; never echoed in plaintext." }
+        bankAccount: { type: string, maxLength: 60, nullable: true, description: "Encrypted at rest; never echoed in plaintext." }
+        kraPin: { type: string, maxLength: 24, description: "Encrypted at rest; KRA PIN must be the entire field." }
+        notes: { type: string, maxLength: 2000, nullable: true, description: DLP-checked. }
+        classification: { $ref: '#/components/schemas/Classification', default: CONFIDENTIAL }
+    HrEmployeeUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        firstName: { type: string, minLength: 1, maxLength: 120 }
+        lastName: { type: string, minLength: 1, maxLength: 120 }
+        email: { type: string, format: email, maxLength: 190, nullable: true }
+        phone: { type: string, maxLength: 40, nullable: true }
+        userId: { type: string, maxLength: 80, nullable: true }
+        branchId: { type: string, maxLength: 80, nullable: true }
+        departmentId: { type: string, maxLength: 80, nullable: true }
+        jobTitleId: { type: string, maxLength: 80, nullable: true }
+        status: { type: string, enum: [ACTIVE, PROBATION, ON_LEAVE, SUSPENDED, TERMINATED] }
+        employmentType: { type: string, enum: [PERMANENT, CONTRACT, INTERN, CASUAL] }
+        hiredAt: { type: string, format: date }
+        terminatedAt: { type: string, format: date, nullable: true }
+        annualLeaveBalanceDays: { type: integer, minimum: 0, maximum: 366 }
+        bankName: { type: string, maxLength: 120, nullable: true }
+        bankAccount: { type: string, maxLength: 60, nullable: true }
+        kraPin: { type: string, maxLength: 24 }
+        notes: { type: string, maxLength: 2000, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    HrEmployeeList:
+      type: object
+      required: [employees]
+      properties:
+        employees:
+          type: array
+          items: { $ref: '#/components/schemas/HrEmployee' }
+    HrContract:
+      type: object
+      required: [id, number, employeeId, status, employmentType, startDate, basicSalaryCents, allowancesCents, currency, classification, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        number: { type: string }
+        employeeId: { type: string }
+        status: { type: string, enum: [DRAFT, ACTIVE, EXPIRED, TERMINATED, CANCELLED] }
+        employmentType: { type: string, enum: [PERMANENT, CONTRACT, INTERN, CASUAL] }
+        startDate: { type: string, format: date-time }
+        endDate: { type: string, format: date-time, nullable: true }
+        basicSalaryCents: { type: integer, minimum: 0 }
+        allowancesCents: { type: integer, minimum: 0 }
+        currency: { type: string, minLength: 1, maxLength: 8 }
+        notes: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        activatedAt: { type: string, format: date-time, nullable: true }
+        terminatedAt: { type: string, format: date-time, nullable: true }
+        cancelledAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    HrContractCreate:
+      type: object
+      additionalProperties: false
+      required: [employeeId, startDate, basicSalaryCents]
+      properties:
+        employeeId: { type: string, minLength: 1, maxLength: 80 }
+        employmentType: { type: string, enum: [PERMANENT, CONTRACT, INTERN, CASUAL], default: PERMANENT }
+        startDate: { type: string, format: date }
+        endDate: { type: string, format: date, nullable: true }
+        basicSalaryCents: { type: integer, minimum: 1 }
+        allowancesCents: { type: integer, minimum: 0, default: 0 }
+        currency: { type: string, minLength: 1, maxLength: 8, default: KES }
+        notes: { type: string, maxLength: 2000, nullable: true }
+        branchId: { type: string, maxLength: 80, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification', default: CONFIDENTIAL }
+    HrContractList:
+      type: object
+      required: [contracts]
+      properties:
+        contracts:
+          type: array
+          items: { $ref: '#/components/schemas/HrContract' }
+    HrPayrollRate:
+      type: object
+      required: [id, kind, rateBps, effectiveFrom, sourceReference, status, classification, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [PAYE, NSSF_EMPLOYEE, NSSF_EMPLOYER, SHIF, HOUSING_LEVY] }
+        rateBps: { type: integer, minimum: 0, maximum: 1000000, description: "10000 bps = 100%. Sourced only from this verified register." }
+        effectiveFrom: { type: string, format: date-time }
+        effectiveTo: { type: string, format: date-time, nullable: true }
+        sourceReference: { type: string, minLength: 4, maxLength: 240 }
+        verificationNote: { type: string, nullable: true }
+        status: { type: string, enum: [UNVERIFIED, VERIFIED] }
+        verifiedById: { type: string, nullable: true }
+        verifiedAt: { type: string, format: date-time, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    HrPayrollRateCreate:
+      type: object
+      additionalProperties: false
+      required: [kind, rateBps, effectiveFrom, sourceReference]
+      description: The server always sets status UNVERIFIED and ignores any client-supplied verification fields.
+      properties:
+        kind: { type: string, enum: [PAYE, NSSF_EMPLOYEE, NSSF_EMPLOYER, SHIF, HOUSING_LEVY] }
+        rateBps: { type: integer, minimum: 0, maximum: 1000000 }
+        effectiveFrom: { type: string, format: date-time }
+        effectiveTo: { type: string, format: date-time, nullable: true }
+        sourceReference: { type: string, minLength: 4, maxLength: 240 }
+        verificationNote: { type: string, maxLength: 2000, nullable: true }
+        branchId: { type: string, maxLength: 80, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification', default: CONFIDENTIAL }
+    HrPayrollRateVerify:
+      type: object
+      additionalProperties: false
+      required: [verificationNote]
+      properties:
+        verificationNote: { type: string, minLength: 5, maxLength: 500, description: DLP-checked. }
+    HrPayrollRateList:
+      type: object
+      required: [rates]
+      properties:
+        rates:
+          type: array
+          items: { $ref: '#/components/schemas/HrPayrollRate' }
+    HrLeaveRequest:
+      type: object
+      required: [id, number, employeeId, type, status, startDate, endDate, days, reason, classification, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        number: { type: string }
+        employeeId: { type: string }
+        type: { type: string, enum: [ANNUAL, SICK, MATERNITY, PATERNITY, UNPAID, COMPASSIONATE] }
+        status: { type: string, enum: [DRAFT, SUBMITTED, APPROVED, REJECTED, TAKEN, CANCELLED] }
+        startDate: { type: string, format: date-time }
+        endDate: { type: string, format: date-time }
+        days: { type: integer, minimum: 1, maximum: 366 }
+        reason: { type: string, description: DLP-checked. }
+        approvedById: { type: string, nullable: true }
+        approvedAt: { type: string, format: date-time, nullable: true }
+        rejectedAt: { type: string, format: date-time, nullable: true }
+        takenAt: { type: string, format: date-time, nullable: true }
+        cancelledAt: { type: string, format: date-time, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    HrLeaveCreate:
+      type: object
+      additionalProperties: false
+      required: [employeeId, type, startDate, endDate, days, reason]
+      properties:
+        employeeId: { type: string, minLength: 1, maxLength: 80 }
+        type: { type: string, enum: [ANNUAL, SICK, MATERNITY, PATERNITY, UNPAID, COMPASSIONATE] }
+        startDate: { type: string, format: date }
+        endDate: { type: string, format: date }
+        days: { type: integer, minimum: 1, maximum: 366, description: "May not exceed the inclusive date range." }
+        reason: { type: string, minLength: 3, maxLength: 1000, description: DLP-checked. }
+        branchId: { type: string, maxLength: 80, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification', default: CONFIDENTIAL }
+    HrLeaveDecision:
+      type: object
+      additionalProperties: false
+      required: [decision]
+      properties:
+        decision: { type: string, enum: [APPROVE, REJECT] }
+        note: { type: string, maxLength: 2000, nullable: true, description: DLP-checked. }
+    HrLeaveList:
+      type: object
+      required: [leaveRequests]
+      properties:
+        leaveRequests:
+          type: array
+          items: { $ref: '#/components/schemas/HrLeaveRequest' }
+    HrAttendance:
+      type: object
+      required: [id, employeeId, date, hoursWorkedMinutes, classification, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        employeeId: { type: string }
+        date: { type: string, format: date }
+        hoursWorkedMinutes: { type: integer, minimum: 0, maximum: 1440 }
+        checkInAt: { type: string, format: date-time, nullable: true }
+        checkOutAt: { type: string, format: date-time, nullable: true }
+        notes: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    HrAttendanceUpsert:
+      type: object
+      additionalProperties: false
+      required: [employeeId, date]
+      properties:
+        employeeId: { type: string, minLength: 1, maxLength: 80 }
+        date: { type: string, format: date }
+        hoursWorkedMinutes: { type: integer, minimum: 0, maximum: 1440, default: 0 }
+        checkInAt: { type: string, format: date-time, nullable: true }
+        checkOutAt: { type: string, format: date-time, nullable: true }
+        notes: { type: string, maxLength: 2000, nullable: true }
+        branchId: { type: string, maxLength: 80, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification', default: CONFIDENTIAL }
+    HrAttendanceList:
+      type: object
+      required: [attendance]
+      properties:
+        attendance:
+          type: array
+          items: { $ref: '#/components/schemas/HrAttendance' }
+    HrRateSnapshot:
+      type: object
+      description: Immutable per-line record of the rate IDs and basis points used at calculation time.
+      required: [rates]
+      properties:
+        rates:
+          type: object
+          additionalProperties:
+            type: object
+            required: [id, rateBps]
+            properties:
+              id: { type: string, nullable: true }
+              rateBps: { type: integer, minimum: 0, maximum: 1000000 }
+    HrPayrollLine:
+      type: object
+      required: [id, runId, employeeId, basicCents, allowancesCents, grossCents, payeCents, nssfEmployeeCents, nssfEmployerCents, shifCents, housingLevyCents, deductionsCents, netCents, classification]
+      properties:
+        id: { type: string }
+        runId: { type: string }
+        employeeId: { type: string }
+        basicCents: { type: integer, minimum: 0 }
+        allowancesCents: { type: integer, minimum: 0 }
+        grossCents: { type: integer, minimum: 0 }
+        payeCents: { type: integer, minimum: 0 }
+        nssfEmployeeCents: { type: integer, minimum: 0 }
+        nssfEmployerCents: { type: integer, minimum: 0 }
+        shifCents: { type: integer, minimum: 0 }
+        housingLevyCents: { type: integer, minimum: 0 }
+        deductionsCents: { type: integer, minimum: 0 }
+        netCents: { type: integer, minimum: 0 }
+        rateSnapshot: { $ref: '#/components/schemas/HrRateSnapshot', nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    HrPayrollRun:
+      type: object
+      required: [id, number, periodStart, periodEnd, employeeIds, status, currency, grossCents, deductionsCents, employerCostCents, netCents, classification, lines, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        number: { type: string }
+        periodStart: { type: string, format: date-time }
+        periodEnd: { type: string, format: date-time }
+        employeeIds:
+          type: array
+          items: { type: string }
+          maxItems: 500
+        status: { type: string, enum: [DRAFT, CALCULATED, APPROVED, POSTED, CANCELLED] }
+        currency: { type: string, minLength: 1, maxLength: 8 }
+        grossCents: { type: integer, minimum: 0 }
+        deductionsCents: { type: integer, minimum: 0 }
+        employerCostCents: { type: integer, minimum: 0 }
+        netCents: { type: integer, minimum: 0 }
+        calculatedAt: { type: string, format: date-time, nullable: true }
+        approvedById: { type: string, nullable: true }
+        approvedAt: { type: string, format: date-time, nullable: true }
+        postedById: { type: string, nullable: true }
+        postedAt: { type: string, format: date-time, nullable: true }
+        financeJournalId: { type: string, nullable: true }
+        notes: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        lines:
+          type: array
+          items: { $ref: '#/components/schemas/HrPayrollLine' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    HrPayrollRunCreate:
+      type: object
+      additionalProperties: false
+      required: [periodStart, periodEnd]
+      description: employeeIds is a snapshot of eligibility; omit it to select all eligible employees in scope.
+      properties:
+        periodStart: { type: string, format: date }
+        periodEnd: { type: string, format: date }
+        employeeIds:
+          type: array
+          items: { type: string, maxLength: 80 }
+          maxItems: 500
+        notes: { type: string, maxLength: 2000, nullable: true }
+        branchId: { type: string, maxLength: 80, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification', default: CONFIDENTIAL }
+    HrPayrollRunList:
+      type: object
+      required: [payrollRuns]
+      properties:
+        payrollRuns:
+          type: array
+          items: { $ref: '#/components/schemas/HrPayrollRun' }
 security:
   - bearerAuth: []

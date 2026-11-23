@@ -51,6 +51,7 @@ import { salesRouter } from './routes/sales.routes.js'
 import { inventoryRouter } from './routes/inventory.routes.js'
 import { procurementRouter } from './routes/procurement.routes.js'
 import { serviceRouter } from './routes/service.routes.js'
+import { hrRouter } from './routes/hr.routes.js'
 import { storageMode } from './lib/object-storage.js'
 import { requireAuth } from './lib/auth.js'
 import { resolvePrincipal } from './lib/authorize.js'
@@ -127,6 +128,7 @@ app.use('/api/sales', salesRouter)
 app.use('/api/inventory', inventoryRouter)
 app.use('/api/procurement', procurementRouter)
 app.use('/api/service', serviceRouter)
+app.use('/api/hr', hrRouter)
 app.use('/api/admin', requireAuth, adminRouter)
 
 // ---- production: serve the built frontend from dist/ and SPA-fallback ----

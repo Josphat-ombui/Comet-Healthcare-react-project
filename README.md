@@ -116,15 +116,23 @@ Phase 5 does not change the seed accounts or their passwords.
   to finance and require a VERIFIED effective VAT rate. The ERP at `:5174` has a Service tab.
   Contract: `docs/openapi/openapi.yaml` (`0.10.0-phase.10`); decision:
   `docs/decisions/ADR-0015-service-sla.md`.
+- **HR (Phase 11)** — tenant/branch-scoped employees, employment contracts, versioned payroll
+  rates, leave requests, attendance and payroll runs/lines. All money is integer cents; every
+  statutory component is resolved from a VERIFIED, effective `PayrollRate` row — no PAYE/NSSF/SHIF/
+  Housing Levy value is hardcoded. New rates start `UNVERIFIED` and require a separate authorised
+  verify action. Bank details and KRA PINs are encrypted at rest and returned only as masked
+  suffixes. The ERP at `:5174` has an HR tab. Contract: `docs/openapi/openapi.yaml`
+  (`0.11.0-phase.11`); decision: `docs/decisions/ADR-0016-payroll-rates.md`.
 
 > **Rate warning:** verify statutory rates against current KRA/Government publications before
-> use — fixture rates are `UNVERIFIED`. Sales may reference an unverified rate on a draft, but
-> finance rejects invoice issue until a VERIFIED, effective rate exists. eTIMS is a ready-only
+> use — finance and HR fixture rates are `UNVERIFIED`. Sales may reference an unverified rate on a
+> draft, but finance rejects invoice issue and HR rejects payroll calculation until a VERIFIED,
+> effective rate exists. eTIMS is a ready-only
 > internal queue; it is **not live KRA filing** and never submits to KRA.
 
 ### API namespaces
 
-| Namespace | Phase 5/6/7/8/9/10 endpoints (summary) |
+| Namespace | Phase 5/6/7/8/9/10/11 endpoints (summary) |
 | --- | --- |
 | `/api/files` | `POST /uploads`, `POST /uploads/:id/confirm`, `GET /?purpose&status&limit`, `GET /:id`, `GET /:id/download`, `POST /:id/versions`, `DELETE /:id`. Local fallback ticket URLs: `/local-upload/:token`, `/local-download/:token`. |
 | `/api/workflow` | `GET|POST /definitions`, `GET|POST /instances`, `GET /tasks?mine=1`, `POST /tasks/:id/decide`, `POST /tasks/:id/delegate`. |
@@ -136,8 +144,9 @@ Phase 5 does not change the seed accounts or their passwords.
 | `/api/inventory` | `GET|POST /items`, `GET|PATCH /items/:id`, `GET|POST /warehouses`, `GET|PATCH /warehouses/:id`, `GET|POST /batches`, `GET|PATCH /batches/:id`, `GET /balances`, `GET /movements`, `GET /alerts`, `POST /stock/receipts`, `POST /stock/issues`, `POST /stock/adjustments`, `GET|POST /transfers`, `GET /transfers/:id`, `POST /transfers/:id/{approve,receive,cancel}`, `GET|POST /counts`, `GET /counts/:id`, `POST /counts/:id/{record,approve,cancel}`. |
 | `/api/procurement` | `GET|POST /requisitions`, `GET /requisitions/:id`, `POST /requisitions/:id/{submit,approve,convert}`, `GET|POST /orders`, `GET /orders/:id`, `POST /orders/:id/{approve,send}`, `GET|POST /receipts`, `GET /receipts/:id`, `POST /receipts/:id/inspect`, `GET|POST /returns`, `GET /returns/:id`, `POST /returns/:id/approve`, `GET|POST /matches`, `GET /matches/:id`, `POST /matches/:id/approve`. |
 | `/api/service` | `GET|POST /contracts`, `GET /contracts/:id`, `POST /contracts/:id/{activate,suspend,cancel}`, `GET|POST /tickets`, `GET /tickets/:id`, `POST /tickets/:id/{assign,start,wait,resolve,close,cancel}`, `GET|POST /work-orders`, `GET /work-orders/:id`, `POST /work-orders/:id/{schedule,start,complete,cancel,invoice}`, `GET|POST /visits`, `GET /visits/:id`, `POST /visits/:id/{check-in,complete,cancel}`, `GET|POST /parts`, `GET /parts/:id`. |
+| `/api/hr` | `GET|POST /employees`, `GET|PATCH /employees/:id`, `GET|POST /contracts`, `GET /contracts/:id`, `POST /contracts/:id/{activate,expire,terminate,cancel}`, `GET|POST /rates`, `GET /rates/:id`, `POST /rates/:id/verify`, `GET|POST /leave`, `GET /leave/:id`, `POST /leave/:id/decision`, `GET|POST /attendance`, `GET /attendance/:id`, `GET|POST /payroll/runs`, `GET /payroll/runs/:id`, `POST /payroll/runs/:id/{calculate,approve,post}`. |
 
-`Idempotency-Key` is required only for Phase 4 messaging sends; Phase 5, Phase 6, Phase 7, Phase 8, Phase 9 and Phase 10 writes do not use it.
+`Idempotency-Key` is required only for Phase 4 messaging sends; Phase 5, Phase 6, Phase 7, Phase 8, Phase 9, Phase 10 and Phase 11 writes do not use it.
 The `finance.etims.submit` worker queue records `PENDING` submissions for a certified provider and
 creates in-app notifications only — no live KRA filing occurs.
 
@@ -211,8 +220,8 @@ prisma/
   seed.js             Tenant, branches, departments, inboxes, demo data
 docs/
   architecture/       Phase 1 architecture + Phase 3 ERD
-  decisions/          ADRs (0001-0014; finance in ADR-0011, sales in ADR-0012, inventory in ADR-0013, procurement in ADR-0014)
-  openapi/            Phase 9 API contract (0.9.0-phase.9)
+  decisions/          ADRs (0001-0016; finance in ADR-0011, sales in ADR-0012, inventory in ADR-0013, procurement in ADR-0014, service in ADR-0015, payroll rates in ADR-0016)
+  openapi/            Phase 11 API contract (0.11.0-phase.11)
 ```
 
 ## Production-readiness notes
@@ -231,6 +240,7 @@ This codebase is a solid foundation, not a finished compliance deliverable.
   role, and backups. PII should be minimised/encrypted; logs avoid writing it.
 - **Inventory (Phase 8)** — stock valuation stays in the inventory ledger with integer-cent weighted averages; it does **not** post finance journals. A future phase must add an explicit inventory→finance posting policy.
 - **Procurement (Phase 9)** — receipts and returns post stock through inventory only. Three-way matching compares integer cents with a configurable business tolerance and never posts finance journals, payments or invoice mutations. A future phase must define procurement→finance posting explicitly.
+- **HR (Phase 11)** — payroll rates must be verified against current KRA/Government publications before use. Bank and KRA-PIN values are encrypted at rest and masked in DTOs, but production still needs a reviewed key-rotation policy, ODPC data-location sign-off, and a certified filing/payment integration before any live statutory submission or bank transfer. Posting creates an internal balanced journal only.
 - **Payments** for consultations/CDMO orders aren't wired; add a provider (e.g.
   M-Pesa Daraja/Stripe) if charging clients. Phase 6 finance payments record ledger
   entries only (including `CARD_TOKEN` references) and never charge a card.

@@ -46,6 +46,7 @@
         <button id="tabInventory" class="tab" type="button">Inventory</button>
         <button id="tabProcurement" class="tab" type="button">Procurement</button>
         <button id="tabService" class="tab" type="button">Service</button>
+        <button id="tabHr" class="tab" type="button">HR</button>
         <span id="connection" class="pill connection" aria-live="polite">Connecting…</span>
       </nav>
 
@@ -1108,6 +1109,236 @@
               <div class="form-actions"><button type="submit">Record part usage</button><span id="svcPartStatus" class="muted" aria-live="polite"></span></div>
             </form>
             <p class="muted">Issuing tries the inventory ledger. On a business stock conflict the usage is kept and flagged for manual issue; validation and DLP failures are not swallowed. Invoicing is available through the authenticated API for completed work orders.</p>
+          </section>
+        </div>
+      </section>
+
+      <section id="hrView" hidden>
+        <p class="procurement-banner" role="note">HR records are company/branch scoped. Money is stored as integer cents and every statutory percentage is read from a versioned VERIFIED payroll rate entered here — the platform ships no built-in PAYE/NSSF/SHIF/Housing Levy values. Bank and KRA-PIN values are encrypted at rest; only masked suffixes appear below. Socket frames carry IDs/classification only — every value below is refetched through the authenticated API.</p>
+        <p id="hrError" class="error" role="alert"></p>
+        <p id="hrActionStatus" class="muted" aria-live="polite"></p>
+        <div class="grid">
+          <section class="card span-2">
+            <div class="card-head"><h2>Employees</h2><button id="refreshHr" class="link" type="button">Refresh</button></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Name</th><th>Status</th><th>Type</th><th>Hired</th><th>Leave days</th><th>Bank / KRA</th><th>Notes</th></tr></thead>
+                <tbody id="hrEmployeeRows"></tbody>
+              </table>
+            </div>
+            <form id="hrEmployeeForm">
+              <div class="field-row finance-field-row">
+                <label>Employee number<input id="hrEmployeeNumber" required maxlength="60" pattern="[A-Za-z0-9_-]+" /></label>
+                <label>First name<input id="hrEmployeeFirst" required maxlength="120" /></label>
+                <label>Last name<input id="hrEmployeeLast" required maxlength="120" /></label>
+              </div>
+              <div class="field-row finance-field-row">
+                <label>Email<input id="hrEmployeeEmail" type="email" /></label>
+                <label>Phone<input id="hrEmployeePhone" maxlength="40" /></label>
+                <label>Hired on<input id="hrEmployeeHired" type="date" required /></label>
+              </div>
+              <div class="field-row finance-field-row">
+                <label>Status
+                  <select id="hrEmployeeStatus">
+                    <option value="PROBATION" selected>Probation</option><option value="ACTIVE">Active</option>
+                    <option value="ON_LEAVE">On leave</option><option value="SUSPENDED">Suspended</option>
+                    <option value="TERMINATED">Terminated</option>
+                  </select>
+                </label>
+                <label>Employment type
+                  <select id="hrEmployeeType">
+                    <option value="PERMANENT" selected>Permanent</option><option value="CONTRACT">Contract</option>
+                    <option value="INTERN">Intern</option><option value="CASUAL">Casual</option>
+                  </select>
+                </label>
+                <label>Annual leave balance<input id="hrEmployeeLeaveDays" type="number" min="0" max="366" step="1" value="0" /></label>
+              </div>
+              <div class="field-row finance-field-row">
+                <label>Bank name<input id="hrEmployeeBankName" maxlength="120" /></label>
+                <label>Bank account<input id="hrEmployeeBankAccount" maxlength="60" /></label>
+                <label>KRA PIN<input id="hrEmployeeKraPin" maxlength="24" /></label>
+              </div>
+              <label>Notes<textarea id="hrEmployeeNotes" rows="2" maxlength="2000"></textarea></label>
+              <label>Classification
+                <select id="hrEmployeeClassification">
+                  <option value="CONFIDENTIAL" selected>Confidential</option><option value="PUBLIC">Public</option>
+                  <option value="INTERNAL">Internal</option><option value="RESTRICTED">Restricted</option>
+                </select>
+              </label>
+              <div class="form-actions"><button type="submit">Create employee</button><span id="hrEmployeeStatusText" class="muted" aria-live="polite"></span></div>
+            </form>
+            <p class="muted">Bank and tax identifiers are encrypted when saved. The table only shows presence flags and masked suffixes; plaintext is never returned by the API.</p>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Employment contracts</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Employee</th><th>Period</th><th>Basic / allowances (cents)</th><th>Status</th><th>Actions</th></tr></thead>
+                <tbody id="hrContractRows"></tbody>
+              </table>
+            </div>
+            <form id="hrContractForm">
+              <div class="field-row finance-field-row">
+                <label>Employee<select id="hrContractEmployee" required></select></label>
+                <label>Start date<input id="hrContractStart" type="date" required /></label>
+                <label>End date<input id="hrContractEnd" type="date" /></label>
+                <label>Type
+                  <select id="hrContractType">
+                    <option value="PERMANENT" selected>Permanent</option><option value="CONTRACT">Contract</option>
+                    <option value="INTERN">Intern</option><option value="CASUAL">Casual</option>
+                  </select>
+                </label>
+              </div>
+              <div class="field-row finance-field-row">
+                <label>Basic salary (cents)<input id="hrContractBasic" type="number" min="1" step="1" value="0" required /></label>
+                <label>Allowances (cents)<input id="hrContractAllowances" type="number" min="0" step="1" value="0" /></label>
+                <label>Classification
+                  <select id="hrContractClassification">
+                    <option value="CONFIDENTIAL" selected>Confidential</option><option value="PUBLIC">Public</option>
+                    <option value="INTERNAL">Internal</option><option value="RESTRICTED">Restricted</option>
+                  </select>
+                </label>
+              </div>
+              <label>Notes<textarea id="hrContractNotes" rows="2" maxlength="2000"></textarea></label>
+              <div class="form-actions"><button type="submit">Create contract</button><span id="hrContractStatusText" class="muted" aria-live="polite"></span></div>
+            </form>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Payroll rates</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Kind</th><th>Rate (bps)</th><th>Effective from</th><th>Effective to</th><th>Source</th><th>Status</th><th>Verified</th></tr></thead>
+                <tbody id="hrRateRows"></tbody>
+              </table>
+            </div>
+            <form id="hrRateForm">
+              <div class="field-row finance-field-row">
+                <label>Kind
+                  <select id="hrRateKind">
+                    <option value="PAYE">PAYE</option><option value="NSSF_EMPLOYEE">NSSF employee</option>
+                    <option value="NSSF_EMPLOYER">NSSF employer</option><option value="SHIF">SHIF</option>
+                    <option value="HOUSING_LEVY">Housing levy</option>
+                  </select>
+                </label>
+                <label>Rate (basis points)<input id="hrRateBps" type="number" min="0" max="1000000" step="1" required /></label>
+                <label>Effective from<input id="hrRateFrom" type="datetime-local" required /></label>
+                <label>Effective to<input id="hrRateTo" type="datetime-local" /></label>
+              </div>
+              <label>Source reference<input id="hrRateSource" required minlength="4" maxlength="240" /></label>
+              <label>Verification note<textarea id="hrRateNote" rows="2" maxlength="2000"></textarea></label>
+              <label>Classification
+                <select id="hrRateClassification">
+                  <option value="CONFIDENTIAL" selected>Confidential</option><option value="PUBLIC">Public</option>
+                  <option value="INTERNAL">Internal</option><option value="RESTRICTED">Restricted</option>
+                </select>
+              </label>
+              <div class="form-actions"><button type="submit">Create rate (UNVERIFIED)</button><span id="hrRateStatusText" class="muted" aria-live="polite"></span></div>
+            </form>
+            <form id="hrVerifyForm">
+              <div class="field-row finance-field-row">
+                <label>Unverified rate<select id="hrVerifyRate"></select></label>
+                <label>Verification note<input id="hrVerifyNote" required minlength="5" maxlength="500" /></label>
+              </div>
+              <div class="form-actions"><button type="submit">Verify rate</button><span id="hrVerifyStatusText" class="muted" aria-live="polite"></span></div>
+            </form>
+            <p class="muted">New rates always start UNVERIFIED. Verification is a separate authorised action, and payroll only resolves the most recent VERIFIED row effective on the period end date.</p>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Leave requests</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Employee</th><th>Type</th><th>Period</th><th>Days</th><th>Status</th><th>Actions</th></tr></thead>
+                <tbody id="hrLeaveRows"></tbody>
+              </table>
+            </div>
+            <form id="hrLeaveForm">
+              <div class="field-row finance-field-row">
+                <label>Employee<select id="hrLeaveEmployee" required></select></label>
+                <label>Type
+                  <select id="hrLeaveType">
+                    <option value="ANNUAL">Annual</option><option value="SICK">Sick</option>
+                    <option value="MATERNITY">Maternity</option><option value="PATERNITY">Paternity</option>
+                    <option value="UNPAID">Unpaid</option><option value="COMPASSIONATE">Compassionate</option>
+                  </select>
+                </label>
+                <label>Start date<input id="hrLeaveStart" type="date" required /></label>
+                <label>End date<input id="hrLeaveEnd" type="date" required /></label>
+                <label>Days<input id="hrLeaveDays" type="number" min="1" max="366" step="1" value="1" required /></label>
+              </div>
+              <label>Reason<textarea id="hrLeaveReason" rows="2" minlength="3" maxlength="1000" required></textarea></label>
+              <label>Classification
+                <select id="hrLeaveClassification">
+                  <option value="CONFIDENTIAL" selected>Confidential</option><option value="PUBLIC">Public</option>
+                  <option value="INTERNAL">Internal</option><option value="RESTRICTED">Restricted</option>
+                </select>
+              </label>
+              <div class="form-actions"><button type="submit">Submit leave request</button><span id="hrLeaveStatusText" class="muted" aria-live="polite"></span></div>
+            </form>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Attendance</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Employee</th><th>Date</th><th>Hours</th><th>Check in</th><th>Check out</th><th>Notes</th></tr></thead>
+                <tbody id="hrAttendanceRows"></tbody>
+              </table>
+            </div>
+            <form id="hrAttendanceForm">
+              <div class="field-row finance-field-row">
+                <label>Employee<select id="hrAttendanceEmployee" required></select></label>
+                <label>Date<input id="hrAttendanceDate" type="date" required /></label>
+                <label>Minutes worked<input id="hrAttendanceMinutes" type="number" min="0" max="1440" step="1" value="480" /></label>
+              </div>
+              <div class="field-row finance-field-row">
+                <label>Check in<input id="hrAttendanceCheckIn" type="datetime-local" /></label>
+                <label>Check out<input id="hrAttendanceCheckOut" type="datetime-local" /></label>
+                <label>Classification
+                  <select id="hrAttendanceClassification">
+                    <option value="CONFIDENTIAL" selected>Confidential</option><option value="PUBLIC">Public</option>
+                    <option value="INTERNAL">Internal</option><option value="RESTRICTED">Restricted</option>
+                  </select>
+                </label>
+              </div>
+              <label>Notes<textarea id="hrAttendanceNotes" rows="2" maxlength="2000"></textarea></label>
+              <div class="form-actions"><button type="submit">Record attendance</button><span id="hrAttendanceStatusText" class="muted" aria-live="polite"></span></div>
+            </form>
+            <p class="muted">Attendance is upserted per employee and date; resubmitting the same day updates the existing record.</p>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Payroll runs</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Period</th><th>Employees</th><th>Gross (cents)</th><th>Deductions (cents)</th><th>Net (cents)</th><th>Employer cost (cents)</th><th>Status</th><th>Actions</th></tr></thead>
+                <tbody id="hrPayrollRows"></tbody>
+              </table>
+            </div>
+            <form id="hrPayrollForm">
+              <div class="field-row finance-field-row">
+                <label>Period start<input id="hrPayrollStart" type="date" required /></label>
+                <label>Period end<input id="hrPayrollEnd" type="date" required /></label>
+                <label>Classification
+                  <select id="hrPayrollClassification">
+                    <option value="CONFIDENTIAL" selected>Confidential</option><option value="PUBLIC">Public</option>
+                    <option value="INTERNAL">Internal</option><option value="RESTRICTED">Restricted</option>
+                  </select>
+                </label>
+              </div>
+              <label>Notes<textarea id="hrPayrollNotes" rows="2" maxlength="2000"></textarea></label>
+              <div class="form-actions"><button type="submit">Create payroll run</button><span id="hrPayrollStatusText" class="muted" aria-live="polite"></span></div>
+            </form>
+            <h3 id="hrPayrollLinesTitle" hidden>Payroll lines</h3>
+            <div class="table-scroll" id="hrPayrollLinesWrap" hidden>
+              <table>
+                <thead><tr><th>Employee</th><th>Basic</th><th>Allowances</th><th>Gross</th><th>PAYE</th><th>NSSF emp.</th><th>SHIF</th><th>Housing</th><th>Deductions</th><th>Net</th><th>Employer cost</th><th>Rate snapshot</th></tr></thead>
+                <tbody id="hrPayrollLineRows"></tbody>
+              </table>
+            </div>
+            <p class="muted">Calculation requires a VERIFIED rate for every component and an active contract for every employee on the run. Posting creates a balanced finance journal and requires finance journal-posting permission.</p>
           </section>
         </div>
       </section>

@@ -408,6 +408,40 @@ export const ServiceVisitCompletedDataSchema = ServiceEntityRefSchema.extend({
   classification: ClassificationSchema,
 }).strict()
 
+// Phase 11 HR events are strict ID/classification-only invalidation signals.
+// Employee names, bank or tax-PIN references, pay amounts, rate percentages,
+// source references, verification notes and leave reasons never enter events.
+const HrEntityRefSchema = z.object({
+  entityType: z.enum(['EMPLOYEE', 'LEAVE_REQUEST', 'PAYROLL_RATE', 'PAYROLL_RUN']),
+  entityId: z.string(),
+})
+
+export const EmployeeCreatedDataSchema = HrEntityRefSchema.extend({
+  employeeId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const LeaveApprovedDataSchema = HrEntityRefSchema.extend({
+  leaveRequestId: z.string(),
+  employeeId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const PayrollRateVerifiedDataSchema = HrEntityRefSchema.extend({
+  payrollRateId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const PayrollRunCalculatedDataSchema = HrEntityRefSchema.extend({
+  payrollRunId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const PayrollRunApprovedDataSchema = HrEntityRefSchema.extend({
+  payrollRunId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
 export const DomainEventSchemas = {
   MessageSent: MessageSentDataSchema,
   ThreadAssigned: ThreadAssignedDataSchema,
@@ -461,6 +495,11 @@ export const DomainEventSchemas = {
   ServiceTicketResolved: ServiceTicketResolvedDataSchema,
   WorkOrderCompleted: WorkOrderCompletedDataSchema,
   ServiceVisitCompleted: ServiceVisitCompletedDataSchema,
+  EmployeeCreated: EmployeeCreatedDataSchema,
+  LeaveApproved: LeaveApprovedDataSchema,
+  PayrollRateVerified: PayrollRateVerifiedDataSchema,
+  PayrollRunCalculated: PayrollRunCalculatedDataSchema,
+  PayrollRunApproved: PayrollRunApprovedDataSchema,
 }
 
 export function parseEventEnvelope(input) {

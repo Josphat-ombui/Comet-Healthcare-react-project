@@ -1,13 +1,14 @@
 # OpenAPI Contract
 
-Comet Healthcare Enterprise Platform — Phase 10 contract complete (`0.10.0-phase.10`)
+Comet Healthcare Enterprise Platform — Phase 11 contract complete (`0.11.0-phase.11`)
 
 This directory holds the versioned REST and webhook contracts. Phase 1 created the skeleton;
 Phase 3 added identity/organisation/audit, Phase 4 added messaging and realtime, Phase 5
 completed the shared-services surface (files, workflow, notifications, search, documents),
 Phase 6 added the tenant/branch-scoped finance surface under `/api/finance`, Phase 7 added
 the sales lifecycle under `/api/sales`, Phase 8 added inventory under `/api/inventory`,
-Phase 9 added procurement under `/api/procurement`, and Phase 10 adds service under `/api/service`.
+Phase 9 added procurement under `/api/procurement`, Phase 10 added service under `/api/service`,
+and Phase 11 adds HR under `/api/hr`.
 
 ## Files
 
@@ -34,6 +35,34 @@ Phase 9 added procurement under `/api/procurement`, and Phase 10 adds service un
 - Response envelopes follow the implementation: named collections such as `files`,
   `definitions`, `instances`, `tasks`, `notifications` and `preferences` are used rather than a
   generic `items` key. `GET /api/search` and `GET /api/documents` use `items` as before.
+
+## Phase 11 scope
+
+- `HR` tag paths (21 paths / 28 operations): `/api/hr/employees` (create/list/get/patch),
+  `/api/hr/contracts` (create/list/get) with `/{id}/activate`, `/expire`, `/terminate`, `/cancel`,
+  `/api/hr/rates` (create/list/get) with `/{id}/verify`, `/api/hr/leave` (create/list/get) with
+  `/{id}/decision`, `/api/hr/attendance` (create/list/get), and `/api/hr/payroll/runs`
+  (create/list/get) with `/{id}/calculate`, `/approve` and `/post`.
+- All Phase 3–10 paths and schemas remain intact. Every HR operation declares
+  `security: [{ bearerAuth: [] }]` and an `x-permission` from the 16-entry `hr.*` set; payroll
+  posting additionally documents `finance.journal.post` via `x-additional-permission`. Strict
+  request schemas reject client-supplied `companyId`, statuses, verification metadata and
+  calculated totals; free text is DLP-checked and fails closed.
+- Money is integer cents (`*Cents`) and rates are integer basis points in `rateBps`. A new
+  `PayrollRate` is always `UNVERIFIED`; the separate verify endpoint stamps the authenticated
+  principal. Calculations resolve all five statutory components from the most recent VERIFIED row
+  effective on the period end, or fail with 409. No statutory value is hardcoded. See ADR-0016.
+- Bank name/number and KRA PIN are encrypted at rest. Employee DTOs expose only presence flags and
+  masked suffixes; plaintext and encrypted envelopes are never emitted, audited or put on events.
+- Domain events are `EmployeeCreated`, `LeaveApproved`, `PayrollRateVerified`,
+  `PayrollRunCalculated` and `PayrollRunApproved`. Phase 11 socket events are `hr:employee`,
+  `hr:leave`, `hr:rate` and `hr:payroll`. Frames carry IDs/classification only and are routed to the
+  company room only — never user, thread, inbox or branch rooms. Clients refetch through
+  `/api/hr`; see `x-realtime` and `x-hr`.
+- Payroll posting creates one balanced finance journal with system accounts `EXPENSE`, `AP_CONTROL`
+  and `BANK`; it performs no filing, payment, payslip email or bank transfer.
+- `Idempotency-Key` remains scoped to `POST /api/messaging/threads/{id}/messages` only; no
+  `/api/hr` endpoint consumes it.
 
 ## Phase 10 scope
 
@@ -196,6 +225,9 @@ Phase 9 added procurement under `/api/procurement`, and Phase 10 adds service un
 14. Phase 10 service frames are ID/classification-only invalidation signals routed to the company
     room. Adding contract/ticket/work-order/visit numbers, subjects, customer names, SLA hours,
     amounts, statuses or notes is a contract violation.
+15. Phase 11 HR frames are ID/classification-only invalidation signals routed to the company room.
+    Adding employee names, bank or KRA references, pay amounts, rate percentages, leave reasons,
+    payroll numbers or statuses is a contract violation.
 
 ## Security schemes
 
@@ -216,11 +248,11 @@ Phase 9 added procurement under `/api/procurement`, and Phase 10 adds service un
    ```
 
    An OpenAPI-aware linter (for example `npx @redocly/cli lint docs/openapi/openapi.yaml`) is
-   optional when network access to the generator is available. At the Phase 10 gate the parsed
-   document has version `0.10.0-phase.10`, 175 paths (27 under `/api/service`) and 179 schemas.
-   At the Phase 9 gate it had version `0.9.0-phase.9`, 148 paths and 145 schemas; at the Phase 8
-   gate, 130 paths and 114 schemas.
-4. Confirm all `$ref` targets resolve and that no Phase 3/4/5/6/7/8/9 path was removed. A local check:
+   optional when network access to the generator is available. At the Phase 11 gate the parsed
+   document has version `0.11.0-phase.11`, 196 paths (21 under `/api/hr`) and 203 schemas.
+   At the Phase 10 gate it had version `0.10.0-phase.10`, 175 paths and 179 schemas; at the Phase 9
+   gate, 148 paths and 145 schemas; at the Phase 8 gate, 130 paths and 114 schemas.
+4. Confirm all `$ref` targets resolve and that no Phase 3/4/5/6/7/8/9/10 path was removed. A local check:
 
    ```bash
    python - <<'PY'
@@ -251,7 +283,9 @@ Phase 9 added procurement under `/api/procurement`, and Phase 10 adds service un
     receipts, cent-exact tolerance matching, supplier returns, quarantine guards, DLP, strict
     ID-only events and tenant scope; Phase 10 service tests cover SLA arithmetic, lifecycle
     guards, DLP, strict ID-only events, cent totals, stock-conflict fallback, verified-rate
-    invoicing and tenant scope. At the Phase 10 gate 609 refs resolve.
+    invoicing and tenant scope; Phase 11 HR tests cover version selection, verified-rate gating,
+    integer-cent payroll math, masked/encrypted DTOs, strict ID-only events and tenant scope.
+    At the Phase 11 gate 721 refs resolve.
 
 ## Phase gate requirement
 

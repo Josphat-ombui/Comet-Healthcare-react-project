@@ -1242,6 +1242,78 @@ async function main() {
   })
   console.log('✓ Seeded draft service contract, ticket and work order fixtures')
 
+  // ---------------------------------------------------------------- phase 11
+  // HR fixtures are cmp_comet-only and strictly idempotent. Bank/account and
+  // KRA PIN values are encrypted at rest; API DTOs return masks only. The rate
+  // fixture is deliberately UNVERIFIED: COMPLIANCE must verify it (and the other
+  // four statutory components) before any payroll calculation can use a rate.
+  const hrEmployeeFixture = await prisma.employee.upsert({
+    where: { companyId_employeeNumber: { companyId, employeeNumber: 'EMP-2026-F001' } },
+    update: {},
+    create: {
+      companyId,
+      employeeNumber: 'EMP-2026-F001',
+      firstName: 'Amina',
+      lastName: 'Wanjiku',
+      email: 'amina.wanjiku@example.invalid',
+      status: 'ACTIVE',
+      employmentType: 'PERMANENT',
+      hiredAt: new Date('2026-01-05T00:00:00.000Z'),
+      annualLeaveBalanceDays: 21,
+      bankNameEncrypted: encryptString('Fixture Bank'),
+      bankAccountEncrypted: encryptString('0000000001'),
+      kraPinEncrypted: encryptString('A000000000Z'),
+      notes: 'HR phase 11 fixture — bank values are encrypted and masked in DTOs.',
+      classification: 'CONFIDENTIAL',
+      createdById: admin.id,
+    },
+  })
+
+  await prisma.employmentContract.upsert({
+    where: { companyId_number: { companyId, number: 'EMP-2026-C001' } },
+    update: {},
+    create: {
+      companyId,
+      number: 'EMP-2026-C001',
+      employeeId: hrEmployeeFixture.id,
+      status: 'ACTIVE',
+      employmentType: 'PERMANENT',
+      startDate: new Date('2026-01-05T00:00:00.000Z'),
+      basicSalaryCents: 12_000_000,
+      allowancesCents: 1_500_000,
+      currency: 'KES',
+      notes: 'HR phase 11 fixture — activate payroll only after all rates are VERIFIED.',
+      classification: 'CONFIDENTIAL',
+      activatedAt: new Date('2026-01-05T00:00:00.000Z'),
+      createdById: admin.id,
+    },
+  })
+
+  await prisma.payrollRate.upsert({
+    where: {
+      companyId_kind_effectiveFrom: {
+        companyId,
+        kind: 'PAYE',
+        effectiveFrom: new Date('2026-01-01T00:00:00.000Z'),
+      },
+    },
+    update: {},
+    create: {
+      companyId,
+      kind: 'PAYE',
+      rateBps: 3000,
+      effectiveFrom: new Date('2026-01-01T00:00:00.000Z'),
+      sourceReference: 'Fixture PAYE table - verify before production use',
+      verificationNote: null,
+      verifiedById: null,
+      verifiedAt: null,
+      status: 'UNVERIFIED',
+      classification: 'CONFIDENTIAL',
+      createdById: admin.id,
+    },
+  })
+  console.log('✓ Seeded HR employee with encrypted bank details, active contract and UNVERIFIED PAYE rate')
+
   console.log('\nSeed complete ✔')
 }
 

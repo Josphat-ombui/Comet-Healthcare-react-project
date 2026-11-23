@@ -1346,3 +1346,174 @@ export const SERVICE_MONEY_FIELDS = [
   'monthlyFeeCents', 'unitPriceCents', 'labourCents', 'partsCents',
   'totalCents', 'unitCostCents',
 ]
+
+// ---------------------------------------------------------------- phase 11 HR
+//
+// Write schemas are strict: companyId, status, verification metadata, computed
+// payroll amounts and rate percentages can never be supplied by a client. Free
+// text fails closed through DLP. KRA PINs are accepted only as whole-field
+// identifiers and are encrypted at rest; they are never returned by a DTO.
+const hrId = z.string().trim().min(1).max(80)
+const hrDate = z.string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Use a date in YYYY-MM-DD format')
+  .refine(isValidIsoDate, 'Choose a valid date')
+const hrDateTime = z.iso.datetime()
+const hrLimit = z.coerce.number().int().min(1).max(200).default(50)
+const hrMoney = z.number().int().nonnegative()
+const hrPositiveMoney = z.number().int().positive()
+const hrBps = z.number().int().min(0).max(1_000_000)
+const hrDays = z.number().int().min(0).max(366)
+const hrMinutes = z.number().int().min(0).max(1440)
+const hrNotes = dlpSafeText(2000).optional().or(z.literal(''))
+const hrName = dlpSafeText(120)
+const hrClassification = classificationSchema.default('CONFIDENTIAL')
+const hrKraPin = dlpSafeText(24, { allowWholeKraPin: true }).optional().or(z.literal(''))
+
+export const hrEmployeeCreateSchema = z.object({
+  employeeNumber: z.string().trim().min(2).max(60).regex(/^[A-Za-z0-9_-]+$/, 'Use letters, numbers, _ or -'),
+  firstName: hrName,
+  lastName: hrName,
+  email: emailSchema.nullable().optional(),
+  phone: z.string().trim().max(40).nullable().optional(),
+  userId: hrId.nullable().optional(),
+  branchId: hrId.nullable().optional(),
+  departmentId: hrId.nullable().optional(),
+  jobTitleId: hrId.nullable().optional(),
+  status: z.enum(['ACTIVE', 'PROBATION', 'ON_LEAVE', 'SUSPENDED', 'TERMINATED']).default('PROBATION'),
+  employmentType: z.enum(['PERMANENT', 'CONTRACT', 'INTERN', 'CASUAL']).default('PERMANENT'),
+  hiredAt: hrDate,
+  annualLeaveBalanceDays: hrDays.default(0),
+  bankName: dlpSafeText(120).nullable().optional(),
+  bankAccount: dlpSafeText(60).nullable().optional(),
+  kraPin: hrKraPin,
+  notes: hrNotes,
+  classification: hrClassification,
+}).strict()
+
+export const hrEmployeeUpdateSchema = z.object({
+  firstName: hrName.optional(),
+  lastName: hrName.optional(),
+  email: emailSchema.nullable().optional(),
+  phone: z.string().trim().max(40).nullable().optional(),
+  userId: hrId.nullable().optional(),
+  branchId: hrId.nullable().optional(),
+  departmentId: hrId.nullable().optional(),
+  jobTitleId: hrId.nullable().optional(),
+  status: z.enum(['ACTIVE', 'PROBATION', 'ON_LEAVE', 'SUSPENDED', 'TERMINATED']).optional(),
+  employmentType: z.enum(['PERMANENT', 'CONTRACT', 'INTERN', 'CASUAL']).optional(),
+  hiredAt: hrDate.optional(),
+  terminatedAt: hrDate.nullable().optional(),
+  annualLeaveBalanceDays: hrDays.optional(),
+  bankName: dlpSafeText(120).nullable().optional(),
+  bankAccount: dlpSafeText(60).nullable().optional(),
+  kraPin: hrKraPin,
+  notes: hrNotes,
+  classification: classificationSchema.optional(),
+}).strict()
+
+export const hrContractCreateSchema = z.object({
+  employeeId: hrId,
+  employmentType: z.enum(['PERMANENT', 'CONTRACT', 'INTERN', 'CASUAL']).default('PERMANENT'),
+  startDate: hrDate,
+  endDate: hrDate.nullable().optional(),
+  basicSalaryCents: hrPositiveMoney,
+  allowancesCents: hrMoney.default(0),
+  currency: z.string().trim().min(1).max(8).default('KES'),
+  notes: hrNotes,
+  branchId: hrId.nullable().optional(),
+  classification: hrClassification,
+}).strict()
+
+export const hrContractTransitionSchema = z.object({
+  status: z.enum(['ACTIVE', 'EXPIRED', 'TERMINATED', 'CANCELLED']),
+}).strict()
+
+export const hrPayrollRateCreateSchema = z.object({
+  kind: z.enum(['PAYE', 'NSSF_EMPLOYEE', 'NSSF_EMPLOYER', 'SHIF', 'HOUSING_LEVY']),
+  rateBps: hrBps,
+  effectiveFrom: hrDateTime,
+  effectiveTo: hrDateTime.nullable().optional(),
+  sourceReference: dlpSafeText(240).min(4, 'Source reference is required'),
+  verificationNote: hrNotes,
+  branchId: hrId.nullable().optional(),
+  classification: hrClassification,
+}).strict()
+
+export const hrPayrollRateVerifySchema = z.object({
+  verificationNote: dlpSafeText(500).min(5, 'Verification note is required'),
+}).strict()
+
+export const hrLeaveCreateSchema = z.object({
+  employeeId: hrId,
+  type: z.enum(['ANNUAL', 'SICK', 'MATERNITY', 'PATERNITY', 'UNPAID', 'COMPASSIONATE']),
+  startDate: hrDate,
+  endDate: hrDate,
+  days: z.number().int().positive().max(366),
+  reason: dlpSafeText(1000).min(3, 'Reason is required'),
+  branchId: hrId.nullable().optional(),
+  classification: hrClassification,
+}).strict()
+
+export const hrLeaveDecisionSchema = z.object({
+  decision: z.enum(['APPROVE', 'REJECT']),
+  note: hrNotes,
+}).strict()
+
+export const hrAttendanceUpsertSchema = z.object({
+  employeeId: hrId,
+  date: hrDate,
+  hoursWorkedMinutes: hrMinutes.default(0),
+  checkInAt: hrDateTime.nullable().optional(),
+  checkOutAt: hrDateTime.nullable().optional(),
+  notes: hrNotes,
+  branchId: hrId.nullable().optional(),
+  classification: hrClassification,
+}).strict()
+
+export const hrPayrollRunCreateSchema = z.object({
+  periodStart: hrDate,
+  periodEnd: hrDate,
+  employeeIds: z.array(hrId).max(500).optional(),
+  notes: hrNotes,
+  branchId: hrId.nullable().optional(),
+  classification: hrClassification,
+}).strict()
+
+export const hrActionSchema = z.object({}).strict()
+
+export const hrEmployeeQuerySchema = z.object({
+  status: z.enum(['ACTIVE', 'PROBATION', 'ON_LEAVE', 'SUSPENDED', 'TERMINATED']).optional(),
+  branchId: hrId.optional(),
+  limit: hrLimit,
+}).strict()
+
+export const hrRateQuerySchema = z.object({
+  kind: z.enum(['PAYE', 'NSSF_EMPLOYEE', 'NSSF_EMPLOYER', 'SHIF', 'HOUSING_LEVY']).optional(),
+  status: z.enum(['UNVERIFIED', 'VERIFIED']).optional(),
+  limit: hrLimit,
+}).strict()
+
+export const hrLeaveQuerySchema = z.object({
+  status: z.enum(['DRAFT', 'SUBMITTED', 'APPROVED', 'REJECTED', 'TAKEN', 'CANCELLED']).optional(),
+  employeeId: hrId.optional(),
+  limit: hrLimit,
+}).strict()
+
+export const hrAttendanceQuerySchema = z.object({
+  employeeId: hrId.optional(),
+  from: hrDate.optional(),
+  to: hrDate.optional(),
+  limit: hrLimit,
+}).strict()
+
+export const hrPayrollRunQuerySchema = z.object({
+  status: z.enum(['DRAFT', 'CALCULATED', 'APPROVED', 'POSTED', 'CANCELLED']).optional(),
+  limit: hrLimit,
+}).strict()
+
+export const HR_CLASSIFICATIONS = ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED']
+export const HR_MONEY_FIELDS = [
+  'basicSalaryCents', 'allowancesCents', 'grossCents', 'payeCents',
+  'nssfEmployeeCents', 'nssfEmployerCents', 'shifCents', 'housingLevyCents',
+  'deductionsCents', 'netCents', 'employerCostCents', 'rateBps',
+]

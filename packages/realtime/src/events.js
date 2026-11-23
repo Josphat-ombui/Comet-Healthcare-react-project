@@ -64,6 +64,17 @@ const SERVICE_EVENT_TYPES = new Set([
   'ServiceVisitCompleted',
 ])
 
+// Phase 11 HR events are ID/classification-only company-wide signals — never
+// branch, user, thread or inbox rooms. The ERP tab refetches all values so no
+// employee, bank or payroll value is ever pushed over a socket.
+const HR_EVENT_TYPES = new Set([
+  'EmployeeCreated',
+  'LeaveApproved',
+  'PayrollRateVerified',
+  'PayrollRunCalculated',
+  'PayrollRunApproved',
+])
+
 function eventRooms(event) {
   const prefix = `company:${event.companyId}`
   const data = event.data || {}
@@ -131,6 +142,9 @@ function eventRooms(event) {
 
   // ---------------------------------------------------------- phase 10 service
   if (SERVICE_EVENT_TYPES.has(event.type)) return unique([prefix])
+
+  // --------------------------------------------------------------- phase 11 HR
+  if (HR_EVENT_TYPES.has(event.type)) return unique([prefix])
   return []
 }
 
@@ -181,6 +195,11 @@ function socketEventFor(type) {
     ServiceTicketResolved: 'service:ticket',
     WorkOrderCompleted: 'service:workorder',
     ServiceVisitCompleted: 'service:visit',
+    EmployeeCreated: 'hr:employee',
+    LeaveApproved: 'hr:leave',
+    PayrollRateVerified: 'hr:rate',
+    PayrollRunCalculated: 'hr:payroll',
+    PayrollRunApproved: 'hr:payroll',
   }[type] || null
 }
 

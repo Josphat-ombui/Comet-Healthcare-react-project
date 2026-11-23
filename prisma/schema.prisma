@@ -534,6 +534,14 @@ model Company {
   workOrderLines           WorkOrderLine[]
   serviceVisits            ServiceVisit[]
   servicePartUsages        ServicePartUsage[]
+  // Phase 11 HR
+  employees                Employee[]
+  employmentContracts      EmploymentContract[]
+  payrollRates             PayrollRate[]
+  payrollRuns              PayrollRun[]
+  payrollLines             PayrollLine[]
+  leaveRequests            LeaveRequest[]
+  attendanceRecords        AttendanceRecord[]
 }
 
 model Branch {
@@ -603,6 +611,14 @@ model Branch {
   workOrderLines           WorkOrderLine[]
   serviceVisits            ServiceVisit[]
   servicePartUsages        ServicePartUsage[]
+  // Phase 11 HR
+  employees                Employee[]
+  employmentContracts      EmploymentContract[]
+  payrollRates             PayrollRate[]
+  payrollRuns              PayrollRun[]
+  payrollLines             PayrollLine[]
+  leaveRequests            LeaveRequest[]
+  attendanceRecords        AttendanceRecord[]
 
   @@unique([companyId, code])
   @@index([companyId, isActive])
@@ -629,6 +645,7 @@ model Department {
   inboxes           Inbox[]           @relation("InboxDepartment")
   channels          Channel[]         @relation("ChannelDepartment")
   retentionPolicies RetentionPolicy[]
+  employees         Employee[]
 
   @@unique([companyId, code])
   @@unique([companyId, internalAddress])
@@ -645,7 +662,8 @@ model JobTitle {
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
 
-  users User[] @relation("UserJobTitle")
+  users     User[]     @relation("UserJobTitle")
+  employees Employee[]
 
   @@unique([companyId, code])
 }
@@ -776,6 +794,18 @@ model User {
   serviceVisitsCreated        ServiceVisit[]        @relation("ServiceVisitCreatedBy")
   serviceVisitsAssigned       ServiceVisit[]        @relation("ServiceVisitTechnician")
   servicePartUsagesCreated    ServicePartUsage[]    @relation("ServicePartUsageCreatedBy")
+  // Phase 11 HR
+  hrEmployees                 Employee[]            @relation("EmployeeUser")
+  hrEmployeesCreated          Employee[]            @relation("EmployeeCreatedBy")
+  hrContractsCreated          EmploymentContract[]  @relation("EmploymentContractCreatedBy")
+  hrPayrollRatesCreated       PayrollRate[]         @relation("PayrollRateCreatedBy")
+  hrPayrollRatesVerified      PayrollRate[]         @relation("PayrollRateVerifiedBy")
+  hrPayrollRunsCreated        PayrollRun[]          @relation("PayrollRunCreatedBy")
+  hrPayrollRunsApproved       PayrollRun[]          @relation("PayrollRunApprovedBy")
+  hrPayrollRunsPosted         PayrollRun[]          @relation("PayrollRunPostedBy")
+  hrLeaveRequestsCreated      LeaveRequest[]        @relation("LeaveRequestCreatedBy")
+  hrLeaveRequestsApproved     LeaveRequest[]        @relation("LeaveRequestApprovedBy")
+  hrAttendanceRecordsCreated  AttendanceRecord[]    @relation("AttendanceRecordCreatedBy")
 
   @@unique([companyId, email])
   @@unique([companyId, identityProvider, externalId])
@@ -1769,6 +1799,7 @@ model FinanceJournal {
   lines          FinanceJournalLine[]
   invoice        FinanceInvoice?
   payment        FinancePayment?
+  payrollRuns    PayrollRun[]
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
 
@@ -3125,4 +3156,297 @@ model ServicePartUsage {
   @@index([workOrderId])
   @@index([companyId, itemId])
   @@index([companyId, inventoryIssued])
+}
+
+// ---------------------------------------------------------------------------
+// Phase 11 HR
+// ---------------------------------------------------------------------------
+
+enum EmployeeStatus {
+  ACTIVE
+  PROBATION
+  ON_LEAVE
+  SUSPENDED
+  TERMINATED
+}
+
+enum EmploymentType {
+  PERMANENT
+  CONTRACT
+  INTERN
+  CASUAL
+}
+
+enum EmploymentContractStatus {
+  DRAFT
+  ACTIVE
+  EXPIRED
+  TERMINATED
+  CANCELLED
+}
+
+enum LeaveType {
+  ANNUAL
+  SICK
+  MATERNITY
+  PATERNITY
+  UNPAID
+  COMPASSIONATE
+}
+
+enum LeaveStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+  TAKEN
+  CANCELLED
+}
+
+enum PayrollRateKind {
+  PAYE
+  NSSF_EMPLOYEE
+  NSSF_EMPLOYER
+  SHIF
+  HOUSING_LEVY
+}
+
+enum PayrollRateStatus {
+  UNVERIFIED
+  VERIFIED
+}
+
+enum PayrollRunStatus {
+  DRAFT
+  CALCULATED
+  APPROVED
+  POSTED
+  CANCELLED
+}
+
+/// Bank, account and tax-PIN values are stored encrypted at rest. The public
+/// DTOs never expose them; ODPC sensitivity is documented in ADR-0016.
+model Employee {
+  id                    String             @id @default(cuid())
+  companyId             String             @default("cmp_comet")
+  tenant                Company            @relation(fields: [companyId], references: [id])
+  branchId              String?
+  branch                Branch?            @relation(fields: [branchId], references: [id])
+  employeeNumber        String
+  userId                String?
+  user                  User?              @relation("EmployeeUser", fields: [userId], references: [id])
+  firstName             String
+  lastName              String
+  email                 String?
+  phone                 String?
+  status                EmployeeStatus     @default(PROBATION)
+  employmentType        EmploymentType     @default(PERMANENT)
+  departmentId          String?
+  department            Department?        @relation(fields: [departmentId], references: [id])
+  jobTitleId            String?
+  jobTitle              JobTitle?          @relation(fields: [jobTitleId], references: [id])
+  hiredAt               DateTime
+  terminatedAt          DateTime?
+  annualLeaveBalanceDays Int                @default(0)
+  bankNameEncrypted     String?
+  bankAccountEncrypted  String?
+  kraPinEncrypted       String?
+  notes                 String?
+  classification        DataClassification @default(CONFIDENTIAL)
+  createdById           String?
+  createdBy             User?              @relation("EmployeeCreatedBy", fields: [createdById], references: [id])
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  contracts        EmploymentContract[]
+  leaveRequests    LeaveRequest[]
+  attendance       AttendanceRecord[]
+  payrollLines     PayrollLine[]
+
+  @@unique([companyId, employeeNumber])
+  @@index([companyId, status])
+  @@index([companyId, branchId])
+  @@index([companyId, departmentId])
+}
+
+model EmploymentContract {
+  id               String                   @id @default(cuid())
+  companyId        String                   @default("cmp_comet")
+  tenant           Company                  @relation(fields: [companyId], references: [id])
+  branchId         String?
+  branch           Branch?                  @relation(fields: [branchId], references: [id])
+  employeeId       String
+  employee         Employee                 @relation(fields: [employeeId], references: [id])
+  number           String
+  status           EmploymentContractStatus @default(DRAFT)
+  employmentType   EmploymentType           @default(PERMANENT)
+  startDate        DateTime
+  endDate          DateTime?
+  basicSalaryCents Int
+  allowancesCents  Int                      @default(0)
+  currency         String                   @default("KES")
+  notes            String?
+  classification   DataClassification       @default(CONFIDENTIAL)
+  activatedAt      DateTime?
+  terminatedAt     DateTime?
+  cancelledAt      DateTime?
+  createdById      String?
+  createdBy        User?                    @relation("EmploymentContractCreatedBy", fields: [createdById], references: [id])
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+
+  @@unique([companyId, number])
+  @@index([companyId, employeeId])
+  @@index([companyId, status])
+}
+
+/// Versioned statutory rates. Rows are always created UNVERIFIED; only a
+/// separate authorised verify action may make a row usable by calculations.
+model PayrollRate {
+  id               String             @id @default(cuid())
+  companyId        String             @default("cmp_comet")
+  tenant           Company            @relation(fields: [companyId], references: [id])
+  branchId         String?
+  branch           Branch?            @relation(fields: [branchId], references: [id])
+  kind             PayrollRateKind
+  rateBps          Int
+  effectiveFrom    DateTime
+  effectiveTo      DateTime?
+  sourceReference  String
+  verificationNote String?
+  status           PayrollRateStatus  @default(UNVERIFIED)
+  verifiedById     String?
+  verifiedBy       User?              @relation("PayrollRateVerifiedBy", fields: [verifiedById], references: [id])
+  verifiedAt       DateTime?
+  classification   DataClassification @default(CONFIDENTIAL)
+  createdById      String?
+  createdBy        User?              @relation("PayrollRateCreatedBy", fields: [createdById], references: [id])
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  @@unique([companyId, kind, effectiveFrom])
+  @@index([companyId, kind, status, effectiveFrom])
+}
+
+model PayrollRun {
+  id               String             @id @default(cuid())
+  companyId        String             @default("cmp_comet")
+  tenant           Company            @relation(fields: [companyId], references: [id])
+  branchId         String?
+  branch           Branch?            @relation(fields: [branchId], references: [id])
+  number           String
+  periodStart      DateTime
+  periodEnd        DateTime
+  employeeIds      String[]           @default([])
+  status           PayrollRunStatus   @default(DRAFT)
+  currency         String             @default("KES")
+  grossCents       Int                @default(0)
+  deductionsCents  Int                @default(0)
+  employerCostCents Int               @default(0)
+  netCents         Int                @default(0)
+  calculatedAt     DateTime?
+  approvedById     String?
+  approvedBy       User?              @relation("PayrollRunApprovedBy", fields: [approvedById], references: [id])
+  approvedAt       DateTime?
+  postedById       String?
+  postedBy         User?              @relation("PayrollRunPostedBy", fields: [postedById], references: [id])
+  postedAt         DateTime?
+  financeJournalId String?
+  financeJournal   FinanceJournal?    @relation(fields: [financeJournalId], references: [id])
+  notes            String?
+  classification   DataClassification @default(CONFIDENTIAL)
+  createdById      String?
+  createdBy        User?              @relation("PayrollRunCreatedBy", fields: [createdById], references: [id])
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  lines PayrollLine[]
+
+  @@unique([companyId, number])
+  @@index([companyId, status, periodStart])
+}
+
+model PayrollLine {
+  id                  String             @id @default(cuid())
+  companyId           String             @default("cmp_comet")
+  tenant              Company            @relation(fields: [companyId], references: [id])
+  branchId            String?
+  branch              Branch?            @relation(fields: [branchId], references: [id])
+  runId               String
+  run                 PayrollRun         @relation(fields: [runId], references: [id])
+  employeeId          String
+  employee            Employee           @relation(fields: [employeeId], references: [id])
+  basicCents          Int
+  allowancesCents     Int                @default(0)
+  grossCents          Int
+  payeCents           Int                @default(0)
+  nssfEmployeeCents   Int                @default(0)
+  nssfEmployerCents   Int                @default(0)
+  shifCents           Int                @default(0)
+  housingLevyCents    Int                @default(0)
+  deductionsCents     Int                @default(0)
+  netCents            Int
+  // Snapshot of the VERIFIED row IDs and basis points used, for auditability.
+  rateSnapshot        Json
+  classification      DataClassification @default(CONFIDENTIAL)
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  @@unique([runId, employeeId])
+  @@index([companyId, employeeId])
+}
+
+model LeaveRequest {
+  id            String             @id @default(cuid())
+  companyId     String             @default("cmp_comet")
+  tenant        Company            @relation(fields: [companyId], references: [id])
+  branchId      String?
+  branch        Branch?            @relation(fields: [branchId], references: [id])
+  employeeId    String
+  employee      Employee           @relation(fields: [employeeId], references: [id])
+  number        String
+  type          LeaveType
+  status        LeaveStatus        @default(DRAFT)
+  startDate     DateTime
+  endDate       DateTime
+  days          Int
+  reason        String
+  approvedById  String?
+  approvedBy    User?              @relation("LeaveRequestApprovedBy", fields: [approvedById], references: [id])
+  approvedAt    DateTime?
+  rejectedAt    DateTime?
+  takenAt       DateTime?
+  cancelledAt   DateTime?
+  classification DataClassification @default(CONFIDENTIAL)
+  createdById   String?
+  createdBy     User?              @relation("LeaveRequestCreatedBy", fields: [createdById], references: [id])
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  @@unique([companyId, number])
+  @@index([companyId, employeeId, status])
+  @@index([companyId, status, startDate])
+}
+
+model AttendanceRecord {
+  id                  String             @id @default(cuid())
+  companyId           String             @default("cmp_comet")
+  tenant              Company            @relation(fields: [companyId], references: [id])
+  branchId            String?
+  branch              Branch?            @relation(fields: [branchId], references: [id])
+  employeeId          String
+  employee            Employee           @relation(fields: [employeeId], references: [id])
+  date                DateTime           @db.Date
+  hoursWorkedMinutes  Int                @default(0)
+  checkInAt           DateTime?
+  checkOutAt          DateTime?
+  notes               String?
+  classification      DataClassification @default(CONFIDENTIAL)
+  createdById         String?
+  createdBy           User?              @relation("AttendanceRecordCreatedBy", fields: [createdById], references: [id])
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  @@unique([companyId, employeeId, date])
+  @@index([companyId, date])
 }

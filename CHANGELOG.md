@@ -8,6 +8,61 @@ The format follows a phase-gate model: each enterprise phase ends with passing t
 
 ## [Unreleased]
 
+### Phase 11 — HR
+
+**Added**
+
+- Tenant/branch-scoped HR domain with strict Zod contracts and safe integer-cent arithmetic:
+  employees, employment contracts, versioned payroll rates, leave requests, attendance and payroll
+  runs/lines in `packages/api/lib/hr.js`. Bank name/number and KRA PIN are AES-GCM encrypted at
+  rest; DTOs expose only presence flags and masked suffixes.
+- `/api/hr` endpoints for all seven tables, including contract transitions, rate verification,
+  leave decisions, attendance upsert and payroll calculate/approve/post. Sixteen new `hr.*`
+  permissions are enforced with bearer auth; client-supplied `companyId`, statuses, verification
+  metadata and calculated totals are rejected. Rate verification and payroll posting are separated
+  from record maintenance, and posting also requires `finance.journal.post`.
+- Versioned `PayrollRate` register with UNVERIFIED creation, a separate authorised verify action,
+  effective-interval selection and fail-closed 409 when any of PAYE, NSSF_EMPLOYEE, NSSF_EMPLOYER,
+  SHIF or HOUSING_LEVY is missing. No statutory percentage or amount is hardcoded; BigInt arithmetic
+  rounds each component once, stores a per-line rate snapshot and checks totals for safe-integer
+  headroom. See ADR-0016.
+- Migration `20261123000500_phase11_hr` with seven new RLS-protected tables and an idempotent
+  dynamic `tenant_branch_scope` policy, generated via the shadow-DB method. Idempotent
+  `cmp_comet`-only fixtures seed an employee with encrypted bank details, an active contract and
+  one UNVERIFIED PAYE rate.
+- ERP HR tab with employees, contracts, rates, leave, attendance and payroll runs/lines, simple
+  forms and row actions. Socket frames only invalidate the open view; content is always refetched
+  through the authenticated API.
+- Strict shared HR event schemas and company-room-only sockets: `hr:employee`, `hr:leave`,
+  `hr:rate` and `hr:payroll`. Domain events (`EmployeeCreated`, `LeaveApproved`,
+  `PayrollRateVerified`, `PayrollRunCalculated`, `PayrollRunApproved`) and socket frames carry
+  IDs/classification only. OpenAPI `0.11.0-phase.11`, ADR-0016, README and OpenAPI README updates.
+- `packages/api/tests/phase11-hr.test.js` with 17 tests covering version selection, verified-rate
+  guards, integer-cent math, absence of hardcoded statutory values, encrypted/masked DTOs, strict
+  schemas, DLP fail-closed, lifecycle guards, separation of duties, ID-only events/sockets and
+  tenant scoping.
+
+**Changed**
+
+- Payroll posting is ledger-only: one balanced finance journal using system accounts `EXPENSE`,
+  `AP_CONTROL` and `BANK`. No filing, payment, payslip email or bank transfer is performed.
+- Tenant-scoped sequential Prisma calls replace a raw `$transaction` array so RLS `set_config`
+  context is never bypassed.
+- `Idempotency-Key` remains scoped to messaging sends; HR writes are not replay-safe.
+
+**Verification**
+
+- `npm test` — 169 passed (17 Phase 11), 0 failed; `npm run test:smoke` — 31 passed (7 files).
+- `npm run lint` passes with 21 non-blocking warnings, all in pre-existing web/API files; no Phase 11
+  warnings. `npm run build` passes (`✓ built in 3.43s`, 2335 modules transformed).
+- `node --check packages/erp/public/app.js` passes. OpenAPI YAML parses as `0.11.0-phase.11` with
+  196 paths (21 under `/api/hr`), 203 schemas and 721 `$ref`s resolving with 0 missing.
+- Cross-tenant RLS probe with `comet_app`: `cmp_other` sees 0 rows in all seven HR tables;
+  `cmp_comet` sees 1 employee / 1 contract / 1 rate and 0 in the remaining four. A cross-tenant
+  `Employee` insert under `cmp_other` is blocked by `WITH CHECK` (P2010).
+- `npm run db:deploy` and `npm run db:generate` pass; `npm run db:seed` is idempotent and reports
+  `✓ Seeded HR employee with encrypted bank details, active contract and UNVERIFIED PAYE rate`.
+
 ### Phase 10 — Service
 
 **Added**

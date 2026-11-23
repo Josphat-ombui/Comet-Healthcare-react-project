@@ -1,6 +1,6 @@
 // ERP shell: identity, directory, messaging, platform views (notifications,
 // files, workflow, search, documents), Phase 6 finance, Phase 7 sales,
-// Phase 8 inventory, Phase 9 procurement and Phase 10 service. Uses the same JSON API as the
+// Phase 8 inventory, Phase 9 procurement, Phase 10 service and Phase 11 HR. Uses the same JSON API as the
 // storefront; no external dependencies. The Socket.IO client is served by the
 // realtime service itself, and the inbox falls back to authenticated polling
 // when sockets are unavailable.
@@ -10,7 +10,7 @@ const API_ORIGIN = API.replace(/\/api\/?$/, '')
 const REALTIME = window.ERP_REALTIME_URL || 'http://localhost:4001'
 const POLL_MS = 6000
 const QUEUE_KEY = 'comet_erp_message_queue'
-const VIEWS = ['inbox', 'directory', 'notifications', 'files', 'workflow', 'search', 'documents', 'finance', 'sales', 'inventory', 'procurement', 'service']
+const VIEWS = ['inbox', 'directory', 'notifications', 'files', 'workflow', 'search', 'documents', 'finance', 'sales', 'inventory', 'procurement', 'service', 'hr']
 const FINANCE_EVENTS = [
   'finance:account', 'finance:journal', 'finance:invoice', 'finance:payment',
   'finance:budget', 'finance:rate', 'finance:etims', 'finance:etims-failed',
@@ -36,6 +36,11 @@ const PROCUREMENT_EVENTS = [
 // refetched through the authenticated API.
 const SERVICE_EVENTS = [
   'service:contract', 'service:ticket', 'service:workorder', 'service:visit',
+]
+// HR socket frames carry IDs/classification only. Names, bank references, pay
+// amounts and rate percentages always come from the authenticated HR API.
+const HR_EVENTS = [
+  'hr:employee', 'hr:leave', 'hr:rate', 'hr:payroll',
 ]
 const $ = (id) => document.getElementById(id)
 
@@ -97,12 +102,21 @@ const state = {
   serviceVisits: [],
   servicePartUsages: [],
   serviceCustomers: [],
+  hrEmployees: [],
+  hrContracts: [],
+  hrRates: [],
+  hrLeaveRequests: [],
+  hrAttendance: [],
+  hrPayrollRuns: [],
+  hrPayrollDetailId: null,
+  hrPayrollLines: [],
 }
 let financeRefreshTimer = null
 let salesRefreshTimer = null
 let inventoryRefreshTimer = null
 let procurementRefreshTimer = null
 let serviceRefreshTimer = null
+let hrRefreshTimer = null
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -2997,6 +3011,387 @@ $('servicePartForm').onsubmit = async (event) => {
   await serviceMutation('/service/parts', body, 'svcPartStatus', 'Part usage recorded')
 }
 
+// ------------------------------------------------------------------------ HR
+
+function hrToday() {
+  return new Date().toISOString().slice(0, 10)
+}
+
+function hrNotes(id) {
+  const value = $(id)?.value?.trim()
+  return value ? value : undefined
+}
+
+function hrOptionalId(id) {
+  const value = $(id)?.value
+  return value ? value : undefined
+}
+
+function hrOptionalInstant(id) {
+  const value = $(id)?.value
+  return value ? new Date(value).toISOString() : undefined
+}
+
+function hrMutation(path, body, statusId, message) {
+  setError('hrError', '')
+  if ($(statusId)) $(statusId).textContent = 'Working…'
+  return request(path, { method: 'POST', body: JSON.stringify(body) })
+    .then(async () => {
+      if ($(statusId)) $(statusId).textContent = message
+      await loadHr()
+      return true
+    })
+    .catch((error) => {
+      if ($(statusId)) $(statusId).textContent = ''
+      setError('hrError', error.status === 409 ? `Transition blocked: ${error.message}` : error.message)
+      return false
+    })
+}
+
+function hrActionLabel(action) {
+  return {
+    'activate-contract': 'Activate',
+    'expire-contract': 'Expire',
+    'terminate-contract': 'Terminate',
+    'cancel-contract': 'Cancel',
+    'approve-leave': 'Approve leave',
+    'reject-leave': 'Reject leave',
+    'calculate-payroll': 'Calculate',
+    'approve-payroll': 'Approve run',
+    'post-payroll': 'Post',
+    details: 'Details',
+  }[action] || action
+}
+
+function hrAction(action, id) {
+  return `<button class="link" type="button" data-hr-action="${action}" data-hr-id="${escapeHtml(id)}">${hrActionLabel(action)}</button>`
+}
+
+function hrEmployeeName(id, compact = false) {
+  const employee = state.hrEmployees.find((row) => row.id === id)
+  if (!employee) return escapeHtml(compact ? String(id || '').slice(0, 8) || '—' : '—')
+  const name = `${employee.firstName} ${employee.lastName}`.trim()
+  return escapeHtml(compact ? `${employee.employeeNumber} — ${name}` : name)
+}
+
+function hrRateSnapshot(line) {
+  const rates = line?.rateSnapshot?.rates
+  if (!rates) return '—'
+  return escapeHtml(Object.entries(rates)
+    .map(([kind, value]) => `${kind.replaceAll('_', ' ')} ${value.rateBps}bps`)
+    .join(' · '))
+}
+
+function renderHr() {
+  renderFinanceRows('hrEmployeeRows', state.hrEmployees, [
+    (row) => `<code>${escapeHtml(row.employeeNumber)}</code>`,
+    (row) => escapeHtml(`${row.firstName} ${row.lastName}`.trim()),
+    (row) => financeStatus(row.status),
+    (row) => escapeHtml(row.employmentType),
+    (row) => escapeHtml(row.hiredAt || '—'),
+    (row) => escapeHtml(row.annualLeaveBalanceDays),
+    (row) => `Bank ${escapeHtml(row.bankAccountMasked || '—')} · KRA ${escapeHtml(row.kraPinMasked || '—')}`,
+    (row) => escapeHtml(row.notes || '—'),
+  ], 'No employees for this tenant.')
+
+  renderFinanceRows('hrContractRows', state.hrContracts, [
+    (row) => `<code>${escapeHtml(row.number)}</code>`,
+    (row) => hrEmployeeName(row.employeeId, true),
+    (row) => escapeHtml(`${row.startDate} — ${row.endDate || 'open'}`),
+    (row) => escapeHtml(`${row.basicSalaryCents} / ${row.allowancesCents}`),
+    (row) => financeStatus(row.status),
+    (row) => [
+      row.status === 'DRAFT' ? hrAction('activate-contract', row.id) : '',
+      row.status === 'ACTIVE' ? hrAction('expire-contract', row.id) : '',
+      row.status === 'ACTIVE' ? hrAction('terminate-contract', row.id) : '',
+      ['DRAFT', 'ACTIVE'].includes(row.status) ? hrAction('cancel-contract', row.id) : '',
+    ].join(' '),
+  ], 'No employment contracts for this tenant.')
+
+  renderFinanceRows('hrRateRows', state.hrRates, [
+    (row) => escapeHtml(row.kind),
+    (row) => escapeHtml(row.rateBps),
+    (row) => escapeHtml(String(row.effectiveFrom || '').replace('T', ' ').slice(0, 16)),
+    (row) => escapeHtml(row.effectiveTo ? String(row.effectiveTo).replace('T', ' ').slice(0, 16) : 'open'),
+    (row) => escapeHtml(row.sourceReference),
+    (row) => financeStatus(row.status),
+    (row) => escapeHtml(row.verifiedById ? String(row.verifiedById).slice(0, 8) : '—'),
+  ], 'No payroll rates for this tenant.')
+
+  renderFinanceRows('hrLeaveRows', state.hrLeaveRequests, [
+    (row) => `<code>${escapeHtml(row.number)}</code>`,
+    (row) => hrEmployeeName(row.employeeId, true),
+    (row) => escapeHtml(row.type),
+    (row) => escapeHtml(`${row.startDate} — ${row.endDate}`),
+    (row) => escapeHtml(row.days),
+    (row) => financeStatus(row.status),
+    (row) => ['DRAFT', 'SUBMITTED'].includes(row.status)
+      ? `${hrAction('approve-leave', row.id)} ${hrAction('reject-leave', row.id)}`
+      : '',
+  ], 'No leave requests for this tenant.')
+
+  renderFinanceRows('hrAttendanceRows', state.hrAttendance, [
+    (row) => hrEmployeeName(row.employeeId, true),
+    (row) => escapeHtml(row.date),
+    (row) => escapeHtml(`${(row.hoursWorkedMinutes / 60).toFixed(2)}h (${row.hoursWorkedMinutes}m)`),
+    (row) => escapeHtml(row.checkInAt ? String(row.checkInAt).replace('T', ' ').slice(0, 16) : '—'),
+    (row) => escapeHtml(row.checkOutAt ? String(row.checkOutAt).replace('T', ' ').slice(0, 16) : '—'),
+    (row) => escapeHtml(row.notes || '—'),
+  ], 'No attendance records for this tenant.')
+
+  renderFinanceRows('hrPayrollRows', state.hrPayrollRuns, [
+    (row) => `<code>${escapeHtml(row.number)}</code>`,
+    (row) => escapeHtml(`${row.periodStart} — ${row.periodEnd}`),
+    (row) => escapeHtml(row.employeeIds.length),
+    (row) => escapeHtml(row.grossCents),
+    (row) => escapeHtml(row.deductionsCents),
+    (row) => escapeHtml(row.netCents),
+    (row) => escapeHtml(row.employerCostCents),
+    (row) => financeStatus(row.status),
+    (row) => [
+      hrAction('details', row.id),
+      row.status === 'DRAFT' ? hrAction('calculate-payroll', row.id) : '',
+      row.status === 'CALCULATED' ? hrAction('approve-payroll', row.id) : '',
+      row.status === 'APPROVED' ? hrAction('post-payroll', row.id) : '',
+    ].join(' '),
+  ], 'No payroll runs for this tenant.')
+
+  renderFinanceRows('hrPayrollLineRows', state.hrPayrollLines, [
+    (row) => hrEmployeeName(row.employeeId, true),
+    (row) => escapeHtml(row.basicCents),
+    (row) => escapeHtml(row.allowancesCents),
+    (row) => escapeHtml(row.grossCents),
+    (row) => escapeHtml(row.payeCents),
+    (row) => escapeHtml(row.nssfEmployeeCents),
+    (row) => escapeHtml(row.shifCents),
+    (row) => escapeHtml(row.housingLevyCents),
+    (row) => escapeHtml(row.deductionsCents),
+    (row) => escapeHtml(row.netCents),
+    (row) => escapeHtml(row.employerCostCents),
+    (row) => hrRateSnapshot(row),
+  ], 'No calculated lines for this payroll run.')
+
+  const hasDetail = Boolean(state.hrPayrollDetailId)
+  $('hrPayrollLinesTitle').hidden = !hasDetail
+  $('hrPayrollLinesWrap').hidden = !hasDetail
+
+  const employeeOptions = state.hrEmployees.map((employee) => ({
+    value: employee.id,
+    label: `${employee.employeeNumber} — ${employee.firstName} ${employee.lastName}`,
+  }))
+  for (const id of ['hrContractEmployee', 'hrLeaveEmployee', 'hrAttendanceEmployee']) {
+    fillFinanceSelect($(id), employeeOptions, 'Select an employee')
+  }
+  fillFinanceSelect($('hrVerifyRate'), state.hrRates
+    .filter((rate) => rate.status === 'UNVERIFIED')
+    .map((rate) => ({ value: rate.id, label: `${rate.kind} — ${rate.rateBps}bps from ${rate.effectiveFrom}` })),
+  'No unverified rates')
+
+  if (!$('hrEmployeeHired').value) $('hrEmployeeHired').value = hrToday()
+  if (!$('hrContractStart').value) $('hrContractStart').value = hrToday()
+  if (!$('hrAttendanceDate').value) $('hrAttendanceDate').value = hrToday()
+  if (!$('hrRateFrom').value) $('hrRateFrom').value = `${hrToday()}T00:00`
+  if (!$('hrPayrollStart').value) $('hrPayrollStart').value = `${hrToday().slice(0, 8)}01`
+  if (!$('hrPayrollEnd').value) $('hrPayrollEnd').value = hrToday()
+
+  $('hrView').querySelectorAll('[data-hr-action]').forEach((button) => {
+    button.onclick = () => runHrAction(button.dataset.hrAction, button.dataset.hrId)
+  })
+}
+
+async function refreshHrPayrollDetail() {
+  if (!state.hrPayrollDetailId) return
+  try {
+    const { payrollRun } = await request(`/hr/payroll/runs/${encodeURIComponent(state.hrPayrollDetailId)}`)
+    state.hrPayrollLines = payrollRun.lines || []
+  } catch (error) {
+    state.hrPayrollDetailId = null
+    state.hrPayrollLines = []
+    setError('hrError', `Payroll details: ${error.message}`)
+  }
+}
+
+async function loadHr() {
+  if (!token) return
+  setError('hrError', '')
+  const results = await Promise.allSettled([
+    request('/hr/employees?limit=200'),
+    request('/hr/contracts?limit=200'),
+    request('/hr/rates?limit=200'),
+    request('/hr/leave?limit=200'),
+    request('/hr/attendance?limit=200'),
+    request('/hr/payroll/runs?limit=200'),
+  ])
+  const failures = []
+  const assign = (result, label, setter, key) => {
+    if (result.status === 'fulfilled') setter(financeList(result.value, key))
+    else failures.push(`${label}: ${result.reason?.message || 'unavailable'}`)
+  }
+  assign(results[0], 'Employees', (value) => { state.hrEmployees = value }, 'employees')
+  assign(results[1], 'Contracts', (value) => { state.hrContracts = value }, 'contracts')
+  assign(results[2], 'Payroll rates', (value) => { state.hrRates = value }, 'rates')
+  assign(results[3], 'Leave', (value) => { state.hrLeaveRequests = value }, 'leaveRequests')
+  assign(results[4], 'Attendance', (value) => { state.hrAttendance = value }, 'attendance')
+  assign(results[5], 'Payroll runs', (value) => { state.hrPayrollRuns = value }, 'payrollRuns')
+  await refreshHrPayrollDetail()
+  renderHr()
+  if (failures.length) setError('hrError', failures.join(' · '))
+}
+
+async function runHrAction(action, id) {
+  if (!id) return false
+  if (action === 'details') {
+    state.hrPayrollDetailId = id
+    await refreshHrPayrollDetail()
+    renderHr()
+    return true
+  }
+  const paths = {
+    'activate-contract': `/hr/contracts/${encodeURIComponent(id)}/activate`,
+    'expire-contract': `/hr/contracts/${encodeURIComponent(id)}/expire`,
+    'terminate-contract': `/hr/contracts/${encodeURIComponent(id)}/terminate`,
+    'cancel-contract': `/hr/contracts/${encodeURIComponent(id)}/cancel`,
+    'approve-leave': `/hr/leave/${encodeURIComponent(id)}/decision`,
+    'reject-leave': `/hr/leave/${encodeURIComponent(id)}/decision`,
+    'calculate-payroll': `/hr/payroll/runs/${encodeURIComponent(id)}/calculate`,
+    'approve-payroll': `/hr/payroll/runs/${encodeURIComponent(id)}/approve`,
+    'post-payroll': `/hr/payroll/runs/${encodeURIComponent(id)}/post`,
+  }
+  const path = paths[action]
+  if (!path) return false
+  const body = action === 'approve-leave' || action === 'reject-leave'
+    ? { decision: action === 'approve-leave' ? 'APPROVE' : 'REJECT', note: 'Decided from ERP' }
+    : {}
+  return hrMutation(path, body, 'hrActionStatus', `${hrActionLabel(action)} completed`)
+}
+
+function onHrEvent() {
+  // HR frames carry IDs/classification only. Never treat a frame as content —
+  // reload every record through the authenticated API instead.
+  if (state.view !== 'hr') return
+  if (hrRefreshTimer) clearTimeout(hrRefreshTimer)
+  hrRefreshTimer = setTimeout(() => {
+    hrRefreshTimer = null
+    loadHr()
+  }, 250)
+}
+
+$('refreshHr').onclick = () => loadHr()
+
+$('hrEmployeeForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const body = {
+    employeeNumber: $('hrEmployeeNumber').value,
+    firstName: $('hrEmployeeFirst').value,
+    lastName: $('hrEmployeeLast').value,
+    hiredAt: $('hrEmployeeHired').value,
+    status: $('hrEmployeeStatus').value,
+    employmentType: $('hrEmployeeType').value,
+    annualLeaveBalanceDays: Number($('hrEmployeeLeaveDays').value),
+    classification: $('hrEmployeeClassification').value,
+  }
+  const email = hrOptionalId('hrEmployeeEmail')
+  if (email) body.email = email
+  const phone = $('hrEmployeePhone').value.trim()
+  if (phone) body.phone = phone
+  for (const [field, id] of [
+    ['bankName', 'hrEmployeeBankName'],
+    ['bankAccount', 'hrEmployeeBankAccount'],
+    ['kraPin', 'hrEmployeeKraPin'],
+  ]) {
+    const value = $(id).value.trim()
+    if (value) body[field] = value
+  }
+  const notes = hrNotes('hrEmployeeNotes')
+  if (notes) body.notes = notes
+  await hrMutation('/hr/employees', body, 'hrEmployeeStatusText', 'Employee created')
+}
+
+$('hrContractForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const body = {
+    employeeId: $('hrContractEmployee').value,
+    startDate: $('hrContractStart').value,
+    endDate: $('hrContractEnd').value || null,
+    employmentType: $('hrContractType').value,
+    basicSalaryCents: Number($('hrContractBasic').value),
+    allowancesCents: Number($('hrContractAllowances').value),
+    classification: $('hrContractClassification').value,
+  }
+  const notes = hrNotes('hrContractNotes')
+  if (notes) body.notes = notes
+  await hrMutation('/hr/contracts', body, 'hrContractStatusText', 'Contract created as DRAFT')
+}
+
+$('hrRateForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const body = {
+    kind: $('hrRateKind').value,
+    rateBps: Number($('hrRateBps').value),
+    effectiveFrom: hrOptionalInstant('hrRateFrom'),
+    effectiveTo: hrOptionalInstant('hrRateTo'),
+    sourceReference: $('hrRateSource').value,
+    classification: $('hrRateClassification').value,
+  }
+  const note = hrNotes('hrRateNote')
+  if (note) body.verificationNote = note
+  await hrMutation('/hr/rates', body, 'hrRateStatusText', 'Rate created as UNVERIFIED')
+}
+
+$('hrVerifyForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const rateId = $('hrVerifyRate').value
+  if (!rateId) {
+    setError('hrError', 'Select an unverified payroll rate')
+    return
+  }
+  const body = { verificationNote: $('hrVerifyNote').value.trim() }
+  await hrMutation(`/hr/rates/${encodeURIComponent(rateId)}/verify`, body, 'hrVerifyStatusText', 'Rate verified')
+}
+
+$('hrLeaveForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const body = {
+    employeeId: $('hrLeaveEmployee').value,
+    type: $('hrLeaveType').value,
+    startDate: $('hrLeaveStart').value,
+    endDate: $('hrLeaveEnd').value,
+    days: Number($('hrLeaveDays').value),
+    reason: $('hrLeaveReason').value.trim(),
+    classification: $('hrLeaveClassification').value,
+  }
+  await hrMutation('/hr/leave', body, 'hrLeaveStatusText', 'Leave request submitted')
+}
+
+$('hrAttendanceForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const body = {
+    employeeId: $('hrAttendanceEmployee').value,
+    date: $('hrAttendanceDate').value,
+    hoursWorkedMinutes: Number($('hrAttendanceMinutes').value),
+    classification: $('hrAttendanceClassification').value,
+  }
+  const checkInAt = hrOptionalInstant('hrAttendanceCheckIn')
+  if (checkInAt) body.checkInAt = checkInAt
+  const checkOutAt = hrOptionalInstant('hrAttendanceCheckOut')
+  if (checkOutAt) body.checkOutAt = checkOutAt
+  const notes = hrNotes('hrAttendanceNotes')
+  if (notes) body.notes = notes
+  await hrMutation('/hr/attendance', body, 'hrAttendanceStatusText', 'Attendance recorded')
+}
+
+$('hrPayrollForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const body = {
+    periodStart: $('hrPayrollStart').value,
+    periodEnd: $('hrPayrollEnd').value,
+    classification: $('hrPayrollClassification').value,
+  }
+  const notes = hrNotes('hrPayrollNotes')
+  if (notes) body.notes = notes
+  await hrMutation('/hr/payroll/runs', body, 'hrPayrollStatusText', 'Payroll run created as DRAFT')
+}
+
 // ---------------------------------------------------------------- realtime
 
 function loadSocketClient() {
@@ -3113,6 +3508,8 @@ function connectRealtime() {
     for (const event of PROCUREMENT_EVENTS) socket.on(event, onProcurementEvent)
     // Phase 10 service events are ID/classification-only company-room signals.
     for (const event of SERVICE_EVENTS) socket.on(event, onServiceEvent)
+    // Phase 11 HR events are ID/classification-only company-room signals.
+    for (const event of HR_EVENTS) socket.on(event, onHrEvent)
   })
 }
 
@@ -3145,6 +3542,7 @@ function showView(view) {
   else if (view === 'inventory') loadInventory()
   else if (view === 'procurement') loadProcurement()
   else if (view === 'service') loadService()
+  else if (view === 'hr') loadHr()
 }
 
 $('tabInbox').onclick = () => showView('inbox')
@@ -3159,6 +3557,7 @@ $('tabSales').onclick = () => showView('sales')
 $('tabInventory').onclick = () => showView('inventory')
 $('tabProcurement').onclick = () => showView('procurement')
 $('tabService').onclick = () => showView('service')
+$('tabHr').onclick = () => showView('hr')
 
 // ------------------------------------------------------------------- boot
 
