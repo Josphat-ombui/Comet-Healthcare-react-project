@@ -1,12 +1,12 @@
 # OpenAPI Contract
 
-Comet Healthcare Enterprise Platform — Phase 7 contract complete (`0.7.0-phase.7`)
+Comet Healthcare Enterprise Platform — Phase 8 contract complete (`0.8.0-phase.8`)
 
 This directory holds the versioned REST and webhook contracts. Phase 1 created the skeleton;
 Phase 3 added identity/organisation/audit, Phase 4 added messaging and realtime, Phase 5
 completed the shared-services surface (files, workflow, notifications, search, documents),
-Phase 6 added the tenant/branch-scoped finance surface under `/api/finance`, and Phase 7 adds
-the sales lifecycle under `/api/sales`.
+Phase 6 added the tenant/branch-scoped finance surface under `/api/finance`, Phase 7 added
+the sales lifecycle under `/api/sales`, and Phase 8 adds inventory under `/api/inventory`.
 
 ## Files
 
@@ -33,6 +33,31 @@ the sales lifecycle under `/api/sales`.
 - Response envelopes follow the implementation: named collections such as `files`,
   `definitions`, `instances`, `tasks`, `notifications` and `preferences` are used rather than a
   generic `items` key. `GET /api/search` and `GET /api/documents` use `items` as before.
+
+## Phase 8 scope
+
+- `Inventory` tag paths (22 paths / 30 operations): `/api/inventory/items`, `/batches`,
+  `/warehouses`, `/balances`, `/movements`, `/alerts`, `/stock/receipts`, `/stock/issues`,
+  `/stock/adjustments`, `/transfers` plus transfer detail/approve/receive/cancel, and `/counts`
+  plus count detail/record/approve/cancel.
+- All Phase 3/4/5/6/7 paths and schemas remain intact. Every inventory operation declares
+  `security: [{ bearerAuth: [] }]` and an `x-permission` from the `inventory.*` set. Strict request
+  schemas reject client-supplied `companyId`, statuses and calculated value columns; all free text
+  is DLP-checked and fails closed.
+- Money fields are integer cents (`*Cents`); quantities are positive floats rounded once to three
+  decimals at the service boundary. Receipts use weighted-average valuation: the blended cost is
+  rounded once to a whole cent and the balance value is rebuilt from that rounded average. Issues,
+  adjustments, transfers and count variances use the balance's current average cost. See ADR-0013.
+- `batchId = NULL` means unbatched stock; batch-tracked items require a batch and only `RELEASED`
+  batches may be issued or reduced. Transfers move `DRAFT → IN_TRANSIT → RECEIVED`, capturing line
+  costs at approval; counts move `DRAFT → COUNTING → APPROVED` and post only non-zero variances.
+- Reorder alerts list current breaches and emit `ReorderLevelBreached` on a downward threshold
+  crossing. Phase 8 socket events are `inventory:item`, `inventory:stock`, `inventory:transfer`,
+  `inventory:count` and `inventory:alert`. Domain events and socket frames carry IDs/classification
+  only and are routed to the company room only — never user, thread, inbox or branch rooms. Clients
+  refetch through `/api/inventory`; see `x-realtime` and `x-inventory`.
+- `Idempotency-Key` remains scoped to `POST /api/messaging/threads/{id}/messages` only; no
+  `/api/inventory` endpoint consumes it.
 
 ## Phase 7 scope
 
@@ -105,6 +130,8 @@ the sales lifecycle under `/api/sales`.
     responses to a finance socket frame is a contract violation.
 11. Phase 7 sales frames are ID/classification-only invalidation signals routed to the company
     room. Adding document numbers, amounts, customer names or free text is a contract violation.
+12. Phase 8 inventory frames are ID/classification-only invalidation signals routed to the company
+    room. Adding quantities, costs, values, batch numbers, item names or notes is a contract violation.
 
 ## Security schemes
 
@@ -125,9 +152,9 @@ the sales lifecycle under `/api/sales`.
    ```
 
    An OpenAPI-aware linter (for example `npx @redocly/cli lint docs/openapi/openapi.yaml`) is
-   optional when network access to the generator is available. At the Phase 7 gate the parsed
-   document has version `0.7.0-phase.7`, 108 paths (15 under `/api/sales`) and 77 schemas.
-4. Confirm all `$ref` targets resolve and that no Phase 3/4/5/6 path was removed. A local check:
+   optional when network access to the generator is available. At the Phase 8 gate the parsed
+   document has version `0.8.0-phase.8`, 130 paths (22 under `/api/inventory`) and 114 schemas.
+4. Confirm all `$ref` targets resolve and that no Phase 3/4/5/6/7 path was removed. A local check:
 
    ```bash
    python - <<'PY'
@@ -152,7 +179,9 @@ the sales lifecycle under `/api/sales`.
    Phase 5 contract tests in `packages/api/tests/` cover the shared permission and ID-only
    event rules; Phase 6 finance tests cover verified-rate gating, integer-cent arithmetic and
    eTIMS queue-only behaviour; Phase 7 sales tests cover conversion, status guards, DLP,
-    verified-rate enforcement and company-room ID-only events (274 refs resolved at the gate).
+    verified-rate enforcement and company-room ID-only events; Phase 8 inventory tests cover
+    weighted-average cents, balance movements, transfer/count guards, quarantine, reorder alerts,
+    DLP and company-room ID-only events (383 refs resolved at the gate).
 
 ## Phase gate requirement
 

@@ -1,15 +1,15 @@
 // ERP shell: identity, directory, messaging, platform views (notifications,
-// files, workflow, search, documents), Phase 6 finance and Phase 7 sales. Uses the same JSON
-// API as the storefront; no external dependencies. The Socket.IO client is
-// served by the realtime service itself, and the inbox falls back to
-// authenticated polling when sockets are unavailable.
+// files, workflow, search, documents), Phase 6 finance, Phase 7 sales and
+// Phase 8 inventory. Uses the same JSON API as the storefront; no external
+// dependencies. The Socket.IO client is served by the realtime service itself,
+// and the inbox falls back to authenticated polling when sockets are unavailable.
 
 const API = window.ERP_API_URL || 'http://localhost:4000/api'
 const API_ORIGIN = API.replace(/\/api\/?$/, '')
 const REALTIME = window.ERP_REALTIME_URL || 'http://localhost:4001'
 const POLL_MS = 6000
 const QUEUE_KEY = 'comet_erp_message_queue'
-const VIEWS = ['inbox', 'directory', 'notifications', 'files', 'workflow', 'search', 'documents', 'finance', 'sales']
+const VIEWS = ['inbox', 'directory', 'notifications', 'files', 'workflow', 'search', 'documents', 'finance', 'sales', 'inventory']
 const FINANCE_EVENTS = [
   'finance:account', 'finance:journal', 'finance:invoice', 'finance:payment',
   'finance:budget', 'finance:rate', 'finance:etims', 'finance:etims-failed',
@@ -18,6 +18,11 @@ const FINANCE_EVENTS = [
 // signals: content is always refetched over the authenticated API.
 const SALES_EVENTS = [
   'sales:quote', 'sales:order', 'sales:delivery', 'sales:return', 'sales:invoice',
+]
+// Inventory socket frames carry IDs/classification only. They are invalidation
+// signals: amounts, quantities and records always come from the authenticated API.
+const INVENTORY_EVENTS = [
+  'inventory:item', 'inventory:stock', 'inventory:transfer', 'inventory:count', 'inventory:alert',
 ]
 const $ = (id) => document.getElementById(id)
 
@@ -60,9 +65,18 @@ const state = {
   salesReturns: [],
   salesCustomers: [],
   salesRates: [],
+  inventoryItems: [],
+  inventoryWarehouses: [],
+  inventoryBatches: [],
+  inventoryBalances: [],
+  inventoryMovements: [],
+  inventoryTransfers: [],
+  inventoryCounts: [],
+  inventoryAlerts: [],
 }
 let financeRefreshTimer = null
 let salesRefreshTimer = null
+let inventoryRefreshTimer = null
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -199,6 +213,14 @@ function showDashboard(profile) {
     state.salesReturns = []
     state.salesCustomers = []
     state.salesRates = []
+    state.inventoryItems = []
+    state.inventoryWarehouses = []
+    state.inventoryBatches = []
+    state.inventoryBalances = []
+    state.inventoryMovements = []
+    state.inventoryTransfers = []
+    state.inventoryCounts = []
+    state.inventoryAlerts = []
     state.versionTarget = null
     setUnreadBadge(0)
     $('versionPanel').hidden = true
@@ -1918,6 +1940,359 @@ $('returnForm').onsubmit = async (event) => {
   await salesMutation('/sales/returns', body, 'returnStatus', 'Return created as DRAFT')
 }
 
+// ------------------------------------------------------------------ inventory
+
+function inventoryToday() {
+  return new Date().toISOString().slice(0, 10)
+}
+
+function inventoryMutation(path, body, statusId, message) {
+  setError('inventoryError', '')
+  if ($(statusId)) $(statusId).textContent = 'Working…'
+  return request(path, { method: 'POST', body: JSON.stringify(body) })
+    .then(async () => {
+      if ($(statusId)) $(statusId).textContent = message
+      await loadInventory()
+      return true
+    })
+    .catch((error) => {
+      if ($(statusId)) $(statusId).textContent = ''
+      setError('inventoryError', error.status === 409 ? `Transition blocked: ${error.message}` : error.message)
+      return false
+    })
+}
+
+function inventoryActionLabel(action) {
+  return {
+    'approve-transfer': 'Approve',
+    'receive-transfer': 'Receive',
+    'cancel-transfer': 'Cancel',
+    'record-count': 'Record',
+    'approve-count': 'Approve',
+    'cancel-count': 'Cancel',
+  }[action] || action
+}
+
+function inventoryAction(action, id) {
+  return `<button class="link" type="button" data-inventory-action="${action}" data-inventory-id="${escapeHtml(id)}">${inventoryActionLabel(action)}</button>`
+}
+
+function inventoryItemOptions() {
+  return state.inventoryItems.map((item) => ({
+    value: item.id,
+    label: `${item.code} — ${item.name}`,
+  }))
+}
+
+function inventoryWarehouseOptions() {
+  return state.inventoryWarehouses.map((warehouse) => ({
+    value: warehouse.id,
+    label: `${warehouse.code} — ${warehouse.name}`,
+  }))
+}
+
+function inventoryBatchOptions(itemId) {
+  return state.inventoryBatches
+    .filter((batch) => !itemId || batch.itemId === itemId)
+    .map((batch) => ({ value: batch.id, label: `${batch.batchNumber} — ${batch.status}` }))
+}
+
+function refreshInventoryBatchSelects() {
+  fillFinanceSelect($('invStockBatch'), inventoryBatchOptions($('invStockItem').value), 'Unbatched')
+  fillFinanceSelect($('invTransferBatch'), inventoryBatchOptions($('invTransferItem').value), 'Unbatched')
+  fillFinanceSelect($('invCountBatch'), inventoryBatchOptions($('invCountItem').value), 'Unbatched')
+}
+
+function renderInventory() {
+  renderFinanceRows('inventoryItemRows', state.inventoryItems, [
+    (item) => `<code>${escapeHtml(item.code)}</code>`,
+    (item) => escapeHtml(item.name),
+    (item) => escapeHtml(item.type),
+    (item) => escapeHtml(item.unit),
+    (item) => escapeHtml(item.standardCostCents),
+    (item) => escapeHtml(item.reorderLevel),
+    (item) => (item.trackBatches ? 'Yes' : 'No'),
+    (item) => `<code>${escapeHtml(String(item.id).slice(0, 8))}</code>`,
+  ], 'No inventory items for this tenant.')
+
+  renderFinanceRows('inventoryWarehouseRows', state.inventoryWarehouses, [
+    (warehouse) => `<code>${escapeHtml(warehouse.code)}</code>`,
+    (warehouse) => escapeHtml(warehouse.name),
+    (warehouse) => escapeHtml(warehouse.location || '—'),
+    (warehouse) => (warehouse.isActive ? 'Active' : 'Inactive'),
+  ], 'No warehouses for this tenant.')
+
+  const itemsById = new Map(state.inventoryItems.map((item) => [item.id, item]))
+  const warehousesById = new Map(state.inventoryWarehouses.map((warehouse) => [warehouse.id, warehouse]))
+  renderFinanceRows('inventoryBatchRows', state.inventoryBatches, [
+    (batch) => `<code>${escapeHtml(batch.batchNumber)}</code>`,
+    (batch) => escapeHtml(itemsById.get(batch.itemId)?.code || String(batch.itemId).slice(0, 8)),
+    (batch) => financeStatus(batch.status),
+    (batch) => escapeHtml(batch.unitCostCents),
+    (batch) => escapeHtml(batch.expiryDate || '—'),
+  ], 'No inventory batches for this tenant.')
+
+  renderFinanceRows('inventoryBalanceRows', state.inventoryBalances, [
+    (balance) => escapeHtml(balance.itemCode || itemsById.get(balance.itemId)?.code || String(balance.itemId).slice(0, 8)),
+    (balance) => escapeHtml(balance.warehouseCode || warehousesById.get(balance.warehouseId)?.code || String(balance.warehouseId).slice(0, 8)),
+    (balance) => escapeHtml(balance.batchNumber || 'Unbatched'),
+    (balance) => escapeHtml(balance.quantity),
+    (balance) => escapeHtml(balance.unitCostCents),
+    (balance) => escapeHtml(balance.totalValueCents),
+  ], 'No stock balances for this tenant.')
+
+  renderFinanceRows('inventoryMovementRows', state.inventoryMovements, [
+    (movement) => `<code>${escapeHtml(movement.number)}</code>`,
+    (movement) => financeStatus(movement.type),
+    (movement) => escapeHtml(movement.movementDate),
+    (movement) => escapeHtml(movement.itemCode || String(movement.itemId).slice(0, 8)),
+    (movement) => escapeHtml(movement.warehouseCode || String(movement.warehouseId).slice(0, 8)),
+    (movement) => escapeHtml(movement.quantity),
+    (movement) => escapeHtml(movement.unitCostCents),
+    (movement) => escapeHtml(movement.totalValueCents),
+  ], 'No stock movements for this tenant.')
+
+  renderFinanceRows('inventoryTransferRows', state.inventoryTransfers, [
+    (transfer) => `<code>${escapeHtml(transfer.number)}</code>`,
+    (transfer) => escapeHtml(transfer.transferDate),
+    (transfer) => escapeHtml(warehousesById.get(transfer.sourceWarehouseId)?.code || String(transfer.sourceWarehouseId).slice(0, 8)),
+    (transfer) => escapeHtml(warehousesById.get(transfer.destinationWarehouseId)?.code || String(transfer.destinationWarehouseId).slice(0, 8)),
+    (transfer) => financeStatus(transfer.status),
+    (transfer) => [
+      transfer.status === 'DRAFT' ? inventoryAction('approve-transfer', transfer.id) : '',
+      transfer.status === 'IN_TRANSIT' ? inventoryAction('receive-transfer', transfer.id) : '',
+      ['DRAFT', 'IN_TRANSIT'].includes(transfer.status) ? inventoryAction('cancel-transfer', transfer.id) : '',
+    ].join(' '),
+  ], 'No stock transfers for this tenant.')
+
+  renderFinanceRows('inventoryCountRows', state.inventoryCounts, [
+    (count) => `<code>${escapeHtml(count.number)}</code>`,
+    (count) => escapeHtml(count.countDate),
+    (count) => escapeHtml(warehousesById.get(count.warehouseId)?.code || String(count.warehouseId).slice(0, 8)),
+    (count) => financeStatus(count.status),
+    (count) => [
+      ['DRAFT', 'COUNTING'].includes(count.status) ? inventoryAction('record-count', count.id) : '',
+      ['DRAFT', 'COUNTING'].includes(count.status) ? inventoryAction('approve-count', count.id) : '',
+      ['DRAFT', 'COUNTING'].includes(count.status) ? inventoryAction('cancel-count', count.id) : '',
+    ].join(' '),
+  ], 'No stock counts for this tenant.')
+
+  renderFinanceRows('inventoryAlertRows', state.inventoryAlerts, [
+    (alert) => escapeHtml(alert.itemCode || String(alert.itemId).slice(0, 8)),
+    (alert) => escapeHtml(alert.warehouseCode || String(alert.warehouseId).slice(0, 8)),
+    (alert) => escapeHtml(alert.batchId ? String(alert.batchId).slice(0, 8) : 'Unbatched'),
+    (alert) => escapeHtml(alert.quantity),
+    (alert) => escapeHtml(alert.reorderLevel),
+    (alert) => escapeHtml(alert.unit || '—'),
+  ], 'No reorder alerts for this tenant.')
+
+  const itemOptions = inventoryItemOptions()
+  const warehouseOptions = inventoryWarehouseOptions()
+  fillFinanceSelect($('invBatchItem'), itemOptions, 'Select an item')
+  fillFinanceSelect($('invStockItem'), itemOptions, 'Select an item')
+  fillFinanceSelect($('invTransferItem'), itemOptions, 'Select an item')
+  fillFinanceSelect($('invCountItem'), itemOptions, 'Select an item')
+  fillFinanceSelect($('invStockWarehouse'), warehouseOptions, 'Select a warehouse')
+  fillFinanceSelect($('invTransferSource'), warehouseOptions, 'Select a source')
+  fillFinanceSelect($('invTransferDestination'), warehouseOptions, 'Select a destination')
+  fillFinanceSelect($('invCountWarehouse'), warehouseOptions, 'Select a warehouse')
+  refreshInventoryBatchSelects()
+
+  $('inventoryView').querySelectorAll('[data-inventory-action]').forEach((button) => {
+    button.onclick = () => runInventoryAction(button.dataset.inventoryAction, button.dataset.inventoryId)
+  })
+}
+
+async function loadInventory() {
+  if (!token) return
+  setError('inventoryError', '')
+  const [items, warehouses, batches, balances, movements, transfers, counts, alerts] = await Promise.allSettled([
+    request('/inventory/items?limit=200'),
+    request('/inventory/warehouses?limit=200'),
+    request('/inventory/batches?limit=200'),
+    request('/inventory/balances?limit=200'),
+    request('/inventory/movements?limit=200'),
+    request('/inventory/transfers?limit=200'),
+    request('/inventory/counts?limit=200'),
+    request('/inventory/alerts?limit=200'),
+  ])
+  const failures = []
+  const assign = (result, label, setter, key) => {
+    if (result.status === 'fulfilled') setter(financeList(result.value, key))
+    else failures.push(`${label}: ${result.reason?.message || 'unavailable'}`)
+  }
+  assign(items, 'Items', (value) => { state.inventoryItems = value }, 'items')
+  assign(warehouses, 'Warehouses', (value) => { state.inventoryWarehouses = value }, 'warehouses')
+  assign(batches, 'Batches', (value) => { state.inventoryBatches = value }, 'batches')
+  assign(balances, 'Balances', (value) => { state.inventoryBalances = value }, 'balances')
+  assign(movements, 'Movements', (value) => { state.inventoryMovements = value }, 'movements')
+  assign(transfers, 'Transfers', (value) => { state.inventoryTransfers = value }, 'transfers')
+  assign(counts, 'Counts', (value) => { state.inventoryCounts = value }, 'counts')
+  assign(alerts, 'Alerts', (value) => { state.inventoryAlerts = value }, 'alerts')
+  const day = inventoryToday()
+  for (const field of ['invStockDate', 'invTransferDate', 'invCountDate']) {
+    if ($(field) && !$(field).value) $(field).value = day
+  }
+  renderInventory()
+  if (failures.length) setError('inventoryError', failures.join(' · '))
+}
+
+function inventoryBody(base, batchField = 'invStockBatch') {
+  const batchId = $(batchField).value
+  return { ...base, ...(batchId ? { batchId } : { batchId: null }) }
+}
+
+async function runInventoryAction(action, id) {
+  if (!id) return
+  const paths = {
+    'approve-transfer': `/inventory/transfers/${encodeURIComponent(id)}/approve`,
+    'receive-transfer': `/inventory/transfers/${encodeURIComponent(id)}/receive`,
+    'cancel-transfer': `/inventory/transfers/${encodeURIComponent(id)}/cancel`,
+    'approve-count': `/inventory/counts/${encodeURIComponent(id)}/approve`,
+    'cancel-count': `/inventory/counts/${encodeURIComponent(id)}/cancel`,
+  }
+  if (action === 'record-count') {
+    const count = state.inventoryCounts.find((entry) => entry.id === id)
+    const line = count?.lines?.[0]
+    if (!line) {
+      setError('inventoryError', 'Select a stock count with a line to record')
+      return false
+    }
+    return inventoryMutation(`/inventory/counts/${encodeURIComponent(id)}/record`, {
+      lines: [{
+        itemId: line.itemId,
+        ...(line.batchId ? { batchId: line.batchId } : { batchId: null }),
+        countedQty: Number($('invCountedQty').value),
+        position: line.position ?? 0,
+      }],
+    }, 'inventoryActionStatus', 'Stock count recorded')
+  }
+  const path = paths[action]
+  if (!path) return false
+  return inventoryMutation(path, {}, 'inventoryActionStatus', `${inventoryActionLabel(action)} completed`)
+}
+
+function onInventoryEvent() {
+  // Inventory socket frames carry IDs/classification only. Never render their
+  // payload as stock content — refetch authoritative data over the API.
+  if (state.view !== 'inventory') return
+  if (inventoryRefreshTimer) clearTimeout(inventoryRefreshTimer)
+  inventoryRefreshTimer = setTimeout(() => {
+    inventoryRefreshTimer = null
+    loadInventory()
+  }, 250)
+}
+
+$('refreshInventory').onclick = () => loadInventory()
+$('invStockItem').onchange = refreshInventoryBatchSelects
+$('invTransferItem').onchange = refreshInventoryBatchSelects
+$('invCountItem').onchange = refreshInventoryBatchSelects
+
+$('inventoryItemForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const body = {
+    code: $('invItemCode').value,
+    name: $('invItemName').value,
+    type: $('invItemType').value,
+    unit: $('invItemUnit').value,
+    standardCostCents: Number($('invItemCost').value),
+    reorderLevel: Number($('invItemReorder').value),
+    trackBatches: $('invItemTrackBatches').checked,
+    classification: $('invItemClassification').value,
+  }
+  const ok = await inventoryMutation('/inventory/items', body, 'invItemStatus', 'Item created')
+  if (ok) $('inventoryItemForm').reset()
+}
+
+$('inventoryWarehouseForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const body = {
+    code: $('invWarehouseCode').value,
+    name: $('invWarehouseName').value,
+    location: $('invWarehouseLocation').value,
+  }
+  const ok = await inventoryMutation('/inventory/warehouses', body, 'invWarehouseStatus', 'Warehouse created')
+  if (ok) $('inventoryWarehouseForm').reset()
+}
+
+$('inventoryBatchForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const body = {
+    itemId: $('invBatchItem').value,
+    batchNumber: $('invBatchNumber').value,
+    status: $('invBatchStatus').value,
+    unitCostCents: Number($('invBatchCost').value),
+    expiryDate: $('invBatchExpiry').value || null,
+  }
+  const ok = await inventoryMutation('/inventory/batches', body, 'invBatchStatusText', 'Batch created')
+  if (ok) $('inventoryBatchForm').reset()
+}
+
+$('inventoryStockForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const operation = $('invStockOperation').value
+  const base = inventoryBody({
+    itemId: $('invStockItem').value,
+    warehouseId: $('invStockWarehouse').value,
+    quantity: Number($('invStockQuantity').value),
+    movementDate: $('invStockDate').value,
+  })
+  let path
+  let message
+  if (operation === 'receipts') {
+    Object.assign(base, {
+      unitCostCents: Number($('invStockCost').value),
+      notes: $('invStockNotes').value,
+    })
+    path = '/inventory/stock/receipts'
+    message = 'Stock received'
+  } else if (operation === 'issues') {
+    Object.assign(base, { notes: $('invStockNotes').value })
+    path = '/inventory/stock/issues'
+    message = 'Stock issued'
+  } else {
+    Object.assign(base, {
+      direction: $('invStockDirection').value,
+      unitCostCents: Number($('invStockCost').value),
+      reason: $('invStockNotes').value || 'ERP adjustment',
+    })
+    path = '/inventory/stock/adjustments'
+    message = 'Adjustment posted'
+  }
+  await inventoryMutation(path, base, 'invStockStatus', message)
+}
+
+$('inventoryTransferForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const body = {
+    sourceWarehouseId: $('invTransferSource').value,
+    destinationWarehouseId: $('invTransferDestination').value,
+    transferDate: $('invTransferDate').value,
+    lines: [inventoryBody({
+      itemId: $('invTransferItem').value,
+      quantity: Number($('invTransferQuantity').value),
+      position: 0,
+    }, 'invTransferBatch')],
+  }
+  const ok = await inventoryMutation('/inventory/transfers', body, 'invTransferStatus', 'Transfer created as DRAFT')
+  if (ok) $('inventoryTransferForm').reset()
+}
+
+$('inventoryCountForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const body = {
+    warehouseId: $('invCountWarehouse').value,
+    countDate: $('invCountDate').value,
+    lines: [inventoryBody({
+      itemId: $('invCountItem').value,
+      countedQty: Number($('invCountedQty').value),
+      position: 0,
+    }, 'invCountBatch')],
+  }
+  const ok = await inventoryMutation('/inventory/counts', body, 'invCountStatus', 'Stock count started as DRAFT')
+  if (ok) $('inventoryCountForm').reset()
+}
+
 // ---------------------------------------------------------------- realtime
 
 function loadSocketClient() {
@@ -2028,6 +2403,8 @@ function connectRealtime() {
     for (const event of FINANCE_EVENTS) socket.on(event, onFinanceEvent)
     // Phase 7 sales events are ID/classification-only company-room signals.
     for (const event of SALES_EVENTS) socket.on(event, onSalesEvent)
+    // Phase 8 inventory events are ID/classification-only company-room signals.
+    for (const event of INVENTORY_EVENTS) socket.on(event, onInventoryEvent)
   })
 }
 
@@ -2057,6 +2434,7 @@ function showView(view) {
   }
   else if (view === 'finance') loadFinance()
   else if (view === 'sales') loadSales()
+  else if (view === 'inventory') loadInventory()
 }
 
 $('tabInbox').onclick = () => showView('inbox')
@@ -2068,6 +2446,7 @@ $('tabSearch').onclick = () => showView('search')
 $('tabDocuments').onclick = () => showView('documents')
 $('tabFinance').onclick = () => showView('finance')
 $('tabSales').onclick = () => showView('sales')
+$('tabInventory').onclick = () => showView('inventory')
 
 // ------------------------------------------------------------------- boot
 

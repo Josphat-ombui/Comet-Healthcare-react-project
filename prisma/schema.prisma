@@ -364,6 +364,67 @@ enum SalesReturnStatus {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 8 inventory enums
+// ---------------------------------------------------------------------------
+
+enum InventoryItemType {
+  RAW_MATERIAL
+  PACKAGING
+  FINISHED_GOOD
+  CONSUMABLE
+  SPARE_PART
+}
+
+enum InventoryUnit {
+  EA
+  BOX
+  CARTON
+  KG
+  G
+  L
+  ML
+  TAB
+  VIAL
+  BOTTLE
+}
+
+enum StockMovementType {
+  RECEIPT
+  ISSUE
+  TRANSFER_IN
+  TRANSFER_OUT
+  ADJUSTMENT_IN
+  ADJUSTMENT_OUT
+  COUNT_GAIN
+  COUNT_LOSS
+  RETURN_IN
+  RETURN_OUT
+  PRODUCTION_ISSUE
+  PRODUCTION_RECEIPT
+}
+
+enum StockTransferStatus {
+  DRAFT
+  IN_TRANSIT
+  RECEIVED
+  CANCELLED
+}
+
+enum StockCountStatus {
+  DRAFT
+  COUNTING
+  APPROVED
+  CANCELLED
+}
+
+enum BatchStatus {
+  QUARANTINE
+  RELEASED
+  EXPIRED
+  RECALLED
+}
+
+// ---------------------------------------------------------------------------
 // Organisation
 // ---------------------------------------------------------------------------
 
@@ -446,6 +507,15 @@ model Company {
   deliveryNoteLines        DeliveryNoteLine[]
   salesReturns             SalesReturn[]
   salesReturnLines         SalesReturnLine[]
+  inventoryItems           InventoryItem[]
+  warehouses               Warehouse[]
+  inventoryBatches         InventoryBatch[]
+  stockBalances            StockBalance[]
+  stockMovements           StockMovement[]
+  stockTransfers           StockTransfer[]
+  stockTransferLines       StockTransferLine[]
+  stockCounts              StockCount[]
+  stockCountLines          StockCountLine[]
 }
 
 model Branch {
@@ -488,6 +558,15 @@ model Branch {
   deliveryNoteLines DeliveryNoteLine[]
   salesReturns      SalesReturn[]
   salesReturnLines  SalesReturnLine[]
+  inventoryItems           InventoryItem[]
+  warehouses               Warehouse[]
+  inventoryBatches         InventoryBatch[]
+  stockBalances            StockBalance[]
+  stockMovements           StockMovement[]
+  stockTransfers           StockTransfer[]
+  stockTransferLines       StockTransferLine[]
+  stockCounts              StockCount[]
+  stockCountLines          StockCountLine[]
 
   @@unique([companyId, code])
   @@index([companyId, isActive])
@@ -625,6 +704,17 @@ model User {
   salesOrdersCreated      SalesOrder[]             @relation("SalesOrderCreatedBy")
   deliveryNotesCreated    DeliveryNote[]           @relation("DeliveryNoteCreatedBy")
   salesReturnsCreated     SalesReturn[]            @relation("SalesReturnCreatedBy")
+  inventoryItemsCreated   InventoryItem[]           @relation("InventoryItemCreatedBy")
+  warehousesCreated       Warehouse[]               @relation("WarehouseCreatedBy")
+  inventoryBatchesCreated InventoryBatch[]          @relation("InventoryBatchCreatedBy")
+  stockBalancesCreated    StockBalance[]            @relation("StockBalanceCreatedBy")
+  stockMovementsCreated   StockMovement[]           @relation("StockMovementCreatedBy")
+  stockTransfersCreated   StockTransfer[]           @relation("StockTransferCreatedBy")
+  stockTransfersApproved  StockTransfer[]           @relation("StockTransferApprovedBy")
+  stockTransferLinesCreated StockTransferLine[]     @relation("StockTransferLineCreatedBy")
+  stockCountsCreated      StockCount[]              @relation("StockCountCreatedBy")
+  stockCountsApproved     StockCount[]              @relation("StockCountApprovedBy")
+  stockCountLinesCreated  StockCountLine[]          @relation("StockCountLineCreatedBy")
 
   @@unique([companyId, email])
   @@unique([companyId, identityProvider, externalId])
@@ -2035,5 +2125,279 @@ model SalesReturnLine {
   createdAt      DateTime    @default(now())
 
   @@index([returnId])
+  @@index([companyId])
+}
+
+// ---------------------------------------------------------------------------
+// Phase 8 inventory
+//
+// Stock is valued with a weighted-average unit cost in integer cents. Balances
+// are unique per company + item + warehouse + batch; a NULL batch represents
+// unbatched stock. Quantities are rounded to three decimals at the service
+// boundary. All tables carry tenant/branch scope and RLS policies. Events and
+// audit metadata carry IDs only — never quantities, costs or free text.
+// ---------------------------------------------------------------------------
+
+model InventoryItem {
+  id               String             @id @default(cuid())
+  companyId        String             @default("cmp_comet")
+  tenant           Company            @relation(fields: [companyId], references: [id])
+  branchId         String?
+  branch           Branch?            @relation(fields: [branchId], references: [id])
+  code             String
+  name             String
+  type             InventoryItemType
+  unit             InventoryUnit      @default(EA)
+  standardCostCents Int               @default(0)
+  reorderLevel     Float              @default(0)
+  trackBatches     Boolean            @default(true)
+  isActive         Boolean            @default(true)
+  description      String?
+  classification   DataClassification @default(INTERNAL)
+  createdById      String?
+  createdBy        User?              @relation("InventoryItemCreatedBy", fields: [createdById], references: [id])
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  batches         InventoryBatch[]
+  balances        StockBalance[]
+  movements       StockMovement[]
+  transferLines   StockTransferLine[]
+  countLines      StockCountLine[]
+
+  @@unique([companyId, code])
+  @@index([companyId, type, isActive])
+}
+
+model Warehouse {
+  id             String             @id @default(cuid())
+  companyId      String             @default("cmp_comet")
+  tenant         Company            @relation(fields: [companyId], references: [id])
+  branchId       String?
+  branch         Branch?            @relation(fields: [branchId], references: [id])
+  code           String
+  name           String
+  location       String?
+  isActive       Boolean            @default(true)
+  classification DataClassification @default(INTERNAL)
+  createdById    String?
+  createdBy      User?              @relation("WarehouseCreatedBy", fields: [createdById], references: [id])
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  balances       StockBalance[]
+  movementsOut   StockMovement[]    @relation("StockMovementWarehouse")
+  transfersFrom  StockTransfer[]    @relation("StockTransferSource")
+  transfersTo    StockTransfer[]    @relation("StockTransferDestination")
+  counts         StockCount[]
+
+  @@unique([companyId, code])
+  @@index([companyId, isActive])
+}
+
+model InventoryBatch {
+  id               String             @id @default(cuid())
+  companyId        String             @default("cmp_comet")
+  tenant           Company            @relation(fields: [companyId], references: [id])
+  branchId         String?
+  branch           Branch?            @relation(fields: [branchId], references: [id])
+  itemId           String
+  item             InventoryItem      @relation(fields: [itemId], references: [id])
+  batchNumber      String
+  status           BatchStatus        @default(QUARANTINE)
+  unitCostCents    Int                @default(0)
+  manufactureDate  String?
+  expiryDate       String?
+  classification   DataClassification @default(INTERNAL)
+  createdById      String?
+  createdBy        User?              @relation("InventoryBatchCreatedBy", fields: [createdById], references: [id])
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  balances        StockBalance[]
+  movements       StockMovement[]
+  transferLines   StockTransferLine[]
+  countLines      StockCountLine[]
+
+  @@unique([companyId, itemId, batchNumber])
+  @@index([companyId, status])
+  @@index([companyId, expiryDate])
+}
+
+model StockBalance {
+  id               String             @id @default(cuid())
+  companyId        String             @default("cmp_comet")
+  tenant           Company            @relation(fields: [companyId], references: [id])
+  branchId         String?
+  branch           Branch?            @relation(fields: [branchId], references: [id])
+  itemId           String
+  item             InventoryItem      @relation(fields: [itemId], references: [id])
+  warehouseId      String
+  warehouse        Warehouse          @relation(fields: [warehouseId], references: [id])
+  batchId          String?
+  batch            InventoryBatch?    @relation(fields: [batchId], references: [id])
+  quantity         Float              @default(0)
+  unitCostCents    Int                @default(0)
+  totalValueCents  Int                @default(0)
+  classification   DataClassification @default(INTERNAL)
+  createdById      String?
+  createdBy        User?              @relation("StockBalanceCreatedBy", fields: [createdById], references: [id])
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  @@unique([companyId, itemId, warehouseId, batchId])
+  @@index([companyId, itemId])
+  @@index([companyId, warehouseId])
+}
+
+model StockMovement {
+  id               String             @id @default(cuid())
+  companyId        String             @default("cmp_comet")
+  tenant           Company            @relation(fields: [companyId], references: [id])
+  branchId         String?
+  branch           Branch?            @relation(fields: [branchId], references: [id])
+  number           String
+  type             StockMovementType
+  itemId           String
+  item             InventoryItem      @relation(fields: [itemId], references: [id])
+  warehouseId      String
+  warehouse        Warehouse          @relation("StockMovementWarehouse", fields: [warehouseId], references: [id])
+  batchId          String?
+  batch            InventoryBatch?    @relation(fields: [batchId], references: [id])
+  quantity         Float
+  unitCostCents    Int                @default(0)
+  totalValueCents  Int                @default(0)
+  movementDate     String
+  referenceType    String?
+  referenceId      String?
+  transferLineId   String?
+  transferLine     StockTransferLine? @relation(fields: [transferLineId], references: [id])
+  countLineId      String?
+  countLine        StockCountLine?    @relation(fields: [countLineId], references: [id])
+  notes            String?
+  classification   DataClassification @default(INTERNAL)
+  createdById      String?
+  createdBy        User?              @relation("StockMovementCreatedBy", fields: [createdById], references: [id])
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  @@unique([companyId, number])
+  @@index([companyId, type, movementDate])
+  @@index([companyId, itemId])
+  @@index([companyId, warehouseId])
+}
+
+model StockTransfer {
+  id                   String              @id @default(cuid())
+  companyId            String              @default("cmp_comet")
+  tenant               Company             @relation(fields: [companyId], references: [id])
+  branchId             String?
+  branch               Branch?             @relation(fields: [branchId], references: [id])
+  number               String
+  status               StockTransferStatus @default(DRAFT)
+  sourceWarehouseId    String
+  sourceWarehouse      Warehouse           @relation("StockTransferSource", fields: [sourceWarehouseId], references: [id])
+  destinationWarehouseId String
+  destinationWarehouse Warehouse          @relation("StockTransferDestination", fields: [destinationWarehouseId], references: [id])
+  transferDate         String
+  notes                String?
+  classification       DataClassification  @default(INTERNAL)
+  approvedAt           DateTime?
+  receivedAt           DateTime?
+  createdById          String?
+  createdBy            User?               @relation("StockTransferCreatedBy", fields: [createdById], references: [id])
+  approvedById         String?
+  approvedBy           User?               @relation("StockTransferApprovedBy", fields: [approvedById], references: [id])
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+
+  lines StockTransferLine[]
+
+  @@unique([companyId, number])
+  @@index([companyId, status, transferDate])
+}
+
+model StockTransferLine {
+  id               String             @id @default(cuid())
+  companyId        String             @default("cmp_comet")
+  tenant           Company            @relation(fields: [companyId], references: [id])
+  branchId         String?
+  branch           Branch?            @relation(fields: [branchId], references: [id])
+  transferId       String
+  transfer         StockTransfer      @relation(fields: [transferId], references: [id])
+  itemId           String
+  item             InventoryItem      @relation(fields: [itemId], references: [id])
+  batchId          String?
+  batch            InventoryBatch?    @relation(fields: [batchId], references: [id])
+  quantity         Float
+  unitCostCents    Int                @default(0)
+  totalValueCents  Int                @default(0)
+  position         Int                @default(0)
+  classification   DataClassification @default(INTERNAL)
+  createdById      String?
+  createdBy        User?              @relation("StockTransferLineCreatedBy", fields: [createdById], references: [id])
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  movements StockMovement[]
+
+  @@index([transferId])
+  @@index([companyId])
+}
+
+model StockCount {
+  id               String             @id @default(cuid())
+  companyId        String             @default("cmp_comet")
+  tenant           Company            @relation(fields: [companyId], references: [id])
+  branchId         String?
+  branch           Branch?            @relation(fields: [branchId], references: [id])
+  number           String
+  status           StockCountStatus   @default(DRAFT)
+  warehouseId      String
+  warehouse        Warehouse          @relation(fields: [warehouseId], references: [id])
+  countDate        String
+  notes            String?
+  classification   DataClassification @default(INTERNAL)
+  approvedAt       DateTime?
+  createdById      String?
+  createdBy        User?              @relation("StockCountCreatedBy", fields: [createdById], references: [id])
+  approvedById     String?
+  approvedBy       User?              @relation("StockCountApprovedBy", fields: [approvedById], references: [id])
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  lines StockCountLine[]
+
+  @@unique([companyId, number])
+  @@index([companyId, status, countDate])
+}
+
+model StockCountLine {
+  id                 String             @id @default(cuid())
+  companyId          String             @default("cmp_comet")
+  tenant             Company            @relation(fields: [companyId], references: [id])
+  branchId           String?
+  branch             Branch?            @relation(fields: [branchId], references: [id])
+  countId            String
+  count              StockCount         @relation(fields: [countId], references: [id])
+  itemId             String
+  item               InventoryItem      @relation(fields: [itemId], references: [id])
+  batchId            String?
+  batch              InventoryBatch?    @relation(fields: [batchId], references: [id])
+  expectedQty        Float              @default(0)
+  countedQty         Float
+  varianceQty        Float              @default(0)
+  unitCostCents      Int                @default(0)
+  varianceValueCents Int                @default(0)
+  position           Int                @default(0)
+  classification     DataClassification @default(INTERNAL)
+  createdById        String?
+  createdBy          User?              @relation("StockCountLineCreatedBy", fields: [createdById], references: [id])
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  movements StockMovement[]
+
+  @@index([countId])
   @@index([companyId])
 }

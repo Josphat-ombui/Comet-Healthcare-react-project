@@ -43,6 +43,7 @@
         <button id="tabDocuments" class="tab" type="button">Documents</button>
         <button id="tabFinance" class="tab" type="button">Finance</button>
         <button id="tabSales" class="tab" type="button">Sales</button>
+        <button id="tabInventory" class="tab" type="button">Inventory</button>
         <span id="connection" class="pill connection" aria-live="polite">Connecting…</span>
       </nav>
 
@@ -645,6 +646,200 @@
               <label>Reason<textarea id="returnReason" rows="2" maxlength="1000" placeholder="Optional quality or customer query"></textarea></label>
               <div class="form-actions"><button type="submit">Create return</button><span id="returnStatus" class="muted" aria-live="polite"></span></div>
             </form>
+          </section>
+        </div>
+      </section>
+
+      <section id="inventoryView" hidden>
+        <p class="finance-banner" role="note">Inventory keeps money in integer cents and quantities to three decimals. Socket frames carry IDs only — every value below is refetched through the authenticated API.</p>
+        <p id="inventoryError" class="error" role="alert"></p>
+        <p id="inventoryActionStatus" class="muted" aria-live="polite"></p>
+        <div class="grid">
+          <section class="card span-2">
+            <div class="card-head"><h2>Inventory items</h2><button id="refreshInventory" class="link" type="button">Refresh</button></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Code</th><th>Name</th><th>Type</th><th>Unit</th><th>Std cost (cents)</th><th>Reorder</th><th>Batches</th><th></th></tr></thead>
+                <tbody id="inventoryItemRows"></tbody>
+              </table>
+            </div>
+            <form id="inventoryItemForm">
+              <div class="field-row finance-field-row">
+                <label>Code<input id="invItemCode" required maxlength="60" placeholder="itm_metformin_api" /></label>
+                <label>Name<input id="invItemName" required maxlength="160" /></label>
+                <label>Type
+                  <select id="invItemType" required>
+                    <option value="RAW_MATERIAL">Raw material</option>
+                    <option value="PACKAGING">Packaging</option>
+                    <option value="FINISHED_GOOD">Finished good</option>
+                    <option value="CONSUMABLE">Consumable</option>
+                    <option value="SPARE_PART">Spare part</option>
+                  </select>
+                </label>
+                <label>Unit
+                  <select id="invItemUnit">
+                    <option value="EA">EA</option><option value="BOX">BOX</option><option value="CARTON">CARTON</option>
+                    <option value="KG">KG</option><option value="G">G</option><option value="L">L</option>
+                    <option value="ML">ML</option><option value="TAB">TAB</option><option value="VIAL">VIAL</option>
+                    <option value="BOTTLE">BOTTLE</option>
+                  </select>
+                </label>
+              </div>
+              <div class="field-row finance-field-row">
+                <label>Standard cost (cents)<input id="invItemCost" type="number" min="0" step="1" value="0" required /></label>
+                <label>Reorder level<input id="invItemReorder" type="number" min="0" step="0.001" value="0" required /></label>
+                <label>Classification
+                  <select id="invItemClassification">
+                    <option value="INTERNAL">Internal</option><option value="PUBLIC">Public</option>
+                    <option value="CONFIDENTIAL">Confidential</option><option value="RESTRICTED">Restricted</option>
+                  </select>
+                </label>
+                <label class="inline-check"><input id="invItemTrackBatches" type="checkbox" checked /> Track batches</label>
+              </div>
+              <div class="form-actions"><button type="submit">Create item</button><span id="invItemStatus" class="muted" aria-live="polite"></span></div>
+            </form>
+          </section>
+
+          <section class="card">
+            <div class="card-head"><h2>Warehouses</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Code</th><th>Name</th><th>Location</th><th></th></tr></thead>
+                <tbody id="inventoryWarehouseRows"></tbody>
+              </table>
+            </div>
+            <form id="inventoryWarehouseForm">
+              <label>Code<input id="invWarehouseCode" required maxlength="60" placeholder="wh_raw_store" /></label>
+              <label>Name<input id="invWarehouseName" required maxlength="160" /></label>
+              <label>Location<input id="invWarehouseLocation" maxlength="300" /></label>
+              <div class="form-actions"><button type="submit">Create warehouse</button><span id="invWarehouseStatus" class="muted" aria-live="polite"></span></div>
+            </form>
+          </section>
+
+          <section class="card">
+            <div class="card-head"><h2>Batches</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Item</th><th>Status</th><th>Cost (cents)</th><th>Expiry</th></tr></thead>
+                <tbody id="inventoryBatchRows"></tbody>
+              </table>
+            </div>
+            <form id="inventoryBatchForm">
+              <label>Item<select id="invBatchItem" required></select></label>
+              <label>Batch number<input id="invBatchNumber" required maxlength="80" /></label>
+              <div class="field-row finance-field-row">
+                <label>Status
+                  <select id="invBatchStatus">
+                    <option value="QUARANTINE">Quarantine</option><option value="RELEASED">Released</option>
+                    <option value="EXPIRED">Expired</option><option value="RECALLED">Recalled</option>
+                  </select>
+                </label>
+                <label>Unit cost (cents)<input id="invBatchCost" type="number" min="0" step="1" value="0" /></label>
+                <label>Expiry<input id="invBatchExpiry" type="date" /></label>
+              </div>
+              <div class="form-actions"><button type="submit">Create batch</button><span id="invBatchStatusText" class="muted" aria-live="polite"></span></div>
+            </form>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Stock balances</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Item</th><th>Warehouse</th><th>Batch</th><th>Quantity</th><th>Avg cost (cents)</th><th>Value (cents)</th></tr></thead>
+                <tbody id="inventoryBalanceRows"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Stock movements</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Type</th><th>Date</th><th>Item</th><th>Warehouse</th><th>Qty</th><th>Unit cost</th><th>Value</th></tr></thead>
+                <tbody id="inventoryMovementRows"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Move stock</h2></div>
+            <form id="inventoryStockForm">
+              <div class="field-row finance-field-row">
+                <label>Operation
+                  <select id="invStockOperation">
+                    <option value="receipts">Receive</option><option value="issues">Issue</option>
+                    <option value="adjustments">Adjust</option>
+                  </select>
+                </label>
+                <label>Item<select id="invStockItem" required></select></label>
+                <label>Warehouse<select id="invStockWarehouse" required></select></label>
+                <label>Batch (optional)<select id="invStockBatch"><option value="">Unbatched</option></select></label>
+              </div>
+              <div class="field-row finance-field-row">
+                <label>Quantity<input id="invStockQuantity" type="number" min="0.001" step="0.001" value="1" required /></label>
+                <label>Unit cost (cents)<input id="invStockCost" type="number" min="1" step="1" value="100" required /></label>
+                <label>Date<input id="invStockDate" type="date" required /></label>
+                <label>Adjustment direction
+                  <select id="invStockDirection"><option value="IN">IN</option><option value="OUT">OUT</option></select>
+                </label>
+              </div>
+              <label>Reason / notes<textarea id="invStockNotes" rows="2" maxlength="1000"></textarea></label>
+              <div class="form-actions"><button type="submit">Post movement</button><span id="invStockStatus" class="muted" aria-live="polite"></span></div>
+            </form>
+            <p class="muted">Receipts require a positive unit cost. Issues and OUT adjustments use the weighted-average balance cost.</p>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Stock transfers</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Date</th><th>Source</th><th>Destination</th><th>Status</th><th></th></tr></thead>
+                <tbody id="inventoryTransferRows"></tbody>
+              </table>
+            </div>
+            <form id="inventoryTransferForm">
+              <div class="field-row finance-field-row">
+                <label>Source<select id="invTransferSource" required></select></label>
+                <label>Destination<select id="invTransferDestination" required></select></label>
+                <label>Date<input id="invTransferDate" type="date" required /></label>
+              </div>
+              <div class="field-row finance-field-row">
+                <label>Item<select id="invTransferItem" required></select></label>
+                <label>Batch (optional)<select id="invTransferBatch"><option value="">Unbatched</option></select></label>
+                <label>Quantity<input id="invTransferQuantity" type="number" min="0.001" step="0.001" value="1" required /></label>
+              </div>
+              <div class="form-actions"><button type="submit">Create transfer</button><span id="invTransferStatus" class="muted" aria-live="polite"></span></div>
+            </form>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Stock counts</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Date</th><th>Warehouse</th><th>Status</th><th></th></tr></thead>
+                <tbody id="inventoryCountRows"></tbody>
+              </table>
+            </div>
+            <form id="inventoryCountForm">
+              <div class="field-row finance-field-row">
+                <label>Warehouse<select id="invCountWarehouse" required></select></label>
+                <label>Date<input id="invCountDate" type="date" required /></label>
+                <label>Item<select id="invCountItem" required></select></label>
+                <label>Batch (optional)<select id="invCountBatch"><option value="">Unbatched</option></select></label>
+                <label>Counted qty<input id="invCountedQty" type="number" min="0" step="0.001" value="0" required /></label>
+              </div>
+              <div class="form-actions"><button type="submit">Start count</button><span id="invCountStatus" class="muted" aria-live="polite"></span></div>
+            </form>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Reorder alerts</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Item</th><th>Warehouse</th><th>Batch</th><th>Quantity</th><th>Reorder level</th><th>Unit</th></tr></thead>
+                <tbody id="inventoryAlertRows"></tbody>
+              </table>
+            </div>
           </section>
         </div>
       </section>

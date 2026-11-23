@@ -270,6 +270,54 @@ export const SalesInvoiceCreatedDataSchema = SalesEntityRefSchema.extend({
   classification: ClassificationSchema,
 }).strict()
 
+// Phase 8 inventory events are strict ID/classification-only invalidation
+// signals. Quantities, unit costs, movement totals, document numbers, batch
+// references in free-text form and notes never enter the event bus.
+const InventoryEntityRefSchema = z.object({
+  entityType: z.enum([
+    'INVENTORY_ITEM', 'INVENTORY_BATCH', 'STOCK_MOVEMENT',
+    'STOCK_TRANSFER', 'STOCK_COUNT',
+  ]),
+  entityId: z.string(),
+})
+
+export const InventoryItemCreatedDataSchema = InventoryEntityRefSchema.extend({
+  itemId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const StockReceivedDataSchema = InventoryEntityRefSchema.extend({
+  movementId: z.string(),
+  itemId: z.string(),
+  warehouseId: z.string(),
+  batchId: z.string().nullable().optional(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const StockIssuedDataSchema = StockReceivedDataSchema
+
+export const StockAdjustedDataSchema = StockReceivedDataSchema
+
+export const StockTransferApprovedDataSchema = InventoryEntityRefSchema.extend({
+  transferId: z.string(),
+  sourceWarehouseId: z.string(),
+  destinationWarehouseId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const StockCountApprovedDataSchema = InventoryEntityRefSchema.extend({
+  countId: z.string(),
+  warehouseId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const ReorderLevelBreachedDataSchema = InventoryEntityRefSchema.extend({
+  itemId: z.string(),
+  warehouseId: z.string(),
+  batchId: z.string().nullable().optional(),
+  classification: ClassificationSchema,
+}).strict()
+
 export const DomainEventSchemas = {
   MessageSent: MessageSentDataSchema,
   ThreadAssigned: ThreadAssignedDataSchema,
@@ -305,6 +353,13 @@ export const DomainEventSchemas = {
   DeliveryNoteIssued: DeliveryNoteIssuedDataSchema,
   SalesReturnApproved: SalesReturnApprovedDataSchema,
   SalesInvoiceCreated: SalesInvoiceCreatedDataSchema,
+  InventoryItemCreated: InventoryItemCreatedDataSchema,
+  StockReceived: StockReceivedDataSchema,
+  StockIssued: StockIssuedDataSchema,
+  StockAdjusted: StockAdjustedDataSchema,
+  StockTransferApproved: StockTransferApprovedDataSchema,
+  StockCountApproved: StockCountApprovedDataSchema,
+  ReorderLevelBreached: ReorderLevelBreachedDataSchema,
 }
 
 export function parseEventEnvelope(input) {

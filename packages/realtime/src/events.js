@@ -31,6 +31,18 @@ const SALES_EVENT_TYPES = new Set([
   'SalesInvoiceCreated',
 ])
 
+// Phase 8 inventory events are ID/classification-only company-wide signals —
+// never user, thread, inbox or branch rooms. ERP clients refetch all values.
+const INVENTORY_EVENT_TYPES = new Set([
+  'InventoryItemCreated',
+  'StockReceived',
+  'StockIssued',
+  'StockAdjusted',
+  'StockTransferApproved',
+  'StockCountApproved',
+  'ReorderLevelBreached',
+])
+
 function eventRooms(event) {
   const prefix = `company:${event.companyId}`
   const data = event.data || {}
@@ -89,6 +101,9 @@ function eventRooms(event) {
 
   // --------------------------------------------------------- phase 7 sales
   if (SALES_EVENT_TYPES.has(event.type)) return unique([prefix])
+
+  // ------------------------------------------------------ phase 8 inventory
+  if (INVENTORY_EVENT_TYPES.has(event.type)) return unique([prefix])
   return []
 }
 
@@ -121,6 +136,13 @@ function socketEventFor(type) {
     DeliveryNoteIssued: 'sales:delivery',
     SalesReturnApproved: 'sales:return',
     SalesInvoiceCreated: 'sales:invoice',
+    InventoryItemCreated: 'inventory:item',
+    StockReceived: 'inventory:stock',
+    StockIssued: 'inventory:stock',
+    StockAdjusted: 'inventory:stock',
+    StockTransferApproved: 'inventory:transfer',
+    StockCountApproved: 'inventory:count',
+    ReorderLevelBreached: 'inventory:alert',
   }[type] || null
 }
 

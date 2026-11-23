@@ -94,6 +94,13 @@ Phase 5 does not change the seed accounts or their passwords.
   calculates or hardcodes tax. All document amounts are integer cents and all dates are strict
   `YYYY-MM-DD`. The ERP at `:5174` has a Sales tab. Contract: `docs/openapi/openapi.yaml`
   (`0.7.0-phase.7`); decision: `docs/decisions/ADR-0012-sales-lifecycle.md`.
+- **Inventory (Phase 8)** — tenant/branch-scoped items, warehouses, batches, balances, stock
+  movements, transfers and stock counts. Receipts use weighted-average valuation rounded once to
+  integer cents; issues, transfers and count variances consume the current balance cost. Only
+  RELEASED batches may be issued, and reorder alerts emit on downward threshold crossings. Every
+  write is audited and every realtime frame is ID/classification-only. The ERP at `:5174` has an
+  Inventory tab. Contract: `docs/openapi/openapi.yaml` (`0.8.0-phase.8`); decision:
+  `docs/decisions/ADR-0013-inventory-valuation.md`.
 
 > **Rate warning:** verify statutory rates against current KRA/Government publications before
 > use — fixture rates are `UNVERIFIED`. Sales may reference an unverified rate on a draft, but
@@ -102,7 +109,7 @@ Phase 5 does not change the seed accounts or their passwords.
 
 ### API namespaces
 
-| Namespace | Phase 5/6/7 endpoints (summary) |
+| Namespace | Phase 5/6/7/8 endpoints (summary) |
 | --- | --- |
 | `/api/files` | `POST /uploads`, `POST /uploads/:id/confirm`, `GET /?purpose&status&limit`, `GET /:id`, `GET /:id/download`, `POST /:id/versions`, `DELETE /:id`. Local fallback ticket URLs: `/local-upload/:token`, `/local-download/:token`. |
 | `/api/workflow` | `GET|POST /definitions`, `GET|POST /instances`, `GET /tasks?mine=1`, `POST /tasks/:id/decide`, `POST /tasks/:id/delegate`. |
@@ -111,8 +118,9 @@ Phase 5 does not change the seed accounts or their passwords.
 | `/api/documents` | `GET /kinds`, `GET /`, `POST /generate`, `GET /jobs/:id`, `GET /:code/download`, `GET /:code`, `GET /:code/pdf`. |
 | `/api/finance` | `GET\|POST /accounts`, `GET\|POST /parties`, `GET\|POST /statutory-rates`, `POST /statutory-rates/:id/verify`, `GET\|POST /journals`, `GET /journals/:id`, `POST /journals/:id/post`, `POST /journals/:id/reverse`, `GET\|POST /invoices`, `GET /invoices/:id`, `POST /invoices/:id/issue`, `GET\|POST /payments`, `GET /payments/:id`, `GET\|POST /budgets`, `GET /budgets/:id`, `POST /budgets/:id/approve`, `GET /statements/{trial-balance,income,balance-sheet,ageing}`, `GET /etims/submissions`, `GET /etims/submissions/:id`, `POST /etims/submissions/:id/retry`, `GET /etims/payload/:invoiceId`. |
 | `/api/sales` | `GET|POST /quotes`, `GET|PATCH /quotes/:id`, `POST /quotes/:id/convert`, `GET|POST /orders`, `GET|PATCH /orders/:id`, `POST /orders/:id/confirm`, `POST /orders/:id/invoice`, `GET|POST /deliveries`, `GET|PATCH /deliveries/:id`, `POST /deliveries/:id/issue`, `POST /deliveries/:id/deliver`, `GET|POST /returns`, `GET|PATCH /returns/:id`, `POST /returns/:id/approve`, `POST /returns/:id/receive`. |
+| `/api/inventory` | `GET|POST /items`, `GET|PATCH /items/:id`, `GET|POST /warehouses`, `GET|PATCH /warehouses/:id`, `GET|POST /batches`, `GET|PATCH /batches/:id`, `GET /balances`, `GET /movements`, `GET /alerts`, `POST /stock/receipts`, `POST /stock/issues`, `POST /stock/adjustments`, `GET|POST /transfers`, `GET /transfers/:id`, `POST /transfers/:id/{approve,receive,cancel}`, `GET|POST /counts`, `GET /counts/:id`, `POST /counts/:id/{record,approve,cancel}`. |
 
-`Idempotency-Key` is required only for Phase 4 messaging sends; Phase 5, Phase 6 and Phase 7 writes do not use it.
+`Idempotency-Key` is required only for Phase 4 messaging sends; Phase 5, Phase 6, Phase 7 and Phase 8 writes do not use it.
 The `finance.etims.submit` worker queue records `PENDING` submissions for a certified provider and
 creates in-app notifications only — no live KRA filing occurs.
 
@@ -175,17 +183,17 @@ packages/
   api/                Express app: index.js, lib/, routes/, tests/
   web/                Storefront: src/, public/, tests/, Vite config
   cms/                Content Studio workspace scaffold
-  erp/                Internal suite: ERP shell + messaging UI + Finance/Sales tabs (public/, static server)
+  erp/                Internal suite: ERP shell + messaging UI + Finance/Sales/Inventory tabs (public/, static server)
   realtime/           Socket.IO server, Redis adapter and stream relay (Phase 4)
   workers/            Outbox publisher + BullMQ job processors (Phase 5/6)
 prisma/
-  schema.prisma       PostgreSQL 16 schema (identity, org, messaging, shared services, finance, sales, legacy)
+  schema.prisma       PostgreSQL 16 schema (identity, org, messaging, shared services, finance, sales, inventory, legacy)
   migrations/         Versioned SQL + RLS/role/audit rules
   seed.js             Tenant, branches, departments, inboxes, demo data
 docs/
   architecture/       Phase 1 architecture + Phase 3 ERD
-  decisions/          ADRs (0001-0012; finance in ADR-0011, sales lifecycle in ADR-0012)
-  openapi/            Phase 7 API contract (0.7.0-phase.7)
+  decisions/          ADRs (0001-0013; finance in ADR-0011, sales in ADR-0012, inventory in ADR-0013)
+  openapi/            Phase 8 API contract (0.8.0-phase.8)
 ```
 
 ## Production-readiness notes
@@ -202,6 +210,7 @@ This codebase is a solid foundation, not a finished compliance deliverable.
   should use short `JWT_ACCESS_TTL` and a refresh interceptor.
 - **Database** — PostgreSQL 16 with Prisma migrations, RLS, a non-owner runtime
   role, and backups. PII should be minimised/encrypted; logs avoid writing it.
+- **Inventory (Phase 8)** — stock valuation stays in the inventory ledger with integer-cent weighted averages; it does **not** post finance journals. A future phase must add an explicit inventory→finance posting policy.
 - **Payments** for consultations/CDMO orders aren't wired; add a provider (e.g.
   M-Pesa Daraja/Stripe) if charging clients. Phase 6 finance payments record ledger
   entries only (including `CARD_TOKEN` references) and never charge a card.

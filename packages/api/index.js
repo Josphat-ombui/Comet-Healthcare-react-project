@@ -15,6 +15,7 @@
 //   /api/documents/*   generation queue and existing branded PDFs (Phase 5)
 //   /api/finance/*     chart of accounts, parties, rates, journals, invoices (Phase 6)
 //   /api/sales/*       quotes, orders, delivery notes and returns (Phase 7)
+//   /api/inventory/*   items, warehouses, balances, movements, transfers, counts (Phase 8)
 //
 // Run with `npm run dev` (auto-restarts) or `npm start`.
 
@@ -45,6 +46,7 @@ import { notificationsRouter } from './routes/notifications.routes.js'
 import { searchRouter } from './routes/search.routes.js'
 import { financeRouter } from './routes/finance.routes.js'
 import { salesRouter } from './routes/sales.routes.js'
+import { inventoryRouter } from './routes/inventory.routes.js'
 import { storageMode } from './lib/object-storage.js'
 import { requireAuth } from './lib/auth.js'
 import { resolvePrincipal } from './lib/authorize.js'
@@ -118,6 +120,7 @@ app.use('/api/notifications', notificationsRouter)
 app.use('/api/search', searchRouter)
 app.use('/api/finance', financeRouter)
 app.use('/api/sales', salesRouter)
+app.use('/api/inventory', inventoryRouter)
 app.use('/api/admin', requireAuth, adminRouter)
 
 // ---- production: serve the built frontend from dist/ and SPA-fallback ----

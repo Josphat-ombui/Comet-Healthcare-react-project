@@ -816,3 +816,206 @@ export const salesReturnQuerySchema = z.object({
 // from a client or a hardcoded constant.
 export const SALES_CLASSIFICATIONS = ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED']
 export const SALES_MONEY_FIELDS = ['subtotalCents', 'taxCents', 'totalCents']
+
+// ------------------------------------------------------------ phase 8 inventory
+//
+// Inventory keeps all money in integer cents and all dates as strict
+// YYYY-MM-DD strings. Quantities are positive floats rounded to three decimals
+// once at the service boundary. Write schemas are strict so a client cannot
+// smuggle companyId, status or calculated value columns into a tenant-scoped
+// write. Free text is checked through the shared DLP inspector.
+
+const inventoryId = z.string().trim().min(1).max(80)
+const inventoryDate = z.string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Use a date in YYYY-MM-DD format')
+  .refine(isValidIsoDate, 'Choose a valid date')
+const inventoryOptionalDate = inventoryDate.nullable().optional()
+const inventoryQty = z.number().finite().positive('Quantity must be greater than zero').max(1_000_000)
+const inventoryMoney = z.number().int().nonnegative()
+const inventoryMoneyPositive = z.number().int().positive()
+const inventoryLimit = z.coerce.number().int().min(1).max(200).default(50)
+const inventoryClassification = classificationSchema.default('INTERNAL')
+const inventoryCode = z.string().trim().min(2).max(60).regex(/^[a-z0-9_-]+$/, 'Use lowercase letters, numbers, _ or -')
+const inventoryReference = z.string().trim().max(80).optional().or(z.literal(''))
+
+const inventoryItemBase = z.object({
+  code: inventoryCode,
+  name: dlpSafeText(160),
+  type: z.enum(['RAW_MATERIAL', 'PACKAGING', 'FINISHED_GOOD', 'CONSUMABLE', 'SPARE_PART']),
+  unit: z.enum(['EA', 'BOX', 'CARTON', 'KG', 'G', 'L', 'ML', 'TAB', 'VIAL', 'BOTTLE']).default('EA'),
+  standardCostCents: inventoryMoney.default(0),
+  reorderLevel: z.number().finite().min(0).max(1_000_000).default(0),
+  trackBatches: z.boolean().default(true),
+  isActive: z.boolean().default(true),
+  description: dlpSafeText(500).optional().or(z.literal('')),
+  branchId: inventoryId.nullable().optional(),
+  classification: inventoryClassification,
+}).strict()
+
+export const inventoryItemCreateSchema = inventoryItemBase
+export const inventoryItemUpdateSchema = inventoryItemBase.partial().strict()
+  .refine((value) => Object.keys(value).length > 0, 'At least one field is required')
+
+const inventoryWarehouseBase = z.object({
+  code: inventoryCode,
+  name: dlpSafeText(160),
+  location: dlpSafeText(300).optional().or(z.literal('')),
+  isActive: z.boolean().default(true),
+  branchId: inventoryId.nullable().optional(),
+  classification: inventoryClassification,
+}).strict()
+
+export const inventoryWarehouseCreateSchema = inventoryWarehouseBase
+export const inventoryWarehouseUpdateSchema = inventoryWarehouseBase.partial().strict()
+  .refine((value) => Object.keys(value).length > 0, 'At least one field is required')
+
+const inventoryBatchBase = z.object({
+  itemId: inventoryId,
+  batchNumber: dlpSafeText(80),
+  status: z.enum(['QUARANTINE', 'RELEASED', 'EXPIRED', 'RECALLED']).default('QUARANTINE'),
+  unitCostCents: inventoryMoney.default(0),
+  manufactureDate: inventoryOptionalDate,
+  expiryDate: inventoryOptionalDate,
+  branchId: inventoryId.nullable().optional(),
+  classification: inventoryClassification,
+}).strict()
+
+export const inventoryBatchCreateSchema = inventoryBatchBase
+export const inventoryBatchUpdateSchema = inventoryBatchBase.partial().strict()
+  .refine((value) => Object.keys(value).length > 0, 'At least one field is required')
+
+export const inventoryReceiptSchema = z.object({
+  itemId: inventoryId,
+  warehouseId: inventoryId,
+  batchId: inventoryId.nullable().optional(),
+  quantity: inventoryQty,
+  unitCostCents: inventoryMoneyPositive,
+  movementDate: inventoryDate,
+  movementType: z.enum(['RECEIPT', 'RETURN_IN', 'PRODUCTION_RECEIPT']).default('RECEIPT'),
+  referenceType: inventoryReference,
+  referenceId: inventoryReference,
+  notes: dlpSafeText(1000).optional().or(z.literal('')),
+  branchId: inventoryId.nullable().optional(),
+  classification: inventoryClassification,
+}).strict()
+
+export const inventoryIssueSchema = z.object({
+  itemId: inventoryId,
+  warehouseId: inventoryId,
+  batchId: inventoryId.nullable().optional(),
+  quantity: inventoryQty,
+  movementDate: inventoryDate,
+  movementType: z.enum(['ISSUE', 'RETURN_OUT', 'PRODUCTION_ISSUE']).default('ISSUE'),
+  referenceType: inventoryReference,
+  referenceId: inventoryReference,
+  notes: dlpSafeText(1000).optional().or(z.literal('')),
+  branchId: inventoryId.nullable().optional(),
+  classification: inventoryClassification,
+}).strict()
+
+export const inventoryAdjustmentSchema = z.object({
+  itemId: inventoryId,
+  warehouseId: inventoryId,
+  batchId: inventoryId.nullable().optional(),
+  direction: z.enum(['IN', 'OUT']),
+  quantity: inventoryQty,
+  // IN adjustments may carry a cost; OUT adjustments always use the balance cost.
+  unitCostCents: inventoryMoney.optional(),
+  movementDate: inventoryDate,
+  reason: dlpSafeText(500),
+  branchId: inventoryId.nullable().optional(),
+  classification: inventoryClassification,
+}).strict()
+
+const inventoryTransferLineSchema = z.object({
+  itemId: inventoryId,
+  batchId: inventoryId.nullable().optional(),
+  quantity: inventoryQty,
+  position: z.number().int().min(0).max(1000).optional(),
+}).strict()
+
+export const inventoryTransferCreateSchema = z.object({
+  sourceWarehouseId: inventoryId,
+  destinationWarehouseId: inventoryId,
+  transferDate: inventoryDate,
+  lines: z.array(inventoryTransferLineSchema).min(1).max(60),
+  notes: dlpSafeText(1000).optional().or(z.literal('')),
+  branchId: inventoryId.nullable().optional(),
+  classification: inventoryClassification,
+}).strict().refine((value) => value.sourceWarehouseId !== value.destinationWarehouseId, {
+  path: ['destinationWarehouseId'],
+  message: 'Source and destination warehouses must differ',
+})
+
+const inventoryCountLineSchema = z.object({
+  itemId: inventoryId,
+  batchId: inventoryId.nullable().optional(),
+  countedQty: z.number().finite().min(0).max(1_000_000),
+  position: z.number().int().min(0).max(1000).optional(),
+}).strict()
+
+export const inventoryCountCreateSchema = z.object({
+  warehouseId: inventoryId,
+  countDate: inventoryDate,
+  lines: z.array(inventoryCountLineSchema).min(1).max(200),
+  notes: dlpSafeText(1000).optional().or(z.literal('')),
+  branchId: inventoryId.nullable().optional(),
+  classification: inventoryClassification,
+}).strict()
+
+export const inventoryCountRecordSchema = z.object({
+  lines: z.array(inventoryCountLineSchema).min(1).max(200),
+  notes: dlpSafeText(1000).optional().or(z.literal('')),
+}).strict()
+
+export const inventoryItemQuerySchema = z.object({
+  type: z.enum(['RAW_MATERIAL', 'PACKAGING', 'FINISHED_GOOD', 'CONSUMABLE', 'SPARE_PART']).optional(),
+  active: z.enum(['true', 'false']).optional(),
+  limit: inventoryLimit,
+}).strict()
+export const inventoryWarehouseQuerySchema = z.object({
+  active: z.enum(['true', 'false']).optional(),
+  limit: inventoryLimit,
+}).strict()
+export const inventoryBatchQuerySchema = z.object({
+  itemId: inventoryId.optional(),
+  status: z.enum(['QUARANTINE', 'RELEASED', 'EXPIRED', 'RECALLED']).optional(),
+  limit: inventoryLimit,
+}).strict()
+export const inventoryBalanceQuerySchema = z.object({
+  itemId: inventoryId.optional(),
+  warehouseId: inventoryId.optional(),
+  batchId: inventoryId.optional(),
+  limit: inventoryLimit,
+}).strict()
+export const inventoryMovementQuerySchema = z.object({
+  type: z.enum([
+    'RECEIPT', 'ISSUE', 'TRANSFER_IN', 'TRANSFER_OUT', 'ADJUSTMENT_IN', 'ADJUSTMENT_OUT',
+    'COUNT_GAIN', 'COUNT_LOSS', 'RETURN_IN', 'RETURN_OUT', 'PRODUCTION_ISSUE', 'PRODUCTION_RECEIPT',
+  ]).optional(),
+  itemId: inventoryId.optional(),
+  warehouseId: inventoryId.optional(),
+  from: inventoryDate.optional(),
+  to: inventoryDate.optional(),
+  limit: inventoryLimit,
+}).strict()
+export const inventoryTransferQuerySchema = z.object({
+  status: z.enum(['DRAFT', 'IN_TRANSIT', 'RECEIVED', 'CANCELLED']).optional(),
+  from: inventoryDate.optional(),
+  to: inventoryDate.optional(),
+  limit: inventoryLimit,
+}).strict()
+export const inventoryCountQuerySchema = z.object({
+  status: z.enum(['DRAFT', 'COUNTING', 'APPROVED', 'CANCELLED']).optional(),
+  warehouseId: inventoryId.optional(),
+  from: inventoryDate.optional(),
+  to: inventoryDate.optional(),
+  limit: inventoryLimit,
+}).strict()
+export const inventoryAlertQuerySchema = z.object({
+  warehouseId: inventoryId.optional(),
+  limit: inventoryLimit,
+}).strict()
+
+export const INVENTORY_CLASSIFICATIONS = ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED']
+export const INVENTORY_MONEY_FIELDS = ['standardCostCents', 'unitCostCents', 'totalValueCents']

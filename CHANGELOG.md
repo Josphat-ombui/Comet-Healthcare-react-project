@@ -8,6 +8,54 @@ The format follows a phase-gate model: each enterprise phase ends with passing t
 
 ## [Unreleased]
 
+### Phase 8 — Inventory
+
+**Added**
+
+- Tenant/branch-scoped inventory domain with strict Zod contracts and deterministic integer-cent
+  valuation: items, warehouses, batches, balances, stock movements, transfers and stock counts in
+  `packages/api/lib/inventory.js`. Receipts blend existing balance value with receipt value, round
+  the weighted average once to whole cents and rebuild the balance value from that rounded average.
+- `/api/inventory` endpoints for item/warehouse/batch CRUD, balances, movements, reorder alerts,
+  receipts, issues, adjustments, transfer create/approve/receive/cancel and count
+  start/record/approve/cancel. New `inventory.*` permissions are enforced with bearer auth on every
+  operation; client-supplied `companyId`, statuses and calculated columns are rejected.
+- Migration `20261123000200_phase8_inventory` with nine new RLS-protected tables and idempotent
+  `tenant_branch_scope` policies, generated via the shadow-DB method. Idempotent `cmp_comet`-only
+  inventory fixtures are seeded for released, quarantined, expired and recalled batches.
+- ERP Inventory tab with items, warehouses, batches, balances, movements, transfers, counts and
+  reorder alerts, plus simple forms and row actions. Socket frames only invalidate the open view;
+  content is always refetched through the authenticated API.
+- Strict shared Inventory event schemas and company-room-only sockets: `inventory:item`,
+  `inventory:stock`, `inventory:transfer`, `inventory:count` and `inventory:alert`. Domain events and
+  socket frames carry IDs/classification only. OpenAPI `0.8.0-phase.8`, ADR-0013, README and
+  OpenAPI README updates.
+- `packages/api/tests/phase8-inventory.test.js` with 17 tests covering weighted-average cents,
+  fractional rounding, receipt/issue balance changes, three-decimal quantities, quarantine fail-closed,
+  batch requirements, state guards, transfer cost capture, count variance adjustments, reorder
+  crossings, DLP rejection, strict schemas, tenant scope, DTO redaction and ID-only events.
+
+**Changed**
+
+- Stock valuation stays in the inventory ledger; no finance journals are posted. A later phase must
+  add an explicit inventory→finance posting policy (ADR-0013).
+- `batchId = NULL` means unbatched stock. Batch-tracked items require a batch, and only `RELEASED`
+  batches may be issued, transferred or reduced by a count.
+- `Idempotency-Key` remains scoped to messaging sends; inventory writes are not replay-safe.
+
+**Verification**
+
+- `npm test` — 122 passed (17 Phase 8); `npm run test:smoke` — 31 passed.
+- `npm run lint` and `npm run build` pass; `node --check packages/erp/public/app.js` passes.
+  Lint reports only pre-existing non-blocking warnings in other files.
+- OpenAPI YAML parses: version `0.8.0-phase.8`, 130 paths (22 Inventory), 114 schemas, 383 refs
+  resolved; all Phase 3–7 paths are retained.
+- `npm run db:deploy`, `npm run db:generate` and two consecutive `npm run db:seed` runs pass. Final cross-tenant RLS probe
+  with `comet_app`: `cmp_other` sees 0 rows in all nine inventory tables; `cmp_comet` sees
+  2/2/2/2/2/1/1/1/1 rows. All nine tables have `tenant_branch_scope`.
+
+---
+
 ### Phase 7 — Sales
 
 **Added**

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Comet Healthcare Enterprise API
-  version: 0.7.0-phase.7
+  version: 0.8.0-phase.8
   summary: REST and webhook contract for the Comet Healthcare enterprise platform.
   description: |
     Phase 3 adds local identity, sessions, MFA, OIDC, organisation directory and audit.
@@ -65,6 +65,23 @@ info:
     to the company room only. They are invalidation signals; clients refetch through the
     authenticated API. `Idempotency-Key` is still scoped to messaging sends only.
 
+    Phase 8 adds inventory under `/api/inventory`: items, warehouses, batches, stock balances,
+    movements, transfers, stock counts and reorder alerts. Every table is tenant/branch scoped
+    with RLS, and all writes are audited with IDs only. Money is integer cents (`*Cents`);
+    quantities are positive floats rounded to three decimals once at the service boundary.
+    Receipts use weighted-average valuation: the existing balance value is blended with the
+    receipt value, the blended cost is rounded once to whole cents, and the balance total is
+    rebuilt from that rounded average. `batchId: null` means unbatched stock; batch-tracked
+    items require a batch, and only RELEASED batches may be issued.
+
+    Phase 8 permissions: `inventory.item.read/write`, `inventory.warehouse.read/write`,
+    `inventory.stock.read/adjust`, `inventory.batch.read/write`,
+    `inventory.transfer.read/write/approve`, `inventory.count.read/write/approve` and
+    `inventory.alert.read`. Inventory domain events and sockets carry IDs and classification
+    only — no quantities, costs, values, document numbers, batch numbers or free text — and
+    are routed to the company room only. Clients refetch all values through the authenticated
+    API. `Idempotency-Key` remains scoped to messaging sends only.
+
     Phase 6 permissions: `finance.account.read/write`, `finance.journal.read/write/post`,
     `finance.party.read/write`, `finance.invoice.read/write/issue`,
     `finance.payment.read/write`, `finance.budget.read/write`,
@@ -97,6 +114,8 @@ tags:
     description: Accounts, parties, statutory rates, journals, invoices, payments, budgets, statements and ready-only eTIMS queue. Added in Phase 6.
   - name: Sales
     description: Quotes, orders, delivery notes, returns and finance invoice creation. Added in Phase 7.
+  - name: Inventory
+    description: Items, warehouses, batches, stock balances, movements, transfers, counts and reorder alerts. Added in Phase 8.
 x-phase-roadmap:
   phase1: Architecture and this skeleton only
   phase2: ERD, migrations, workspace split, shared contracts
@@ -105,7 +124,7 @@ x-phase-roadmap:
   phase5: Complete - /api/files, /api/workflow, /api/notifications, /api/search, /api/documents
   phase6: Complete - /api/finance (accounts, parties, statutory rates, journals, invoices, payments, budgets, statements, ready-only eTIMS queue)
   phase7: Complete - /api/sales (quotes, orders, delivery notes, returns, invoice creation from confirmed orders)
-  phase8: /api/inventory
+  phase8: Complete - /api/inventory (items, warehouses, batches, balances, movements, transfers, counts, reorder alerts)
   phase9: /api/procurement
   phase10: /api/service
   phase11: /api/hr
@@ -159,6 +178,11 @@ x-realtime:
     sales:delivery: 'DeliveryNote issued; refetch GET /api/sales/deliveries.'
     sales:return: 'SalesReturn approved; refetch GET /api/sales/returns.'
     sales:invoice: 'Invoice created from a sales order; refetch /api/sales/orders and /api/finance/invoices.'
+    inventory:item: 'InventoryItem created or changed; refetch GET /api/inventory/items.'
+    inventory:stock: 'StockReceived, StockIssued or StockAdjusted; refetch balances and movements.'
+    inventory:transfer: 'StockTransfer approved; refetch GET /api/inventory/transfers.'
+    inventory:count: 'StockCount approved; refetch GET /api/inventory/counts and balances.'
+    inventory:alert: 'ReorderLevelBreached; refetch GET /api/inventory/alerts.'
   eventPayload:
     eventId: string
     type: string
@@ -227,6 +251,23 @@ x-realtime:
   phase7Fallback: |
     Authenticated polling of /api/sales quotes, orders, deliveries and returns when sockets
     are unavailable. Event data is never rendered directly.
+  phase8EventMap:
+    InventoryItemCreated: inventory:item
+    StockReceived: inventory:stock
+    StockIssued: inventory:stock
+    StockAdjusted: inventory:stock
+    StockTransferApproved: inventory:transfer
+    StockCountApproved: inventory:count
+    ReorderLevelBreached: inventory:alert
+  phase8Rooms:
+    - company:{companyId} only (never user, thread, inbox or branch rooms)
+  phase8PayloadRule: |
+    Inventory domain events and socket frames carry IDs and classification only. No quantity,
+    unit cost, total value, document number, batch number, item name or note is placed on an
+    event; clients always refetch through the authenticated /api/inventory endpoints.
+  phase8Fallback: |
+    Authenticated polling of /api/inventory items, warehouses, batches, balances, movements,
+    transfers, counts and alerts when sockets are unavailable. Event data is never rendered directly.
 x-idempotency:
   requiredFor:
     - POST /api/messaging/threads/{id}/messages
@@ -240,6 +281,10 @@ x-idempotency:
     Not required. No /api/sales endpoint consumes an Idempotency-Key. Quote/order/delivery
     transitions and invoice creation are not replay-safe; clients must inspect the returned
     status before retrying.
+  phase8: |
+    Not required. No /api/inventory endpoint consumes an Idempotency-Key. Receipts, issues,
+    adjustments, transfers and count approvals are not replay-safe; clients must inspect the
+    returned status and balance before retrying.
 x-finance:
   money: All finance API monetary fields are integer cents (`*Cents`); reports use the same unit. The eTIMS payload is a separate external-style representation using decimal strings and is not a finance money field.
   rates: |
@@ -321,6 +366,42 @@ x-sales:
     delivery: 'DRAFT -> ISSUED/CANCELLED; ISSUED -> IN_TRANSIT/DELIVERED; IN_TRANSIT -> DELIVERED'
     return: 'DRAFT -> APPROVED/REJECTED/CANCELLED; APPROVED -> RECEIVED/REJECTED'
   idempotency: Idempotency-Key is scoped to messaging sends only; sales writes are not replay-safe.
+x-inventory:
+  money: All inventory monetary fields are integer cents (`*Cents`). Quantities are positive floats persisted to three decimals.
+  valuation: |
+    A receipt blends the existing balance total value with the receipt value, rounds the
+    blended unit cost once to whole cents, then rebuilds the balance total from that rounded
+    average. Issues relieve stock at the existing average cost. See ADR-0013.
+  batches: 'batchId null means unbatched stock. Batch-tracked items require a batch on every line; only RELEASED batches may be issued.'
+  transitions:
+    transfer: 'DRAFT -> IN_TRANSIT -> RECEIVED; DRAFT -> CANCELLED'
+    count: 'DRAFT -> COUNTING -> APPROVED; DRAFT/COUNTING -> CANCELLED'
+  tenantScope: companyId comes from the bearer token; strict schemas reject a client-supplied companyId, status or calculated column. Branch scope allows organisation-wide (null branch) rows.
+  dlp: Free text is inspected with the shared DLP patterns and fails closed with 422 and finding types only.
+  eventPayload: IDs and classification only; company-room sockets are invalidation signals.
+  permissions:
+    - inventory.item.read
+    - inventory.item.write
+    - inventory.warehouse.read
+    - inventory.warehouse.write
+    - inventory.stock.read
+    - inventory.stock.adjust
+    - inventory.batch.read
+    - inventory.batch.write
+    - inventory.transfer.read
+    - inventory.transfer.write
+    - inventory.transfer.approve
+    - inventory.count.read
+    - inventory.count.write
+    - inventory.count.approve
+    - inventory.alert.read
+  socketEvents:
+    - inventory:item
+    - inventory:stock
+    - inventory:transfer
+    - inventory:count
+    - inventory:alert
+  idempotency: Idempotency-Key is scoped to messaging sends only; inventory writes are not replay-safe.
 paths:
   /api/health/live:
     get:
@@ -3442,6 +3523,707 @@ paths:
                 properties:
                   return: { $ref: '#/components/schemas/SalesReturn' }
         '409': { description: Invalid status transition. }
+  /api/inventory/items:
+    get:
+      tags: [Inventory]
+      summary: List inventory items
+      operationId: listInventoryItems
+      x-permission: inventory.item.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: type
+          in: query
+          schema: { $ref: '#/components/schemas/InventoryItemType' }
+        - name: active
+          in: query
+          schema: { type: string, enum: [true, false] }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Items visible to the caller.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InventoryItemList' }
+        '403': { description: Missing inventory.item.read permission. }
+    post:
+      tags: [Inventory]
+      summary: Create an inventory item
+      description: Strict body. companyId, status and calculated columns are rejected; free text is DLP-checked.
+      operationId: createInventoryItem
+      x-permission: inventory.item.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InventoryItemCreate' }
+      responses:
+        '201':
+          description: Created item.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [item]
+                properties:
+                  item: { $ref: '#/components/schemas/InventoryItem' }
+        '400': { description: Invalid body, code, money field or quantity. }
+        '403': { description: Missing inventory.item.write permission. }
+        '422': { description: DLP rejection (finding type only). }
+  /api/inventory/items/{id}:
+    get:
+      tags: [Inventory]
+      summary: Get an inventory item
+      operationId: getInventoryItem
+      x-permission: inventory.item.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/InventoryDocumentId'
+      responses:
+        '200':
+          description: Item detail.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [item]
+                properties:
+                  item: { $ref: '#/components/schemas/InventoryItem' }
+        '404': { description: Item not found in this tenant/branch. }
+    patch:
+      tags: [Inventory]
+      summary: Update an inventory item
+      operationId: updateInventoryItem
+      x-permission: inventory.item.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/InventoryDocumentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InventoryItemUpdate' }
+      responses:
+        '200':
+          description: Updated item.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [item]
+                properties:
+                  item: { $ref: '#/components/schemas/InventoryItem' }
+        '400': { description: Invalid body or restricted text. }
+  /api/inventory/warehouses:
+    get:
+      tags: [Inventory]
+      summary: List warehouses
+      operationId: listInventoryWarehouses
+      x-permission: inventory.warehouse.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: active
+          in: query
+          schema: { type: string, enum: [true, false] }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Warehouses visible to the caller.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WarehouseList' }
+    post:
+      tags: [Inventory]
+      summary: Create a warehouse
+      operationId: createInventoryWarehouse
+      x-permission: inventory.warehouse.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WarehouseCreate' }
+      responses:
+        '201':
+          description: Created warehouse.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [warehouse]
+                properties:
+                  warehouse: { $ref: '#/components/schemas/Warehouse' }
+        '422': { description: DLP rejection (finding type only). }
+  /api/inventory/warehouses/{id}:
+    get:
+      tags: [Inventory]
+      summary: Get a warehouse
+      operationId: getInventoryWarehouse
+      x-permission: inventory.warehouse.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/InventoryDocumentId'
+      responses:
+        '200':
+          description: Warehouse detail.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [warehouse]
+                properties:
+                  warehouse: { $ref: '#/components/schemas/Warehouse' }
+    patch:
+      tags: [Inventory]
+      summary: Update a warehouse
+      operationId: updateInventoryWarehouse
+      x-permission: inventory.warehouse.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/InventoryDocumentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WarehouseUpdate' }
+      responses:
+        '200':
+          description: Updated warehouse.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [warehouse]
+                properties:
+                  warehouse: { $ref: '#/components/schemas/Warehouse' }
+  /api/inventory/batches:
+    get:
+      tags: [Inventory]
+      summary: List inventory batches
+      operationId: listInventoryBatches
+      x-permission: inventory.batch.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: itemId
+          in: query
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/BatchStatus' }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Batches visible to the caller.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InventoryBatchList' }
+    post:
+      tags: [Inventory]
+      summary: Create an inventory batch
+      description: New batches default to QUARANTINE and cannot be issued until RELEASED.
+      operationId: createInventoryBatch
+      x-permission: inventory.batch.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InventoryBatchCreate' }
+      responses:
+        '201':
+          description: Created batch.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [batch]
+                properties:
+                  batch: { $ref: '#/components/schemas/InventoryBatch' }
+  /api/inventory/batches/{id}:
+    get:
+      tags: [Inventory]
+      summary: Get an inventory batch
+      operationId: getInventoryBatch
+      x-permission: inventory.batch.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/InventoryDocumentId'
+      responses:
+        '200':
+          description: Batch detail.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [batch]
+                properties:
+                  batch: { $ref: '#/components/schemas/InventoryBatch' }
+    patch:
+      tags: [Inventory]
+      summary: Update an inventory batch
+      operationId: updateInventoryBatch
+      x-permission: inventory.batch.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/InventoryDocumentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InventoryBatchUpdate' }
+      responses:
+        '200':
+          description: Updated batch.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [batch]
+                properties:
+                  batch: { $ref: '#/components/schemas/InventoryBatch' }
+  /api/inventory/balances:
+    get:
+      tags: [Inventory]
+      summary: List stock balances
+      operationId: listInventoryBalances
+      x-permission: inventory.stock.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: itemId
+          in: query
+          schema: { type: string }
+        - name: warehouseId
+          in: query
+          schema: { type: string }
+        - name: batchId
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Stock balances visible to the caller.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StockBalanceList' }
+  /api/inventory/movements:
+    get:
+      tags: [Inventory]
+      summary: List stock movements
+      operationId: listInventoryMovements
+      x-permission: inventory.stock.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: type
+          in: query
+          schema: { $ref: '#/components/schemas/StockMovementType' }
+        - name: itemId
+          in: query
+          schema: { type: string }
+        - name: warehouseId
+          in: query
+          schema: { type: string }
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Stock movements visible to the caller.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StockMovementList' }
+  /api/inventory/alerts:
+    get:
+      tags: [Inventory]
+      summary: List reorder-level alerts
+      operationId: listInventoryAlerts
+      x-permission: inventory.alert.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: warehouseId
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Existing breaches of active reorder levels.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReorderAlertList' }
+  /api/inventory/stock/receipts:
+    post:
+      tags: [Inventory]
+      summary: Receive stock
+      description: Applies weighted-average valuation. A downward reorder crossing emits a company-room alert event.
+      operationId: receiveInventoryStock
+      x-permission: inventory.stock.adjust
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StockReceiptInput' }
+      responses:
+        '201':
+          description: Updated balance and posted movement.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StockMutationResult' }
+        '400': { description: Invalid quantity or non-positive integer cents. }
+        '404': { description: Item, warehouse or batch not found in tenant. }
+        '422': { description: DLP rejection (finding type only). }
+  /api/inventory/stock/issues:
+    post:
+      tags: [Inventory]
+      summary: Issue stock
+      description: Rejects insufficient stock, unbatched lines for batch-tracked items and non-RELEASED batches.
+      operationId: issueInventoryStock
+      x-permission: inventory.stock.adjust
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StockIssueInput' }
+      responses:
+        '201':
+          description: Updated balance and posted movement at the current average cost.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StockMutationResult' }
+        '409': { description: Insufficient stock or batch/quarantine state conflict. }
+  /api/inventory/stock/adjustments:
+    post:
+      tags: [Inventory]
+      summary: Post a stock adjustment
+      operationId: adjustInventoryStock
+      x-permission: inventory.stock.adjust
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StockAdjustmentInput' }
+      responses:
+        '201':
+          description: Updated balance and posted adjustment movement.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StockMutationResult' }
+  /api/inventory/transfers:
+    get:
+      tags: [Inventory]
+      summary: List stock transfers
+      operationId: listInventoryTransfers
+      x-permission: inventory.transfer.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/StockTransferStatus' }
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Transfers visible to the caller.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StockTransferList' }
+    post:
+      tags: [Inventory]
+      summary: Create a draft stock transfer
+      operationId: createInventoryTransfer
+      x-permission: inventory.transfer.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InventoryTransferCreate' }
+      responses:
+        '201':
+          description: Created draft transfer.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [transfer]
+                properties:
+                  transfer: { $ref: '#/components/schemas/StockTransfer' }
+        '400': { description: Source and destination warehouses must differ. }
+  /api/inventory/transfers/{id}:
+    get:
+      tags: [Inventory]
+      summary: Get a stock transfer with lines
+      operationId: getInventoryTransfer
+      x-permission: inventory.transfer.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/InventoryDocumentId'
+      responses:
+        '200':
+          description: Transfer detail.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [transfer]
+                properties:
+                  transfer: { $ref: '#/components/schemas/StockTransfer' }
+  /api/inventory/transfers/{id}/approve:
+    post:
+      tags: [Inventory]
+      summary: Approve a stock transfer into IN_TRANSIT
+      description: Issues source stock at the current weighted-average cost and captures line costs for the destination receipt.
+      operationId: approveInventoryTransfer
+      x-permission: inventory.transfer.approve
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/InventoryDocumentId'
+      responses:
+        '200':
+          description: Approved in-transit transfer.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [transfer]
+                properties:
+                  transfer: { $ref: '#/components/schemas/StockTransfer' }
+        '409': { description: Invalid transition, insufficient stock or non-RELEASED batch. }
+  /api/inventory/transfers/{id}/receive:
+    post:
+      tags: [Inventory]
+      summary: Receive an in-transit transfer
+      description: Posts destination TRANSFER_IN movements at the costs captured on approval.
+      operationId: receiveInventoryTransfer
+      x-permission: inventory.transfer.approve
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/InventoryDocumentId'
+      responses:
+        '200':
+          description: Received transfer.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [transfer]
+                properties:
+                  transfer: { $ref: '#/components/schemas/StockTransfer' }
+        '409': { description: Transfer is not IN_TRANSIT. }
+  /api/inventory/transfers/{id}/cancel:
+    post:
+      tags: [Inventory]
+      summary: Cancel a draft stock transfer
+      operationId: cancelInventoryTransfer
+      x-permission: inventory.transfer.approve
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/InventoryDocumentId'
+      responses:
+        '200':
+          description: Cancelled transfer.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [transfer]
+                properties:
+                  transfer: { $ref: '#/components/schemas/StockTransfer' }
+        '409': { description: Transfer is no longer cancellable. }
+  /api/inventory/counts:
+    get:
+      tags: [Inventory]
+      summary: List stock counts
+      operationId: listInventoryCounts
+      x-permission: inventory.count.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/StockCountStatus' }
+        - name: warehouseId
+          in: query
+          schema: { type: string }
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Stock counts visible to the caller.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StockCountList' }
+    post:
+      tags: [Inventory]
+      summary: Start a stock count
+      description: Snapshots expected quantities and unit costs from current balances.
+      operationId: startInventoryCount
+      x-permission: inventory.count.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InventoryCountCreate' }
+      responses:
+        '201':
+          description: Created draft count.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [count]
+                properties:
+                  count: { $ref: '#/components/schemas/StockCount' }
+  /api/inventory/counts/{id}:
+    get:
+      tags: [Inventory]
+      summary: Get a stock count with lines
+      operationId: getInventoryCount
+      x-permission: inventory.count.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/InventoryDocumentId'
+      responses:
+        '200':
+          description: Stock count detail.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [count]
+                properties:
+                  count: { $ref: '#/components/schemas/StockCount' }
+  /api/inventory/counts/{id}/record:
+    post:
+      tags: [Inventory]
+      summary: Record counted quantities
+      operationId: recordInventoryCount
+      x-permission: inventory.count.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/InventoryDocumentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InventoryCountRecordInput' }
+      responses:
+        '200':
+          description: Count moved to COUNTING with recalculated variances.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [count]
+                properties:
+                  count: { $ref: '#/components/schemas/StockCount' }
+  /api/inventory/counts/{id}/approve:
+    post:
+      tags: [Inventory]
+      summary: Approve a stock count
+      description: Posts only non-zero COUNT_GAIN/COUNT_LOSS balancing movements and audits IDs only.
+      operationId: approveInventoryCount
+      x-permission: inventory.count.approve
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/InventoryDocumentId'
+      responses:
+        '200':
+          description: Approved count with adjusted balances.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [count]
+                properties:
+                  count: { $ref: '#/components/schemas/StockCount' }
+        '409': { description: Invalid transition or quarantined batch on a loss line. }
+  /api/inventory/counts/{id}/cancel:
+    post:
+      tags: [Inventory]
+      summary: Cancel an open stock count
+      operationId: cancelInventoryCount
+      x-permission: inventory.count.approve
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/InventoryDocumentId'
+      responses:
+        '200':
+          description: Cancelled stock count.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [count]
+                properties:
+                  count: { $ref: '#/components/schemas/StockCount' }
 components:
   securitySchemes:
     bearerAuth:
@@ -3503,6 +4285,12 @@ components:
       in: path
       required: true
       description: Opaque sales document ID scoped to the caller's tenant.
+      schema: { type: string }
+    InventoryDocumentId:
+      name: id
+      in: path
+      required: true
+      description: Opaque inventory document ID scoped to the caller's tenant and branch.
       schema: { type: string }
   schemas:
     Inbox:
@@ -4643,5 +5431,463 @@ components:
       properties:
         invoice: { $ref: '#/components/schemas/FinanceInvoice' }
         orderId: { type: string }
+    InventoryItemType:
+      type: string
+      enum: [RAW_MATERIAL, PACKAGING, FINISHED_GOOD, CONSUMABLE, SPARE_PART]
+      description: Phase 8 inventory item classification.
+    InventoryUnit:
+      type: string
+      enum: [EA, BOX, CARTON, KG, G, L, ML, TAB, VIAL, BOTTLE]
+      description: Unit of measure for an inventory item.
+    BatchStatus:
+      type: string
+      enum: [QUARANTINE, RELEASED, EXPIRED, RECALLED]
+      description: Only RELEASED batches may be issued or consumed by a transfer.
+    StockMovementType:
+      type: string
+      enum:
+        - RECEIPT
+        - ISSUE
+        - TRANSFER_IN
+        - TRANSFER_OUT
+        - ADJUSTMENT_IN
+        - ADJUSTMENT_OUT
+        - COUNT_GAIN
+        - COUNT_LOSS
+        - RETURN_IN
+        - RETURN_OUT
+        - PRODUCTION_ISSUE
+        - PRODUCTION_RECEIPT
+    StockTransferStatus:
+      type: string
+      enum: [DRAFT, IN_TRANSIT, RECEIVED, CANCELLED]
+    StockCountStatus:
+      type: string
+      enum: [DRAFT, COUNTING, APPROVED, CANCELLED]
+    InventoryItem:
+      type: object
+      description: Public item projection. Tenant identifiers are omitted.
+      required: [id, code, name, type, unit, standardCostCents, reorderLevel, trackBatches, isActive, classification]
+      properties:
+        id: { type: string }
+        code: { type: string, maxLength: 60 }
+        name: { type: string, maxLength: 160 }
+        type: { $ref: '#/components/schemas/InventoryItemType' }
+        unit: { $ref: '#/components/schemas/InventoryUnit' }
+        standardCostCents: { type: integer, format: int64, minimum: 0, description: Safe integer cents. }
+        reorderLevel: { type: number, format: double, minimum: 0, multipleOf: 0.001 }
+        trackBatches: { type: boolean }
+        isActive: { type: boolean }
+        description: { type: string, maxLength: 500, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        createdById: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    InventoryItemCreate:
+      type: object
+      additionalProperties: false
+      required: [code, name, type]
+      properties:
+        code: { type: string, minLength: 2, maxLength: 60, pattern: '^[a-z0-9_-]+$' }
+        name: { type: string, minLength: 1, maxLength: 160, description: DLP-checked. }
+        type: { $ref: '#/components/schemas/InventoryItemType' }
+        unit: { $ref: '#/components/schemas/InventoryUnit' }
+        standardCostCents: { type: integer, format: int64, minimum: 0, default: 0 }
+        reorderLevel: { type: number, format: double, minimum: 0, maximum: 1000000, multipleOf: 0.001, default: 0 }
+        trackBatches: { type: boolean, default: true }
+        isActive: { type: boolean, default: true }
+        description: { type: string, maxLength: 500, nullable: true, description: DLP-checked. }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    InventoryItemUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        code: { type: string, minLength: 2, maxLength: 60, pattern: '^[a-z0-9_-]+$' }
+        name: { type: string, minLength: 1, maxLength: 160, description: DLP-checked. }
+        type: { $ref: '#/components/schemas/InventoryItemType' }
+        unit: { $ref: '#/components/schemas/InventoryUnit' }
+        standardCostCents: { type: integer, format: int64, minimum: 0 }
+        reorderLevel: { type: number, format: double, minimum: 0, maximum: 1000000, multipleOf: 0.001 }
+        trackBatches: { type: boolean }
+        isActive: { type: boolean }
+        description: { type: string, maxLength: 500, nullable: true, description: DLP-checked. }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    InventoryItemList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/InventoryItem' }
+    Warehouse:
+      type: object
+      required: [id, code, name, isActive, classification]
+      properties:
+        id: { type: string }
+        code: { type: string, maxLength: 60 }
+        name: { type: string, maxLength: 160 }
+        location: { type: string, maxLength: 300, nullable: true }
+        isActive: { type: boolean }
+        classification: { $ref: '#/components/schemas/Classification' }
+        createdById: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    WarehouseCreate:
+      type: object
+      additionalProperties: false
+      required: [code, name]
+      properties:
+        code: { type: string, minLength: 2, maxLength: 60, pattern: '^[a-z0-9_-]+$' }
+        name: { type: string, minLength: 1, maxLength: 160, description: DLP-checked. }
+        location: { type: string, maxLength: 300, nullable: true, description: DLP-checked. }
+        isActive: { type: boolean, default: true }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    WarehouseUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        code: { type: string, minLength: 2, maxLength: 60, pattern: '^[a-z0-9_-]+$' }
+        name: { type: string, minLength: 1, maxLength: 160, description: DLP-checked. }
+        location: { type: string, maxLength: 300, nullable: true, description: DLP-checked. }
+        isActive: { type: boolean }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    WarehouseList:
+      type: object
+      required: [warehouses]
+      properties:
+        warehouses:
+          type: array
+          items: { $ref: '#/components/schemas/Warehouse' }
+    InventoryBatch:
+      type: object
+      required: [id, itemId, batchNumber, status, unitCostCents, classification]
+      properties:
+        id: { type: string }
+        itemId: { type: string }
+        batchNumber: { type: string, maxLength: 80 }
+        status: { $ref: '#/components/schemas/BatchStatus' }
+        unitCostCents: { type: integer, format: int64, minimum: 0 }
+        manufactureDate: { type: string, format: date, nullable: true }
+        expiryDate: { type: string, format: date, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        createdById: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    InventoryBatchCreate:
+      type: object
+      additionalProperties: false
+      required: [itemId, batchNumber]
+      properties:
+        itemId: { type: string, minLength: 1, maxLength: 80 }
+        batchNumber: { type: string, minLength: 1, maxLength: 80, description: DLP-checked. }
+        status: { $ref: '#/components/schemas/BatchStatus' }
+        unitCostCents: { type: integer, format: int64, minimum: 0, default: 0 }
+        manufactureDate: { type: string, format: date, nullable: true }
+        expiryDate: { type: string, format: date, nullable: true }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    InventoryBatchUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        itemId: { type: string, minLength: 1, maxLength: 80 }
+        batchNumber: { type: string, minLength: 1, maxLength: 80, description: DLP-checked. }
+        status: { $ref: '#/components/schemas/BatchStatus' }
+        unitCostCents: { type: integer, format: int64, minimum: 0 }
+        manufactureDate: { type: string, format: date, nullable: true }
+        expiryDate: { type: string, format: date, nullable: true }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    InventoryBatchList:
+      type: object
+      required: [batches]
+      properties:
+        batches:
+          type: array
+          items: { $ref: '#/components/schemas/InventoryBatch' }
+    StockBalance:
+      type: object
+      required: [id, itemId, warehouseId, quantity, unitCostCents, totalValueCents, classification]
+      properties:
+        id: { type: string }
+        itemId: { type: string }
+        itemCode: { type: string, nullable: true }
+        itemName: { type: string, nullable: true }
+        unit: { $ref: '#/components/schemas/InventoryUnit' }
+        warehouseId: { type: string }
+        warehouseCode: { type: string, nullable: true }
+        warehouseName: { type: string, nullable: true }
+        batchId: { type: string, nullable: true, description: NULL denotes unbatched stock. }
+        batchNumber: { type: string, nullable: true }
+        batchStatus: { $ref: '#/components/schemas/BatchStatus' }
+        quantity: { type: number, format: double, minimum: 0, multipleOf: 0.001 }
+        unitCostCents: { type: integer, format: int64, minimum: 0 }
+        totalValueCents: { type: integer, format: int64, minimum: 0 }
+        classification: { $ref: '#/components/schemas/Classification' }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    StockBalanceList:
+      type: object
+      required: [balances]
+      properties:
+        balances:
+          type: array
+          items: { $ref: '#/components/schemas/StockBalance' }
+    StockMovement:
+      type: object
+      required: [id, number, type, itemId, warehouseId, quantity, unitCostCents, totalValueCents, movementDate, classification]
+      properties:
+        id: { type: string }
+        number: { type: string }
+        type: { $ref: '#/components/schemas/StockMovementType' }
+        itemId: { type: string }
+        itemCode: { type: string, nullable: true }
+        warehouseId: { type: string }
+        warehouseCode: { type: string, nullable: true }
+        batchId: { type: string, nullable: true }
+        quantity: { type: number, format: double, minimum: 0, multipleOf: 0.001 }
+        unitCostCents: { type: integer, format: int64, minimum: 0 }
+        totalValueCents: { type: integer, format: int64, minimum: 0 }
+        movementDate: { type: string, format: date }
+        referenceType: { type: string, maxLength: 80, nullable: true }
+        referenceId: { type: string, maxLength: 80, nullable: true }
+        transferLineId: { type: string, nullable: true }
+        countLineId: { type: string, nullable: true }
+        notes: { type: string, maxLength: 1000, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        createdById: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time, nullable: true }
+    StockMovementList:
+      type: object
+      required: [movements]
+      properties:
+        movements:
+          type: array
+          items: { $ref: '#/components/schemas/StockMovement' }
+    StockReceiptInput:
+      type: object
+      additionalProperties: false
+      required: [itemId, warehouseId, quantity, unitCostCents, movementDate]
+      properties:
+        itemId: { type: string, minLength: 1, maxLength: 80 }
+        warehouseId: { type: string, minLength: 1, maxLength: 80 }
+        batchId: { type: string, nullable: true }
+        quantity: { type: number, format: double, exclusiveMinimum: true, minimum: 0, maximum: 1000000, multipleOf: 0.001 }
+        unitCostCents: { type: integer, format: int64, minimum: 1, description: Positive integer cents. }
+        movementDate: { type: string, format: date }
+        movementType: { type: string, enum: [RECEIPT, RETURN_IN, PRODUCTION_RECEIPT], default: RECEIPT }
+        referenceType: { type: string, maxLength: 80, nullable: true }
+        referenceId: { type: string, maxLength: 80, nullable: true }
+        notes: { type: string, maxLength: 1000, nullable: true, description: DLP-checked. }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    StockIssueInput:
+      type: object
+      additionalProperties: false
+      required: [itemId, warehouseId, quantity, movementDate]
+      properties:
+        itemId: { type: string, minLength: 1, maxLength: 80 }
+        warehouseId: { type: string, minLength: 1, maxLength: 80 }
+        batchId: { type: string, nullable: true }
+        quantity: { type: number, format: double, exclusiveMinimum: true, minimum: 0, maximum: 1000000, multipleOf: 0.001 }
+        movementDate: { type: string, format: date }
+        movementType: { type: string, enum: [ISSUE, RETURN_OUT, PRODUCTION_ISSUE], default: ISSUE }
+        referenceType: { type: string, maxLength: 80, nullable: true }
+        referenceId: { type: string, maxLength: 80, nullable: true }
+        notes: { type: string, maxLength: 1000, nullable: true, description: DLP-checked. }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    StockAdjustmentInput:
+      type: object
+      additionalProperties: false
+      required: [itemId, warehouseId, direction, quantity, movementDate, reason]
+      properties:
+        itemId: { type: string, minLength: 1, maxLength: 80 }
+        warehouseId: { type: string, minLength: 1, maxLength: 80 }
+        batchId: { type: string, nullable: true }
+        direction: { type: string, enum: [IN, OUT] }
+        quantity: { type: number, format: double, exclusiveMinimum: true, minimum: 0, maximum: 1000000, multipleOf: 0.001 }
+        unitCostCents: { type: integer, format: int64, minimum: 0, description: Optional for IN; OUT uses balance cost. }
+        movementDate: { type: string, format: date }
+        reason: { type: string, minLength: 1, maxLength: 500, description: DLP-checked. }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    StockMutationResult:
+      type: object
+      required: [balance, movement]
+      properties:
+        balance: { $ref: '#/components/schemas/StockBalance' }
+        movement: { $ref: '#/components/schemas/StockMovement' }
+    StockTransferLine:
+      type: object
+      required: [itemId, quantity, unitCostCents, totalValueCents]
+      properties:
+        id: { type: string, nullable: true }
+        itemId: { type: string }
+        batchId: { type: string, nullable: true }
+        quantity: { type: number, format: double, minimum: 0, multipleOf: 0.001 }
+        unitCostCents: { type: integer, format: int64, minimum: 0 }
+        totalValueCents: { type: integer, format: int64, minimum: 0 }
+        position: { type: integer, minimum: 0, maximum: 1000, nullable: true }
+    StockTransfer:
+      type: object
+      required: [id, number, status, sourceWarehouseId, destinationWarehouseId, transferDate, classification, lines]
+      properties:
+        id: { type: string }
+        number: { type: string }
+        status: { $ref: '#/components/schemas/StockTransferStatus' }
+        sourceWarehouseId: { type: string }
+        destinationWarehouseId: { type: string }
+        transferDate: { type: string, format: date }
+        notes: { type: string, maxLength: 1000, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        approvedAt: { type: string, format: date-time, nullable: true }
+        receivedAt: { type: string, format: date-time, nullable: true }
+        createdById: { type: string, nullable: true }
+        approvedById: { type: string, nullable: true }
+        lines:
+          type: array
+          items: { $ref: '#/components/schemas/StockTransferLine' }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    InventoryTransferCreate:
+      type: object
+      additionalProperties: false
+      required: [sourceWarehouseId, destinationWarehouseId, transferDate, lines]
+      properties:
+        sourceWarehouseId: { type: string, minLength: 1, maxLength: 80 }
+        destinationWarehouseId: { type: string, minLength: 1, maxLength: 80, description: Must differ from sourceWarehouseId. }
+        transferDate: { type: string, format: date }
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 60
+          items:
+            type: object
+            additionalProperties: false
+            required: [itemId, quantity]
+            properties:
+              itemId: { type: string, minLength: 1, maxLength: 80 }
+              batchId: { type: string, nullable: true }
+              quantity: { type: number, format: double, exclusiveMinimum: true, minimum: 0, maximum: 1000000, multipleOf: 0.001 }
+              position: { type: integer, minimum: 0, maximum: 1000 }
+        notes: { type: string, maxLength: 1000, nullable: true, description: DLP-checked. }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    StockTransferList:
+      type: object
+      required: [transfers]
+      properties:
+        transfers:
+          type: array
+          items: { $ref: '#/components/schemas/StockTransfer' }
+    StockCountLine:
+      type: object
+      required: [itemId, expectedQty, countedQty, varianceQty, unitCostCents, varianceValueCents]
+      properties:
+        id: { type: string, nullable: true }
+        itemId: { type: string }
+        batchId: { type: string, nullable: true }
+        expectedQty: { type: number, format: double, minimum: 0, multipleOf: 0.001 }
+        countedQty: { type: number, format: double, minimum: 0, multipleOf: 0.001 }
+        varianceQty: { type: number, format: double, multipleOf: 0.001 }
+        unitCostCents: { type: integer, format: int64, minimum: 0 }
+        varianceValueCents: { type: integer, format: int64 }
+        position: { type: integer, minimum: 0, maximum: 1000, nullable: true }
+    StockCount:
+      type: object
+      required: [id, number, status, warehouseId, countDate, classification, lines]
+      properties:
+        id: { type: string }
+        number: { type: string }
+        status: { $ref: '#/components/schemas/StockCountStatus' }
+        warehouseId: { type: string }
+        countDate: { type: string, format: date }
+        notes: { type: string, maxLength: 1000, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        approvedAt: { type: string, format: date-time, nullable: true }
+        createdById: { type: string, nullable: true }
+        approvedById: { type: string, nullable: true }
+        lines:
+          type: array
+          items: { $ref: '#/components/schemas/StockCountLine' }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    InventoryCountCreate:
+      type: object
+      additionalProperties: false
+      required: [warehouseId, countDate, lines]
+      properties:
+        warehouseId: { type: string, minLength: 1, maxLength: 80 }
+        countDate: { type: string, format: date }
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items:
+            type: object
+            additionalProperties: false
+            required: [itemId, countedQty]
+            properties:
+              itemId: { type: string, minLength: 1, maxLength: 80 }
+              batchId: { type: string, nullable: true }
+              countedQty: { type: number, format: double, minimum: 0, maximum: 1000000, multipleOf: 0.001 }
+              position: { type: integer, minimum: 0, maximum: 1000 }
+        notes: { type: string, maxLength: 1000, nullable: true, description: DLP-checked. }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    InventoryCountRecordInput:
+      type: object
+      additionalProperties: false
+      required: [lines]
+      properties:
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items:
+            type: object
+            additionalProperties: false
+            required: [itemId, countedQty]
+            properties:
+              itemId: { type: string, minLength: 1, maxLength: 80 }
+              batchId: { type: string, nullable: true }
+              countedQty: { type: number, format: double, minimum: 0, maximum: 1000000, multipleOf: 0.001 }
+              position: { type: integer, minimum: 0, maximum: 1000 }
+        notes: { type: string, maxLength: 1000, nullable: true, description: DLP-checked. }
+    StockCountList:
+      type: object
+      required: [counts]
+      properties:
+        counts:
+          type: array
+          items: { $ref: '#/components/schemas/StockCount' }
+    ReorderAlert:
+      type: object
+      required: [itemId, warehouseId, quantity, reorderLevel, classification]
+      properties:
+        itemId: { type: string }
+        itemCode: { type: string, nullable: true }
+        warehouseId: { type: string }
+        warehouseCode: { type: string, nullable: true }
+        batchId: { type: string, nullable: true }
+        quantity: { type: number, format: double, minimum: 0, multipleOf: 0.001 }
+        reorderLevel: { type: number, format: double, minimum: 0, multipleOf: 0.001 }
+        unit: { $ref: '#/components/schemas/InventoryUnit' }
+        classification: { $ref: '#/components/schemas/Classification' }
+    ReorderAlertList:
+      type: object
+      required: [alerts]
+      properties:
+        alerts:
+          type: array
+          items: { $ref: '#/components/schemas/ReorderAlert' }
 security:
   - bearerAuth: []

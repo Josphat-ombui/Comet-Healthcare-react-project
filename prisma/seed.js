@@ -913,6 +913,169 @@ async function main() {
   })
   console.log('✓ Seeded draft sales quote, order, delivery note and return fixtures')
 
+  // ---------------------------------------------------------------- phase 8
+  // Inventory fixtures are intentionally DRAFT/SOURCE records only: no stock
+  // is posted by seeds, so valuation and state transitions stay service-owned.
+  // All rows belong to cmp_comet and are guarded by company-scoped unique keys.
+  const rawWarehouse = await prisma.warehouse.upsert({
+    where: { companyId_code: { companyId, code: 'wh_raw_store' } },
+    update: {},
+    create: {
+      companyId, code: 'wh_raw_store', name: 'Raw Material Store',
+      location: 'Machakos Plant — Store A', classification: 'INTERNAL', createdById: admin.id,
+    },
+  })
+  const finishedWarehouse = await prisma.warehouse.upsert({
+    where: { companyId_code: { companyId, code: 'wh_finished_store' } },
+    update: {},
+    create: {
+      companyId, code: 'wh_finished_store', name: 'Finished Goods Store',
+      location: 'Machakos Plant — Store B', classification: 'INTERNAL', createdById: admin.id,
+    },
+  })
+
+  const apiItem = await prisma.inventoryItem.upsert({
+    where: { companyId_code: { companyId, code: 'itm_metformin_api' } },
+    update: {},
+    create: {
+      companyId, code: 'itm_metformin_api', name: 'Metformin HCl API',
+      type: 'RAW_MATERIAL', unit: 'KG', standardCostCents: 1250,
+      reorderLevel: 300, trackBatches: true, isActive: true,
+      description: 'Inventory phase 8 fixture — batch-tracked API.',
+      classification: 'INTERNAL', createdById: admin.id,
+    },
+  })
+  const foilItem = await prisma.inventoryItem.upsert({
+    where: { companyId_code: { companyId, code: 'itm_blister_foil' } },
+    update: {},
+    create: {
+      companyId, code: 'itm_blister_foil', name: 'Aluminium Blister Foil',
+      type: 'PACKAGING', unit: 'EA', standardCostCents: 250,
+      reorderLevel: 500, trackBatches: false, isActive: true,
+      description: 'Inventory phase 8 fixture — unbatched packaging.',
+      classification: 'INTERNAL', createdById: admin.id,
+    },
+  })
+
+  const releasedBatch = await prisma.inventoryBatch.upsert({
+    where: {
+      companyId_itemId_batchNumber: {
+        companyId, itemId: apiItem.id, batchNumber: 'BAT-MET-2026-001',
+      },
+    },
+    update: {},
+    create: {
+      companyId, itemId: apiItem.id, batchNumber: 'BAT-MET-2026-001',
+      status: 'RELEASED', unitCostCents: 1250,
+      manufactureDate: '2026-01-10', expiryDate: '2028-01-09',
+      classification: 'INTERNAL', createdById: admin.id,
+    },
+  })
+  await prisma.inventoryBatch.upsert({
+    where: {
+      companyId_itemId_batchNumber: {
+        companyId, itemId: apiItem.id, batchNumber: 'BAT-MET-2026-002',
+      },
+    },
+    update: {},
+    create: {
+      companyId, itemId: apiItem.id, batchNumber: 'BAT-MET-2026-002',
+      status: 'QUARANTINE', unitCostCents: 1250,
+      manufactureDate: '2026-02-02', expiryDate: '2028-02-01',
+      classification: 'INTERNAL', createdById: admin.id,
+    },
+  })
+
+  const inventoryBalances = [
+    {
+      itemId: apiItem.id, warehouseId: rawWarehouse.id, batchId: releasedBatch.id,
+      quantity: 250, unitCostCents: 1250, totalValueCents: 312_500,
+    },
+    {
+      itemId: foilItem.id, warehouseId: rawWarehouse.id, batchId: null,
+      quantity: 1200, unitCostCents: 250, totalValueCents: 300_000,
+    },
+  ]
+  for (const balance of inventoryBalances) {
+    // eslint-disable-next-line no-await-in-loop
+    const existing = await prisma.stockBalance.findFirst({
+      where: {
+        companyId, itemId: balance.itemId, warehouseId: balance.warehouseId,
+        ...(balance.batchId ? { batchId: balance.batchId } : { batchId: null }),
+      },
+      select: { id: true },
+    })
+    if (existing) continue
+    // eslint-disable-next-line no-await-in-loop
+    await prisma.stockBalance.create({
+      data: {
+        companyId, ...balance, classification: 'INTERNAL', createdById: admin.id,
+      },
+    })
+  }
+
+  await prisma.stockMovement.upsert({
+    where: { companyId_number: { companyId, number: 'MOV-2026-F001' } },
+    update: {},
+    create: {
+      companyId, number: 'MOV-2026-F001', type: 'RECEIPT',
+      itemId: apiItem.id, warehouseId: rawWarehouse.id, batchId: releasedBatch.id,
+      quantity: 250, unitCostCents: 1250, totalValueCents: 312_500,
+      movementDate: '2026-01-12', referenceType: 'PURCHASE_ORDER', referenceId: 'PO-FIXTURE-001',
+      notes: 'Inventory phase 8 fixture receipt.', classification: 'INTERNAL', createdById: admin.id,
+    },
+  })
+  await prisma.stockMovement.upsert({
+    where: { companyId_number: { companyId, number: 'MOV-2026-F002' } },
+    update: {},
+    create: {
+      companyId, number: 'MOV-2026-F002', type: 'RECEIPT',
+      itemId: foilItem.id, warehouseId: rawWarehouse.id, batchId: null,
+      quantity: 1200, unitCostCents: 250, totalValueCents: 300_000,
+      movementDate: '2026-01-13', referenceType: 'PURCHASE_ORDER', referenceId: 'PO-FIXTURE-002',
+      notes: 'Inventory phase 8 fixture receipt.', classification: 'INTERNAL', createdById: admin.id,
+    },
+  })
+
+  await prisma.stockTransfer.upsert({
+    where: { companyId_number: { companyId, number: 'TRF-2026-F001' } },
+    update: {},
+    create: {
+      companyId, number: 'TRF-2026-F001', status: 'DRAFT',
+      sourceWarehouseId: rawWarehouse.id, destinationWarehouseId: finishedWarehouse.id,
+      transferDate: '2026-02-10',
+      notes: 'Inventory phase 8 fixture — approve to exercise transfer valuation.',
+      classification: 'INTERNAL', createdById: admin.id,
+      lines: {
+        create: [{
+          companyId, itemId: foilItem.id, batchId: null, quantity: 100,
+          unitCostCents: 0, totalValueCents: 0, position: 0,
+          classification: 'INTERNAL', createdById: admin.id,
+        }],
+      },
+    },
+  })
+
+  await prisma.stockCount.upsert({
+    where: { companyId_number: { companyId, number: 'CNT-2026-F001' } },
+    update: {},
+    create: {
+      companyId, number: 'CNT-2026-F001', status: 'DRAFT',
+      warehouseId: rawWarehouse.id, countDate: '2026-02-15',
+      notes: 'Inventory phase 8 fixture — record and approve to post variance.',
+      classification: 'INTERNAL', createdById: admin.id,
+      lines: {
+        create: [{
+          companyId, itemId: foilItem.id, batchId: null,
+          expectedQty: 1200, countedQty: 1200, varianceQty: 0,
+          unitCostCents: 250, varianceValueCents: 0, position: 0,
+          classification: 'INTERNAL', createdById: admin.id,
+        }],
+      },
+    },
+  })
+  console.log('✓ Seeded inventory items, warehouses, batches, balances, movements, transfer and count fixtures')
+
   console.log('\nSeed complete ✔')
 }
 
