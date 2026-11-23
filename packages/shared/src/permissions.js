@@ -60,6 +60,20 @@ export const PERMISSIONS = Object.freeze({
   'finance.statement.read': 'Read finance statements',
   'finance.etims.read': 'Read eTIMS submissions',
   'finance.etims.write': 'Queue eTIMS submissions',
+  // Phase 7 sales. Confirmation, issue, approval and invoice creation are
+  // deliberately separate from general document create/read access.
+  'sales.quote.read': 'Read sales quotes',
+  'sales.quote.write': 'Create and update sales quotes',
+  'sales.order.read': 'Read sales orders',
+  'sales.order.write': 'Create and update sales orders',
+  'sales.order.confirm': 'Confirm sales orders',
+  'sales.delivery.read': 'Read delivery notes',
+  'sales.delivery.write': 'Create and update delivery notes',
+  'sales.delivery.issue': 'Issue and deliver delivery notes',
+  'sales.return.read': 'Read sales returns',
+  'sales.return.write': 'Create and update sales returns',
+  'sales.return.approve': 'Approve and receive sales returns',
+  'sales.invoice.create': 'Create a finance invoice from a sales order',
 })
 
 export const ROLE_PERMISSIONS = Object.freeze({
@@ -109,6 +123,18 @@ export const ROLE_PERMISSIONS = Object.freeze({
     'finance.statutory.read',
     'finance.statement.read',
     'finance.etims.read',
+    'sales.quote.read',
+    'sales.quote.write',
+    'sales.order.read',
+    'sales.order.write',
+    'sales.order.confirm',
+    'sales.delivery.read',
+    'sales.delivery.write',
+    'sales.delivery.issue',
+    'sales.return.read',
+    'sales.return.write',
+    'sales.return.approve',
+    'sales.invoice.create',
   ],
   STAFF: [
     'messaging.inbox.read',
@@ -137,6 +163,14 @@ export const ROLE_PERMISSIONS = Object.freeze({
     'finance.budget.read',
     'finance.statutory.read',
     'finance.statement.read',
+    'sales.quote.read',
+    'sales.quote.write',
+    'sales.order.read',
+    'sales.order.write',
+    'sales.delivery.read',
+    'sales.delivery.write',
+    'sales.return.read',
+    'sales.return.write',
   ],
   COMPLIANCE: [
     'audit.read',
@@ -161,6 +195,10 @@ export const ROLE_PERMISSIONS = Object.freeze({
     'finance.statement.read',
     'finance.etims.read',
     'finance.etims.write',
+    'sales.quote.read',
+    'sales.order.read',
+    'sales.delivery.read',
+    'sales.return.read',
   ],
 })
 

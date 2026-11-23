@@ -8,6 +8,54 @@ The format follows a phase-gate model: each enterprise phase ends with passing t
 
 ## [Unreleased]
 
+### Phase 7 — Sales
+
+**Added**
+
+- Tenant/branch-scoped sales domain with strict Zod contracts and integer-cent arithmetic:
+  quotes, sales orders, delivery notes and returns; quote→order conversion; order confirmation;
+  delivery issue/deliver; return approve/receive; and `createInvoiceFromOrder(orderId, input, actor)`
+  in `packages/api/lib/sales.js`.
+- `/api/sales` endpoints for all four document types plus `POST /quotes/:id/convert`,
+  `POST /orders/:id/confirm`, `POST /orders/:id/invoice`, `POST /deliveries/:id/issue`,
+  `POST /deliveries/:id/deliver`, `POST /returns/:id/approve` and `POST /returns/:id/receive`.
+  New `sales.*` permissions are enforced with bearer auth on every operation; client-supplied
+  `companyId`, status and rate values are rejected.
+- Migration `20261123000100_phase7_sales` with eight new RLS-protected tables, idempotent
+  `tenant_branch_scope` policies, generated via the shadow-DB method. Draft quote/order/delivery/
+  return fixtures are seeded idempotently and reference the same UNVERIFIED VAT fixture rate.
+- ERP Sales tab with four lists, simple create forms and row actions for conversion, confirmation,
+  invoice creation, issue/deliver and approve/receive. Socket frames only invalidate the open view;
+  content is always refetched through the authenticated API.
+- Strict shared Sales event schemas and company-room-only sockets: `sales:quote`, `sales:order`,
+  `sales:delivery`, `sales:return` and `sales:invoice`. Domain events and socket frames carry IDs
+  and classification only. OpenAPI `0.7.0-phase.7`, ADR-0012, README and OpenAPI README updates.
+- `packages/api/tests/phase7-sales.test.js` with 19 tests covering cent arithmetic, DTO redaction,
+  state guards, conversion/projections, verified-rate enforcement, strict DLP rejection, ID-only
+  events and company-room routing.
+
+**Changed**
+
+- Sales never hardcodes or copies a statutory rate. `taxRateId` is an intended VAT reference only;
+  `taxCents` on sales documents stays `0`. Invoice creation delegates `createInvoice` and
+  `issueInvoice` to finance, which accepts only VERIFIED, effective rates. `taxRateId` may be
+  omitted; finance rejects issue when no verified rate is available.
+- `SalesOrder.financeInvoiceId` is a plain scalar link (no circular Prisma relation) and is set
+  only after successful invoice creation.
+- `Idempotency-Key` remains scoped to messaging sends; sales writes are not replay-safe.
+
+**Verification**
+
+- `npm test` — 105 passed (19 Phase 7); `npm run test:smoke` — 31 passed.
+- `npm run lint` and `npm run build` pass; `node --check packages/erp/public/app.js` passes.
+- OpenAPI YAML parses: version `0.7.0-phase.7`, 108 paths (15 Sales), 77 schemas, 274 refs
+  resolved; all Phase 3–6 paths are retained.
+- `npm run db:deploy`, `npm run db:generate` and two consecutive `npm run db:seed` runs pass.
+  Cross-tenant RLS probe with `comet_app`: `cmp_comet` sees 1 probe row, `cmp_other` sees 0;
+  all eight sales tables have `tenant_branch_scope`.
+
+---
+
 ### Phase 6 — Finance
 
 **Added**

@@ -88,14 +88,21 @@ Phase 5 does not change the seed accounts or their passwords.
   balance-sheet/ageing statements, and a ready-only eTIMS payload queue. All money is integer
   cents; rates are taken only from verified statutory rows. The ERP at `:5174` has a Finance tab.
   Contract: `docs/openapi/openapi.yaml` (`0.6.0-phase.6`); decision: `docs/decisions/ADR-0011-finance-and-statutory-rates.md`.
+- **Sales (Phase 7)** — tenant/branch-scoped quotes, sales orders, delivery notes and returns with
+  explicit status transitions and ID-only audit/events. Quotes convert to draft orders; confirmed
+  orders can create finance invoices, but Sales stores only a `taxRateId` reference and never
+  calculates or hardcodes tax. All document amounts are integer cents and all dates are strict
+  `YYYY-MM-DD`. The ERP at `:5174` has a Sales tab. Contract: `docs/openapi/openapi.yaml`
+  (`0.7.0-phase.7`); decision: `docs/decisions/ADR-0012-sales-lifecycle.md`.
 
-> **Finance warning:** verify statutory rates against current KRA/Government publications before
-> use — fixture rates are `UNVERIFIED`. eTIMS is a ready-only internal queue; it is **not live KRA
-> filing** and never submits to KRA.
+> **Rate warning:** verify statutory rates against current KRA/Government publications before
+> use — fixture rates are `UNVERIFIED`. Sales may reference an unverified rate on a draft, but
+> finance rejects invoice issue until a VERIFIED, effective rate exists. eTIMS is a ready-only
+> internal queue; it is **not live KRA filing** and never submits to KRA.
 
 ### API namespaces
 
-| Namespace | Phase 5/6 endpoints (summary) |
+| Namespace | Phase 5/6/7 endpoints (summary) |
 | --- | --- |
 | `/api/files` | `POST /uploads`, `POST /uploads/:id/confirm`, `GET /?purpose&status&limit`, `GET /:id`, `GET /:id/download`, `POST /:id/versions`, `DELETE /:id`. Local fallback ticket URLs: `/local-upload/:token`, `/local-download/:token`. |
 | `/api/workflow` | `GET|POST /definitions`, `GET|POST /instances`, `GET /tasks?mine=1`, `POST /tasks/:id/decide`, `POST /tasks/:id/delegate`. |
@@ -103,8 +110,9 @@ Phase 5 does not change the seed accounts or their passwords.
 | `/api/search` | `GET /?q&types&limit` (permission-aware FTS over files, documents, workflows, users). |
 | `/api/documents` | `GET /kinds`, `GET /`, `POST /generate`, `GET /jobs/:id`, `GET /:code/download`, `GET /:code`, `GET /:code/pdf`. |
 | `/api/finance` | `GET\|POST /accounts`, `GET\|POST /parties`, `GET\|POST /statutory-rates`, `POST /statutory-rates/:id/verify`, `GET\|POST /journals`, `GET /journals/:id`, `POST /journals/:id/post`, `POST /journals/:id/reverse`, `GET\|POST /invoices`, `GET /invoices/:id`, `POST /invoices/:id/issue`, `GET\|POST /payments`, `GET /payments/:id`, `GET\|POST /budgets`, `GET /budgets/:id`, `POST /budgets/:id/approve`, `GET /statements/{trial-balance,income,balance-sheet,ageing}`, `GET /etims/submissions`, `GET /etims/submissions/:id`, `POST /etims/submissions/:id/retry`, `GET /etims/payload/:invoiceId`. |
+| `/api/sales` | `GET|POST /quotes`, `GET|PATCH /quotes/:id`, `POST /quotes/:id/convert`, `GET|POST /orders`, `GET|PATCH /orders/:id`, `POST /orders/:id/confirm`, `POST /orders/:id/invoice`, `GET|POST /deliveries`, `GET|PATCH /deliveries/:id`, `POST /deliveries/:id/issue`, `POST /deliveries/:id/deliver`, `GET|POST /returns`, `GET|PATCH /returns/:id`, `POST /returns/:id/approve`, `POST /returns/:id/receive`. |
 
-`Idempotency-Key` is required only for Phase 4 messaging sends; Phase 5 and Phase 6 writes do not use it.
+`Idempotency-Key` is required only for Phase 4 messaging sends; Phase 5, Phase 6 and Phase 7 writes do not use it.
 The `finance.etims.submit` worker queue records `PENDING` submissions for a certified provider and
 creates in-app notifications only — no live KRA filing occurs.
 
@@ -167,17 +175,17 @@ packages/
   api/                Express app: index.js, lib/, routes/, tests/
   web/                Storefront: src/, public/, tests/, Vite config
   cms/                Content Studio workspace scaffold
-  erp/                Internal suite: ERP shell + messaging UI + Finance tab (public/, static server)
+  erp/                Internal suite: ERP shell + messaging UI + Finance/Sales tabs (public/, static server)
   realtime/           Socket.IO server, Redis adapter and stream relay (Phase 4)
   workers/            Outbox publisher + BullMQ job processors (Phase 5/6)
 prisma/
-  schema.prisma       PostgreSQL 16 schema (identity, org, messaging, shared services, finance, legacy)
+  schema.prisma       PostgreSQL 16 schema (identity, org, messaging, shared services, finance, sales, legacy)
   migrations/         Versioned SQL + RLS/role/audit rules
   seed.js             Tenant, branches, departments, inboxes, demo data
 docs/
   architecture/       Phase 1 architecture + Phase 3 ERD
-  decisions/          ADRs (0001-0011; finance and statutory rates in ADR-0011)
-  openapi/            Phase 6 API contract (0.6.0-phase.6)
+  decisions/          ADRs (0001-0012; finance in ADR-0011, sales lifecycle in ADR-0012)
+  openapi/            Phase 7 API contract (0.7.0-phase.7)
 ```
 
 ## Production-readiness notes

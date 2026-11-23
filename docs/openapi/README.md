@@ -1,11 +1,12 @@
 # OpenAPI Contract
 
-Comet Healthcare Enterprise Platform — Phase 6 contract complete (`0.6.0-phase.6`)
+Comet Healthcare Enterprise Platform — Phase 7 contract complete (`0.7.0-phase.7`)
 
 This directory holds the versioned REST and webhook contracts. Phase 1 created the skeleton;
 Phase 3 added identity/organisation/audit, Phase 4 added messaging and realtime, Phase 5
 completed the shared-services surface (files, workflow, notifications, search, documents),
-and Phase 6 adds the tenant/branch-scoped finance surface under `/api/finance`.
+Phase 6 added the tenant/branch-scoped finance surface under `/api/finance`, and Phase 7 adds
+the sales lifecycle under `/api/sales`.
 
 ## Files
 
@@ -32,6 +33,33 @@ and Phase 6 adds the tenant/branch-scoped finance surface under `/api/finance`.
 - Response envelopes follow the implementation: named collections such as `files`,
   `definitions`, `instances`, `tasks`, `notifications` and `preferences` are used rather than a
   generic `items` key. `GET /api/search` and `GET /api/documents` use `items` as before.
+
+## Phase 7 scope
+
+- `Sales` tag paths (15 paths / 23 operations): `/api/sales/quotes` (create/list), `/quotes/{id}`
+  (detail/update), `/quotes/{id}/convert`, `/api/sales/orders` (create/list), `/orders/{id}`
+  (detail/update), `/orders/{id}/confirm`, `/orders/{id}/invoice`, `/api/sales/deliveries`
+  (create/list), `/deliveries/{id}` (detail/update), `/deliveries/{id}/issue`,
+  `/deliveries/{id}/deliver`, `/api/sales/returns` (create/list), `/returns/{id}`
+  (detail/update), `/returns/{id}/approve` and `/returns/{id}/receive`.
+- All Phase 3/4/5/6 paths and schemas remain intact. Every sales operation declares
+  `security: [{ bearerAuth: [] }]` and an `x-permission` from the `sales.*` set. Client-supplied
+  `companyId`, status and calculated/rate values are rejected by strict request schemas.
+- All document money fields are integer cents (`*Cents`); all dates are strict `YYYY-MM-DD`.
+  Sales records `taxRateId` as an intended VAT reference only. It never copies `rateBps` and
+  never calculates tax. `POST /api/sales/orders/{id}/invoice` delegates to finance
+  `createInvoice` + `issueInvoice`; only a VERIFIED, effective rate may be used. An omitted
+  `taxRateId` is valid and finance rejects issue when no verified rate is available.
+- Status transitions are explicit and guarded: DRAFT-only edits, quote → order conversion,
+  order confirmation before delivery/invoicing, issue before delivery, and approval before
+  receipt of a return. Terminal statuses cannot be reopened.
+- Free text is DLP-checked and fails closed; findings are reported by type only.
+- Phase 7 socket events are `sales:quote`, `sales:order`, `sales:delivery`, `sales:return` and
+  `sales:invoice`. Domain events and socket frames carry IDs/classification only and are routed
+  to the company room only — never user, thread, inbox or branch rooms. Clients refetch through
+  `/api/sales`; see `x-realtime` and `x-sales`.
+- `Idempotency-Key` remains scoped to `POST /api/messaging/threads/{id}/messages` only; no
+  `/api/sales` endpoint consumes it.
 
 ## Phase 6 scope
 
@@ -75,6 +103,8 @@ and Phase 6 adds the tenant/branch-scoped finance surface under `/api/finance`.
    `totals`) so clients can render them generically; numeric report values are integer cents.
 10. Phase 6 event frames are ID-only. Adding amounts, statuses, PINs, payloads or provider
     responses to a finance socket frame is a contract violation.
+11. Phase 7 sales frames are ID/classification-only invalidation signals routed to the company
+    room. Adding document numbers, amounts, customer names or free text is a contract violation.
 
 ## Security schemes
 
@@ -95,9 +125,9 @@ and Phase 6 adds the tenant/branch-scoped finance surface under `/api/finance`.
    ```
 
    An OpenAPI-aware linter (for example `npx @redocly/cli lint docs/openapi/openapi.yaml`) is
-   optional when network access to the generator is available. At the Phase 6 gate the parsed
-   document has version `0.6.0-phase.6`, 93 paths (24 under `/api/finance`) and 51 schemas.
-4. Confirm all `$ref` targets resolve and that no Phase 3/4/5 path was removed. A local check:
+   optional when network access to the generator is available. At the Phase 7 gate the parsed
+   document has version `0.7.0-phase.7`, 108 paths (15 under `/api/sales`) and 77 schemas.
+4. Confirm all `$ref` targets resolve and that no Phase 3/4/5/6 path was removed. A local check:
 
    ```bash
    python - <<'PY'
@@ -121,7 +151,8 @@ and Phase 6 adds the tenant/branch-scoped finance surface under `/api/finance`.
 
    Phase 5 contract tests in `packages/api/tests/` cover the shared permission and ID-only
    event rules; Phase 6 finance tests cover verified-rate gating, integer-cent arithmetic and
-   eTIMS queue-only behaviour.
+   eTIMS queue-only behaviour; Phase 7 sales tests cover conversion, status guards, DLP,
+    verified-rate enforcement and company-room ID-only events (274 refs resolved at the gate).
 
 ## Phase gate requirement
 

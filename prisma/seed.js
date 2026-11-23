@@ -806,6 +806,113 @@ async function main() {
   })
   console.log('✓ Seeded approved Q4 finance budget')
 
+  // ------------------------------------------------------------- phase 7 sales
+  // Fixture documents are DRAFT so no statutory rate is applied and invoice
+  // creation stays a deliberate, permissioned action. `rate.id` is stored only
+  // as an intended VAT reference; it is the same UNVERIFIED fixture rate, so
+  // finance must reject invoice issue until COMPLIANCE verifies it.
+  const salesLineTotals = (qty, unitPriceCents) => {
+    const netCents = Math.round(qty * unitPriceCents)
+    return { netCents, taxCents: 0, grossCents: netCents }
+  }
+  const salesFixtureLines = [
+    { description: 'Metformin HCl 500mg tablets (sales fixture)', qty: 2, unitPriceCents: 150000, position: 0 },
+    { description: 'Glucometer strips (sales fixture)', qty: 5, unitPriceCents: 25000, position: 1 },
+  ]
+  const salesFixtureTotals = salesFixtureLines.reduce((totals, line) => {
+    const lineTotalsValue = salesLineTotals(line.qty, line.unitPriceCents)
+    totals.subtotalCents += lineTotalsValue.netCents
+    totals.totalCents += lineTotalsValue.grossCents
+    return totals
+  }, { subtotalCents: 0, taxCents: 0, totalCents: 0 })
+  const salesLineData = salesFixtureLines.map((line) => ({
+    companyId,
+    ...line,
+    ...salesLineTotals(line.qty, line.unitPriceCents),
+  }))
+
+  const salesQuote = await prisma.salesQuote.upsert({
+    where: { companyId_number: { companyId, number: 'QUO-2026-F001' } },
+    update: {},
+    create: {
+      companyId,
+      number: 'QUO-2026-F001',
+      status: 'DRAFT',
+      partyId: customerParty.id,
+      quoteDate: '2026-01-15',
+      validUntil: '2026-02-14',
+      currency: 'KES',
+      taxRateId: rate.id,
+      ...salesFixtureTotals,
+      notes: 'Draft fixture sales quote — rate reference only, tax applied by finance.',
+      classification: 'INTERNAL',
+      createdById: admin.id,
+      lines: { create: salesLineData },
+    },
+  })
+
+  const salesOrder = await prisma.salesOrder.upsert({
+    where: { companyId_number: { companyId, number: 'ORD-2026-F001' } },
+    update: {},
+    create: {
+      companyId,
+      number: 'ORD-2026-F001',
+      status: 'DRAFT',
+      partyId: customerParty.id,
+      quoteId: salesQuote.id,
+      orderDate: '2026-01-20',
+      requestedDate: '2026-02-14',
+      currency: 'KES',
+      taxRateId: rate.id,
+      ...salesFixtureTotals,
+      notes: 'Draft fixture sales order — confirm before delivery or invoicing.',
+      classification: 'INTERNAL',
+      financeInvoiceId: null,
+      createdById: admin.id,
+      lines: { create: salesLineData },
+    },
+  })
+
+  const deliveryNote = await prisma.deliveryNote.upsert({
+    where: { companyId_number: { companyId, number: 'DN-2026-F001' } },
+    update: {},
+    create: {
+      companyId,
+      number: 'DN-2026-F001',
+      status: 'DRAFT',
+      partyId: customerParty.id,
+      orderId: salesOrder.id,
+      deliveryDate: '2026-01-25',
+      currency: 'KES',
+      ...salesFixtureTotals,
+      notes: 'Draft fixture delivery note — issue when goods leave the warehouse.',
+      classification: 'INTERNAL',
+      createdById: admin.id,
+      lines: { create: salesLineData },
+    },
+  })
+
+  await prisma.salesReturn.upsert({
+    where: { companyId_number: { companyId, number: 'RET-2026-F001' } },
+    update: {},
+    create: {
+      companyId,
+      number: 'RET-2026-F001',
+      status: 'DRAFT',
+      partyId: customerParty.id,
+      orderId: salesOrder.id,
+      deliveryNoteId: deliveryNote.id,
+      returnDate: '2026-02-01',
+      reason: 'Fixture return — customer quality query.',
+      currency: 'KES',
+      ...salesFixtureTotals,
+      classification: 'INTERNAL',
+      createdById: admin.id,
+      lines: { create: salesLineData },
+    },
+  })
+  console.log('✓ Seeded draft sales quote, order, delivery note and return fixtures')
+
   console.log('\nSeed complete ✔')
 }
 

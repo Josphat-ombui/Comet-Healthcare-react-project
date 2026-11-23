@@ -327,6 +327,43 @@ enum EtimsStatus {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 7 sales enums
+// ---------------------------------------------------------------------------
+
+enum SalesQuoteStatus {
+  DRAFT
+  SENT
+  ACCEPTED
+  REJECTED
+  CONVERTED
+  EXPIRED
+  CANCELLED
+}
+
+enum SalesOrderStatus {
+  DRAFT
+  CONFIRMED
+  FULFILLED
+  CANCELLED
+}
+
+enum DeliveryNoteStatus {
+  DRAFT
+  ISSUED
+  IN_TRANSIT
+  DELIVERED
+  CANCELLED
+}
+
+enum SalesReturnStatus {
+  DRAFT
+  APPROVED
+  RECEIVED
+  REJECTED
+  CANCELLED
+}
+
+// ---------------------------------------------------------------------------
 // Organisation
 // ---------------------------------------------------------------------------
 
@@ -401,6 +438,14 @@ model Company {
   financeBudgets     FinanceBudget[]
   financeBudgetLines FinanceBudgetLine[]
   etimsSubmissions   EtimsSubmission[]
+  salesQuotes              SalesQuote[]
+  salesQuoteLines          SalesQuoteLine[]
+  salesOrders              SalesOrder[]
+  salesOrderLines          SalesOrderLine[]
+  deliveryNotes            DeliveryNote[]
+  deliveryNoteLines        DeliveryNoteLine[]
+  salesReturns             SalesReturn[]
+  salesReturnLines         SalesReturnLine[]
 }
 
 model Branch {
@@ -435,6 +480,14 @@ model Branch {
   financePayments    FinancePayment[]
   financeBudgets     FinanceBudget[]
   etimsSubmissions   EtimsSubmission[]
+  salesQuotes       SalesQuote[]
+  salesQuoteLines   SalesQuoteLine[]
+  salesOrders       SalesOrder[]
+  salesOrderLines   SalesOrderLine[]
+  deliveryNotes     DeliveryNote[]
+  deliveryNoteLines DeliveryNoteLine[]
+  salesReturns      SalesReturn[]
+  salesReturnLines  SalesReturnLine[]
 
   @@unique([companyId, code])
   @@index([companyId, isActive])
@@ -568,6 +621,10 @@ model User {
   financePaymentsCreated   FinancePayment[]  @relation("FinancePaymentCreatedBy")
   financeBudgetsCreated    FinanceBudget[]   @relation("FinanceBudgetCreatedBy")
   financeBudgetsApproved   FinanceBudget[]   @relation("FinanceBudgetApprovedBy")
+  salesQuotesCreated      SalesQuote[]             @relation("SalesQuoteCreatedBy")
+  salesOrdersCreated      SalesOrder[]             @relation("SalesOrderCreatedBy")
+  deliveryNotesCreated    DeliveryNote[]           @relation("DeliveryNoteCreatedBy")
+  salesReturnsCreated     SalesReturn[]            @relation("SalesReturnCreatedBy")
 
   @@unique([companyId, email])
   @@unique([companyId, identityProvider, externalId])
@@ -1492,6 +1549,10 @@ model FinanceParty {
   invoices     FinanceInvoice[]
   payments     FinancePayment[]
   journalLines FinanceJournalLine[]
+  salesQuotes   SalesQuote[]
+  salesOrders   SalesOrder[]
+  deliveryNotes DeliveryNote[]
+  salesReturns  SalesReturn[]
 
   @@index([companyId, type])
   @@index([companyId, name])
@@ -1749,4 +1810,230 @@ model EtimsSubmission {
 
   @@index([companyId, invoiceId])
   @@index([companyId, status])
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7 sales
+//
+// Header documents carry their own tenant/branch scope, customer party link,
+// number, status and integer-cent totals. `taxRateId` is an intended statutory
+// rate reference only: no rate value is copied into these rows. Invoice creation
+// resolves a VERIFIED finance rate at issue time instead.
+// ---------------------------------------------------------------------------
+
+model SalesQuote {
+  id             String             @id @default(cuid())
+  companyId      String             @default("cmp_comet")
+  tenant         Company            @relation(fields: [companyId], references: [id])
+  branchId       String?
+  branch         Branch?            @relation(fields: [branchId], references: [id])
+  number         String
+  status         SalesQuoteStatus   @default(DRAFT)
+  partyId        String
+  party          FinanceParty       @relation(fields: [partyId], references: [id])
+  quoteDate      String
+  validUntil     String?
+  currency       String             @default("KES")
+  // Intended statutory rate reference. The rate is never hardcoded or copied;
+  // only finance issueInvoice applies a VERIFIED rate to an issued invoice.
+  taxRateId      String?
+  subtotalCents  Int                @default(0)
+  taxCents       Int                @default(0)
+  totalCents     Int                @default(0)
+  notes          String?
+  classification DataClassification @default(INTERNAL)
+  createdById    String?
+  createdBy      User?              @relation("SalesQuoteCreatedBy", fields: [createdById], references: [id])
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  lines SalesQuoteLine[]
+
+  @@unique([companyId, number])
+  @@index([companyId, status, quoteDate])
+  @@index([companyId, partyId])
+}
+
+model SalesQuoteLine {
+  id             String     @id @default(cuid())
+  companyId      String     @default("cmp_comet")
+  tenant         Company    @relation(fields: [companyId], references: [id])
+  branchId       String?
+  branch         Branch?    @relation(fields: [branchId], references: [id])
+  quoteId        String
+  quote          SalesQuote @relation(fields: [quoteId], references: [id])
+  description    String
+  qty            Float
+  unitPriceCents Int
+  netCents       Int        @default(0)
+  taxCents       Int        @default(0)
+  grossCents     Int        @default(0)
+  position       Int        @default(0)
+  createdAt      DateTime   @default(now())
+
+  @@index([quoteId])
+  @@index([companyId])
+}
+
+model SalesOrder {
+  id               String             @id @default(cuid())
+  companyId        String             @default("cmp_comet")
+  tenant           Company            @relation(fields: [companyId], references: [id])
+  branchId         String?
+  branch           Branch?            @relation(fields: [branchId], references: [id])
+  number           String
+  status           SalesOrderStatus   @default(DRAFT)
+  partyId          String
+  party            FinanceParty       @relation(fields: [partyId], references: [id])
+  quoteId          String?
+  orderDate        String
+  requestedDate    String?
+  currency         String             @default("KES")
+  taxRateId        String?
+  subtotalCents    Int                @default(0)
+  taxCents         Int                @default(0)
+  totalCents       Int                @default(0)
+  notes            String?
+  classification   DataClassification @default(INTERNAL)
+  // Plain scalar link: finance owns the invoice relation; this avoids a
+  // circular Prisma relation between sales and finance.
+  financeInvoiceId String?
+  createdById      String?
+  createdBy        User?              @relation("SalesOrderCreatedBy", fields: [createdById], references: [id])
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  lines SalesOrderLine[]
+
+  @@unique([companyId, number])
+  @@index([companyId, status, orderDate])
+  @@index([companyId, partyId])
+}
+
+model SalesOrderLine {
+  id             String     @id @default(cuid())
+  companyId      String     @default("cmp_comet")
+  tenant         Company    @relation(fields: [companyId], references: [id])
+  branchId       String?
+  branch         Branch?    @relation(fields: [branchId], references: [id])
+  orderId        String
+  order          SalesOrder @relation(fields: [orderId], references: [id])
+  description    String
+  qty            Float
+  unitPriceCents Int
+  netCents       Int        @default(0)
+  taxCents       Int        @default(0)
+  grossCents     Int        @default(0)
+  position       Int        @default(0)
+  createdAt      DateTime   @default(now())
+
+  @@index([orderId])
+  @@index([companyId])
+}
+
+model DeliveryNote {
+  id             String             @id @default(cuid())
+  companyId      String             @default("cmp_comet")
+  tenant         Company            @relation(fields: [companyId], references: [id])
+  branchId       String?
+  branch         Branch?            @relation(fields: [branchId], references: [id])
+  number         String
+  status         DeliveryNoteStatus @default(DRAFT)
+  partyId        String
+  party          FinanceParty       @relation(fields: [partyId], references: [id])
+  orderId        String?
+  deliveryDate   String
+  currency       String             @default("KES")
+  subtotalCents  Int                @default(0)
+  taxCents       Int                @default(0)
+  totalCents     Int                @default(0)
+  notes          String?
+  classification DataClassification @default(INTERNAL)
+  issuedAt       DateTime?
+  deliveredAt    DateTime?
+  createdById    String?
+  createdBy      User?              @relation("DeliveryNoteCreatedBy", fields: [createdById], references: [id])
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  lines DeliveryNoteLine[]
+
+  @@unique([companyId, number])
+  @@index([companyId, status, deliveryDate])
+  @@index([companyId, partyId])
+}
+
+model DeliveryNoteLine {
+  id             String       @id @default(cuid())
+  companyId      String       @default("cmp_comet")
+  tenant         Company      @relation(fields: [companyId], references: [id])
+  branchId       String?
+  branch         Branch?      @relation(fields: [branchId], references: [id])
+  deliveryNoteId String
+  deliveryNote   DeliveryNote @relation(fields: [deliveryNoteId], references: [id])
+  description    String
+  qty            Float
+  unitPriceCents Int
+  netCents       Int          @default(0)
+  taxCents       Int          @default(0)
+  grossCents     Int          @default(0)
+  position       Int          @default(0)
+  createdAt      DateTime     @default(now())
+
+  @@index([deliveryNoteId])
+  @@index([companyId])
+}
+
+model SalesReturn {
+  id             String             @id @default(cuid())
+  companyId      String             @default("cmp_comet")
+  tenant         Company            @relation(fields: [companyId], references: [id])
+  branchId       String?
+  branch         Branch?            @relation(fields: [branchId], references: [id])
+  number         String
+  status         SalesReturnStatus  @default(DRAFT)
+  partyId        String
+  party          FinanceParty       @relation(fields: [partyId], references: [id])
+  orderId        String?
+  deliveryNoteId String?
+  returnDate     String
+  reason         String?
+  currency       String             @default("KES")
+  subtotalCents  Int                @default(0)
+  taxCents       Int                @default(0)
+  totalCents     Int                @default(0)
+  classification DataClassification @default(INTERNAL)
+  approvedAt     DateTime?
+  receivedAt     DateTime?
+  createdById    String?
+  createdBy      User?              @relation("SalesReturnCreatedBy", fields: [createdById], references: [id])
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  lines SalesReturnLine[]
+
+  @@unique([companyId, number])
+  @@index([companyId, status, returnDate])
+  @@index([companyId, partyId])
+}
+
+model SalesReturnLine {
+  id             String      @id @default(cuid())
+  companyId      String      @default("cmp_comet")
+  tenant         Company     @relation(fields: [companyId], references: [id])
+  branchId       String?
+  branch         Branch?     @relation(fields: [branchId], references: [id])
+  returnId       String
+  returnRecord   SalesReturn @relation(fields: [returnId], references: [id])
+  description    String
+  qty            Float
+  unitPriceCents Int
+  netCents       Int         @default(0)
+  taxCents       Int         @default(0)
+  grossCents     Int         @default(0)
+  position       Int         @default(0)
+  createdAt      DateTime    @default(now())
+
+  @@index([returnId])
+  @@index([companyId])
 }

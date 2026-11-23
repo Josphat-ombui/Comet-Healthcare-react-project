@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Comet Healthcare Enterprise API
-  version: 0.6.0-phase.6
+  version: 0.7.0-phase.7
   summary: REST and webhook contract for the Comet Healthcare enterprise platform.
   description: |
     Phase 3 adds local identity, sessions, MFA, OIDC, organisation directory and audit.
@@ -49,6 +49,22 @@ info:
     and creates in-app notifications only. It is NOT live filing and never submits to KRA.
     Payload amounts are decimal presentation strings; finance API money fields remain integer cents.
 
+    Phase 7 adds the sales lifecycle under `/api/sales`: quotes, sales orders, delivery notes
+    and returns with explicit status transitions, plus quote-to-order conversion and invoice
+    creation from a confirmed order. All document money fields are integer cents and all dates
+    are strict `YYYY-MM-DD` strings. Sales stores `taxRateId` only as an intended reference;
+    it never copies or hardcodes a rate. Invoice creation delegates every tax calculation to
+    finance, which applies only a VERIFIED, effective VAT rate. Omitting `taxRateId` is allowed:
+    finance then rejects issue when no verified rate is available.
+
+    Phase 7 permissions: `sales.quote.read/write`, `sales.order.read/write/confirm`,
+    `sales.delivery.read/write/issue`, `sales.return.read/write/approve` and
+    `sales.invoice.create`. Every sales endpoint requires a bearer token. Sales events
+    (`SalesQuoteCreated`, `SalesOrderConfirmed`, `DeliveryNoteIssued`, `SalesReturnApproved`,
+    `SalesInvoiceCreated`) and their sockets carry IDs and classification only and are routed
+    to the company room only. They are invalidation signals; clients refetch through the
+    authenticated API. `Idempotency-Key` is still scoped to messaging sends only.
+
     Phase 6 permissions: `finance.account.read/write`, `finance.journal.read/write/post`,
     `finance.party.read/write`, `finance.invoice.read/write/issue`,
     `finance.payment.read/write`, `finance.budget.read/write`,
@@ -79,6 +95,8 @@ tags:
     description: Workflow, files, search, notifications, and documents. Added in Phase 5.
   - name: Finance
     description: Accounts, parties, statutory rates, journals, invoices, payments, budgets, statements and ready-only eTIMS queue. Added in Phase 6.
+  - name: Sales
+    description: Quotes, orders, delivery notes, returns and finance invoice creation. Added in Phase 7.
 x-phase-roadmap:
   phase1: Architecture and this skeleton only
   phase2: ERD, migrations, workspace split, shared contracts
@@ -86,7 +104,7 @@ x-phase-roadmap:
   phase4: Complete - /api/messaging and realtime events
   phase5: Complete - /api/files, /api/workflow, /api/notifications, /api/search, /api/documents
   phase6: Complete - /api/finance (accounts, parties, statutory rates, journals, invoices, payments, budgets, statements, ready-only eTIMS queue)
-  phase7: Next - /api/sales
+  phase7: Complete - /api/sales (quotes, orders, delivery notes, returns, invoice creation from confirmed orders)
   phase8: /api/inventory
   phase9: /api/procurement
   phase10: /api/service
@@ -136,6 +154,11 @@ x-realtime:
     finance:rate: 'StatutoryRate changed; refetch GET /api/finance/statutory-rates.'
     finance:etims: 'EtimsSubmission queued or progressed; refetch GET /api/finance/etims/submissions. Internal queue only, not live filing.'
     finance:etims-failed: 'EtimsSubmission failed; refetch GET /api/finance/etims/submissions and in-app notifications.'
+    sales:quote: 'SalesQuote changed; refetch GET /api/sales/quotes.'
+    sales:order: 'SalesOrder confirmed or converted; refetch GET /api/sales/orders.'
+    sales:delivery: 'DeliveryNote issued; refetch GET /api/sales/deliveries.'
+    sales:return: 'SalesReturn approved; refetch GET /api/sales/returns.'
+    sales:invoice: 'Invoice created from a sales order; refetch /api/sales/orders and /api/finance/invoices.'
   eventPayload:
     eventId: string
     type: string
@@ -189,6 +212,21 @@ x-realtime:
     Authenticated polling of /api/finance accounts, rates, parties, invoices, payments,
     budgets and eTIMS submissions when sockets are unavailable. As with Phase 5, event
     data is never rendered directly.
+  phase7EventMap:
+    SalesQuoteCreated: sales:quote
+    SalesOrderConfirmed: sales:order
+    DeliveryNoteIssued: sales:delivery
+    SalesReturnApproved: sales:return
+    SalesInvoiceCreated: sales:invoice
+  phase7Rooms:
+    - company:{companyId} only (never user, thread, inbox or branch rooms)
+  phase7PayloadRule: |
+    Sales socket frames and domain events carry IDs and classification only. No document
+    number, amount, status text, customer name or free text is placed on an event; clients
+    always refetch through the authenticated /api/sales endpoints.
+  phase7Fallback: |
+    Authenticated polling of /api/sales quotes, orders, deliveries and returns when sockets
+    are unavailable. Event data is never rendered directly.
 x-idempotency:
   requiredFor:
     - POST /api/messaging/threads/{id}/messages
@@ -198,6 +236,10 @@ x-idempotency:
   phase6: |
     Not required. Idempotency-Key remains scoped to messaging sends only. No
     /api/finance endpoint consumes it, and finance writes are not replay-safe.
+  phase7: |
+    Not required. No /api/sales endpoint consumes an Idempotency-Key. Quote/order/delivery
+    transitions and invoice creation are not replay-safe; clients must inspect the returned
+    status before retrying.
 x-finance:
   money: All finance API monetary fields are integer cents (`*Cents`); reports use the same unit. The eTIMS payload is a separate external-style representation using decimal strings and is not a finance money field.
   rates: |
@@ -243,6 +285,42 @@ x-finance:
     - finance:etims
     - finance:etims-failed
   idempotency: Idempotency-Key is scoped to messaging sends only; finance writes are not replay-safe.
+x-sales:
+  money: All sales document monetary fields are integer cents (`*Cents`). Tax is never calculated or stored as a rate value in sales rows; finance applies a VERIFIED rate when an invoice is issued.
+  dates: All document dates are strict ISO `YYYY-MM-DD` strings.
+  rateReferences: |
+    `taxRateId` is an intended statutory VAT reference only. It must identify a VAT rate in the
+    caller's tenant, but an UNVERIFIED rate may be stored on a draft document. Invoice creation
+    resolves the rate through finance's VERIFIED guard; an omitted `taxRateId` is allowed and
+    finance rejects issue when no effective verified rate exists. No rate value is hardcoded.
+  tenantScope: companyId is derived from the bearer token; a client-supplied companyId is rejected by strict request schemas. Branch scope allows organisation-wide (null branch) rows.
+  dlp: Free text is inspected with the shared DLP patterns and fails closed; restricted findings are rejected with 422 and reported by type only.
+  eventPayload: IDs and classification only; company-room sockets are invalidation signals.
+  permissions:
+    - sales.quote.read
+    - sales.quote.write
+    - sales.order.read
+    - sales.order.write
+    - sales.order.confirm
+    - sales.delivery.read
+    - sales.delivery.write
+    - sales.delivery.issue
+    - sales.return.read
+    - sales.return.write
+    - sales.return.approve
+    - sales.invoice.create
+  socketEvents:
+    - sales:quote
+    - sales:order
+    - sales:delivery
+    - sales:return
+    - sales:invoice
+  statusTransitions:
+    quote: 'DRAFT -> SENT/ACCEPTED/CONVERTED/CANCELLED; SENT -> ACCEPTED/REJECTED/EXPIRED/CONVERTED/CANCELLED; ACCEPTED -> CONVERTED'
+    order: 'DRAFT -> CONFIRMED/CANCELLED; CONFIRMED -> FULFILLED'
+    delivery: 'DRAFT -> ISSUED/CANCELLED; ISSUED -> IN_TRANSIT/DELIVERED; IN_TRANSIT -> DELIVERED'
+    return: 'DRAFT -> APPROVED/REJECTED/CANCELLED; APPROVED -> RECEIVED/REJECTED'
+  idempotency: Idempotency-Key is scoped to messaging sends only; sales writes are not replay-safe.
 paths:
   /api/health/live:
     get:
@@ -2782,6 +2860,588 @@ paths:
         '403': { description: Missing finance.etims.read permission. }
         '404': { description: Invoice not found. }
         '409': { description: Invoice is not eligible for a payload (for example still DRAFT). }
+  /api/sales/quotes:
+    get:
+      tags: [Sales]
+      summary: List sales quotes
+      operationId: listSalesQuotes
+      x-permission: sales.quote.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/SalesQuoteStatus' }
+        - name: partyId
+          in: query
+          schema: { type: string }
+        - name: from
+          in: query
+          description: Inclusive quote date (YYYY-MM-DD).
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Quotes visible to the caller.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SalesQuoteList' }
+        '403': { description: Missing sales.quote.read permission. }
+    post:
+      tags: [Sales]
+      summary: Create a draft sales quote
+      description: Strict body. companyId, status and rate values are rejected; free text is DLP-checked.
+      operationId: createSalesQuote
+      x-permission: sales.quote.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SalesQuoteCreate' }
+      responses:
+        '201':
+          description: Created draft quote.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [quote]
+                properties:
+                  quote: { $ref: '#/components/schemas/SalesQuote' }
+        '400': { description: Invalid body, date, money field or restricted text. }
+        '403': { description: Missing sales.quote.write permission. }
+        '422': { description: DLP rejection (finding type only). }
+  /api/sales/quotes/{id}:
+    get:
+      tags: [Sales]
+      summary: Get a sales quote with lines
+      operationId: getSalesQuote
+      x-permission: sales.quote.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SalesDocumentId'
+      responses:
+        '200':
+          description: Quote detail.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [quote]
+                properties:
+                  quote: { $ref: '#/components/schemas/SalesQuote' }
+        '403': { description: Missing sales.quote.read permission. }
+        '404': { description: Quote not found in this tenant/branch. }
+    patch:
+      tags: [Sales]
+      summary: Update a draft sales quote
+      operationId: updateSalesQuote
+      x-permission: sales.quote.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SalesDocumentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SalesQuoteUpdate' }
+      responses:
+        '200':
+          description: Updated quote.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [quote]
+                properties:
+                  quote: { $ref: '#/components/schemas/SalesQuote' }
+        '409': { description: Quote is no longer DRAFT. }
+  /api/sales/quotes/{id}/convert:
+    post:
+      tags: [Sales]
+      summary: Convert a quote to a draft sales order
+      description: Copies party, lines and integer-cent amounts. Does not copy any rate value. Conversion is audited with IDs only; a sales socket frame is emitted on confirmation, not on conversion.
+      operationId: convertSalesQuoteToOrder
+      x-permission: sales.quote.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SalesDocumentId'
+      responses:
+        '201':
+          description: The converted quote and the new draft order.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SalesConversionResult' }
+        '409': { description: Quote is not in a convertible status. }
+  /api/sales/orders:
+    get:
+      tags: [Sales]
+      summary: List sales orders
+      operationId: listSalesOrders
+      x-permission: sales.order.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/SalesOrderStatus' }
+        - name: partyId
+          in: query
+          schema: { type: string }
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Orders visible to the caller.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SalesOrderList' }
+        '403': { description: Missing sales.order.read permission. }
+    post:
+      tags: [Sales]
+      summary: Create a draft sales order
+      description: Supply at least one line or a quoteId. An order created from a quote inherits the quote's lines unless lines are supplied.
+      operationId: createSalesOrder
+      x-permission: sales.order.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SalesOrderCreate' }
+      responses:
+        '201':
+          description: Created draft order.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [order]
+                properties:
+                  order: { $ref: '#/components/schemas/SalesOrder' }
+        '400': { description: Invalid body. }
+  /api/sales/orders/{id}:
+    get:
+      tags: [Sales]
+      summary: Get a sales order with lines
+      operationId: getSalesOrder
+      x-permission: sales.order.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SalesDocumentId'
+      responses:
+        '200':
+          description: Order detail.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [order]
+                properties:
+                  order: { $ref: '#/components/schemas/SalesOrder' }
+        '404': { description: Order not found. }
+    patch:
+      tags: [Sales]
+      summary: Update a draft sales order
+      operationId: updateSalesOrder
+      x-permission: sales.order.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SalesDocumentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SalesOrderUpdate' }
+      responses:
+        '200':
+          description: Updated order.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [order]
+                properties:
+                  order: { $ref: '#/components/schemas/SalesOrder' }
+        '409': { description: Order is no longer DRAFT. }
+  /api/sales/orders/{id}/confirm:
+    post:
+      tags: [Sales]
+      summary: Confirm a draft sales order
+      description: Emits SalesOrderConfirmed on the company room. Confirmation is required before delivery or invoicing.
+      operationId: confirmSalesOrder
+      x-permission: sales.order.confirm
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SalesDocumentId'
+      responses:
+        '200':
+          description: Confirmed order.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [order]
+                properties:
+                  order: { $ref: '#/components/schemas/SalesOrder' }
+        '409': { description: Order is not in DRAFT. }
+  /api/sales/orders/{id}/invoice:
+    post:
+      tags: [Sales]
+      summary: Create and issue a finance invoice from a confirmed order
+      description: |
+        Delegates to finance createInvoice and issueInvoice. Only VERIFIED, effective VAT
+        rates are accepted. Omitting taxRateId is allowed; finance rejects issue when no
+        verified rate is available. The order receives `financeInvoiceId` only after success.
+      operationId: createSalesInvoiceFromOrder
+      x-permission: sales.invoice.create
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SalesDocumentId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SalesInvoiceFromOrderInput' }
+      responses:
+        '201':
+          description: Created invoice and the order ID.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SalesInvoiceFromOrderResult' }
+        '404': { description: Order or rate not found. }
+        '409': { description: Order not CONFIRMED, already invoiced, or no VERIFIED VAT rate effective. }
+        '422': { description: DLP rejection on notes. }
+  /api/sales/deliveries:
+    get:
+      tags: [Sales]
+      summary: List delivery notes
+      operationId: listSalesDeliveries
+      x-permission: sales.delivery.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/DeliveryNoteStatus' }
+        - name: orderId
+          in: query
+          schema: { type: string }
+        - name: partyId
+          in: query
+          schema: { type: string }
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Delivery notes visible to the caller.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SalesDeliveryList' }
+    post:
+      tags: [Sales]
+      summary: Create a draft delivery note
+      description: Supply an orderId or both partyId and at least one line. Confirmed orders project their lines automatically.
+      operationId: createSalesDelivery
+      x-permission: sales.delivery.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SalesDeliveryCreate' }
+      responses:
+        '201':
+          description: Created draft delivery note.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [delivery]
+                properties:
+                  delivery: { $ref: '#/components/schemas/DeliveryNote' }
+  /api/sales/deliveries/{id}:
+    get:
+      tags: [Sales]
+      summary: Get a delivery note with lines
+      operationId: getSalesDelivery
+      x-permission: sales.delivery.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SalesDocumentId'
+      responses:
+        '200':
+          description: Delivery note detail.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [delivery]
+                properties:
+                  delivery: { $ref: '#/components/schemas/DeliveryNote' }
+    patch:
+      tags: [Sales]
+      summary: Update a draft delivery note
+      operationId: updateSalesDelivery
+      x-permission: sales.delivery.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SalesDocumentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SalesDeliveryUpdate' }
+      responses:
+        '200':
+          description: Updated delivery note.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [delivery]
+                properties:
+                  delivery: { $ref: '#/components/schemas/DeliveryNote' }
+        '409': { description: Delivery note is no longer DRAFT. }
+  /api/sales/deliveries/{id}/issue:
+    post:
+      tags: [Sales]
+      summary: Issue a delivery note
+      description: DRAFT to ISSUED. Emits DeliveryNoteIssued with IDs only.
+      operationId: issueSalesDelivery
+      x-permission: sales.delivery.issue
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SalesDocumentId'
+      responses:
+        '200':
+          description: Issued delivery note.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [delivery]
+                properties:
+                  delivery: { $ref: '#/components/schemas/DeliveryNote' }
+        '409': { description: Invalid status transition. }
+  /api/sales/deliveries/{id}/deliver:
+    post:
+      tags: [Sales]
+      summary: Mark a delivery note delivered
+      description: ISSUED or IN_TRANSIT to DELIVERED. Terminal.
+      operationId: deliverSalesDelivery
+      x-permission: sales.delivery.issue
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SalesDocumentId'
+      responses:
+        '200':
+          description: Delivered note.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [delivery]
+                properties:
+                  delivery: { $ref: '#/components/schemas/DeliveryNote' }
+        '409': { description: Invalid status transition. }
+  /api/sales/returns:
+    get:
+      tags: [Sales]
+      summary: List sales returns
+      operationId: listSalesReturns
+      x-permission: sales.return.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/SalesReturnStatus' }
+        - name: deliveryNoteId
+          in: query
+          schema: { type: string }
+        - name: partyId
+          in: query
+          schema: { type: string }
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Returns visible to the caller.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SalesReturnList' }
+    post:
+      tags: [Sales]
+      summary: Create a draft sales return
+      description: Use a deliveryNoteId, an orderId, or both partyId and at least one line. Not both source IDs.
+      operationId: createSalesReturn
+      x-permission: sales.return.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SalesReturnCreate' }
+      responses:
+        '201':
+          description: Created draft return.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [return]
+                properties:
+                  return: { $ref: '#/components/schemas/SalesReturn' }
+  /api/sales/returns/{id}:
+    get:
+      tags: [Sales]
+      summary: Get a sales return with lines
+      operationId: getSalesReturn
+      x-permission: sales.return.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SalesDocumentId'
+      responses:
+        '200':
+          description: Return detail.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [return]
+                properties:
+                  return: { $ref: '#/components/schemas/SalesReturn' }
+    patch:
+      tags: [Sales]
+      summary: Update a draft sales return
+      operationId: updateSalesReturn
+      x-permission: sales.return.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SalesDocumentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SalesReturnUpdate' }
+      responses:
+        '200':
+          description: Updated return.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [return]
+                properties:
+                  return: { $ref: '#/components/schemas/SalesReturn' }
+        '409': { description: Return is no longer DRAFT. }
+  /api/sales/returns/{id}/approve:
+    post:
+      tags: [Sales]
+      summary: Approve a sales return
+      description: DRAFT to APPROVED. Emits SalesReturnApproved with IDs only.
+      operationId: approveSalesReturn
+      x-permission: sales.return.approve
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SalesDocumentId'
+      responses:
+        '200':
+          description: Approved return.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [return]
+                properties:
+                  return: { $ref: '#/components/schemas/SalesReturn' }
+        '409': { description: Invalid status transition. }
+  /api/sales/returns/{id}/receive:
+    post:
+      tags: [Sales]
+      summary: Receive an approved sales return
+      description: APPROVED to RECEIVED. Terminal.
+      operationId: receiveSalesReturn
+      x-permission: sales.return.approve
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SalesDocumentId'
+      responses:
+        '200':
+          description: Received return.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [return]
+                properties:
+                  return: { $ref: '#/components/schemas/SalesReturn' }
+        '409': { description: Invalid status transition. }
 components:
   securitySchemes:
     bearerAuth:
@@ -2838,6 +3498,12 @@ components:
       required: true
       description: Client-generated key for messaging sends only; safe replays return the original message. Not used by Phase 5 endpoints.
       schema: { type: string, minLength: 1, maxLength: 200 }
+    SalesDocumentId:
+      name: id
+      in: path
+      required: true
+      description: Opaque sales document ID scoped to the caller's tenant.
+      schema: { type: string }
   schemas:
     Inbox:
       type: object
@@ -3664,5 +4330,318 @@ components:
           type: string
         correlationId:
           type: string
+    SalesQuoteStatus:
+      type: string
+      enum: [DRAFT, SENT, ACCEPTED, REJECTED, CONVERTED, EXPIRED, CANCELLED]
+    SalesOrderStatus:
+      type: string
+      enum: [DRAFT, CONFIRMED, FULFILLED, CANCELLED]
+    DeliveryNoteStatus:
+      type: string
+      enum: [DRAFT, ISSUED, IN_TRANSIT, DELIVERED, CANCELLED]
+    SalesReturnStatus:
+      type: string
+      enum: [DRAFT, APPROVED, RECEIVED, REJECTED, CANCELLED]
+    SalesLine:
+      type: object
+      required: [description, qty, unitPriceCents, netCents, taxCents, grossCents]
+      properties:
+        id: { type: string }
+        description: { type: string }
+        qty: { type: number, exclusiveMinimum: 0 }
+        unitPriceCents: { type: integer, minimum: 1 }
+        netCents: { type: integer, description: Integer cents; sales never applies a rate. }
+        taxCents: { type: integer, enum: [0] }
+        grossCents: { type: integer }
+        position: { type: integer }
+    SalesLineInput:
+      type: object
+      required: [description, qty, unitPriceCents]
+      additionalProperties: false
+      properties:
+        description: { type: string, minLength: 1, maxLength: 240, description: DLP-checked free text. }
+        qty: { type: number, exclusiveMinimum: 0, maximum: 100000 }
+        unitPriceCents: { type: integer, minimum: 1 }
+    SalesMoneyTotals:
+      type: object
+      required: [subtotalCents, taxCents, totalCents]
+      properties:
+        subtotalCents: { type: integer }
+        taxCents: { type: integer, enum: [0], description: Sales documents do not calculate tax; finance applies it on invoice issue. }
+        totalCents: { type: integer }
+    SalesQuote:
+      allOf:
+        - $ref: '#/components/schemas/SalesMoneyTotals'
+        - type: object
+          required: [id, number, status, partyId, quoteDate, currency, classification]
+          properties:
+            id: { type: string }
+            number: { type: string }
+            status: { $ref: '#/components/schemas/SalesQuoteStatus' }
+            partyId: { type: string }
+            quoteDate: { type: string, format: date }
+            validUntil: { type: string, format: date, nullable: true }
+            currency: { type: string, example: KES }
+            taxRateId: { type: string, nullable: true, description: Intended VAT rate reference only; no rate value is stored. }
+            notes: { type: string, nullable: true }
+            classification: { $ref: '#/components/schemas/Classification' }
+            createdById: { type: string, nullable: true }
+            lines:
+              type: array
+              items: { $ref: '#/components/schemas/SalesLine' }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+    SalesOrder:
+      allOf:
+        - $ref: '#/components/schemas/SalesMoneyTotals'
+        - type: object
+          required: [id, number, status, partyId, orderDate, currency, classification]
+          properties:
+            id: { type: string }
+            number: { type: string }
+            status: { $ref: '#/components/schemas/SalesOrderStatus' }
+            partyId: { type: string }
+            quoteId: { type: string, nullable: true }
+            orderDate: { type: string, format: date }
+            requestedDate: { type: string, format: date, nullable: true }
+            currency: { type: string, example: KES }
+            taxRateId: { type: string, nullable: true }
+            notes: { type: string, nullable: true }
+            classification: { $ref: '#/components/schemas/Classification' }
+            financeInvoiceId: { type: string, nullable: true, description: Plain scalar link set only after successful invoice creation. }
+            createdById: { type: string, nullable: true }
+            lines:
+              type: array
+              items: { $ref: '#/components/schemas/SalesLine' }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+    DeliveryNote:
+      allOf:
+        - $ref: '#/components/schemas/SalesMoneyTotals'
+        - type: object
+          required: [id, number, status, partyId, deliveryDate, currency, classification]
+          properties:
+            id: { type: string }
+            number: { type: string }
+            status: { $ref: '#/components/schemas/DeliveryNoteStatus' }
+            partyId: { type: string }
+            orderId: { type: string, nullable: true }
+            deliveryDate: { type: string, format: date }
+            currency: { type: string, example: KES }
+            notes: { type: string, nullable: true }
+            classification: { $ref: '#/components/schemas/Classification' }
+            issuedAt: { type: string, format: date-time, nullable: true }
+            deliveredAt: { type: string, format: date-time, nullable: true }
+            createdById: { type: string, nullable: true }
+            lines:
+              type: array
+              items: { $ref: '#/components/schemas/SalesLine' }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+    SalesReturn:
+      allOf:
+        - $ref: '#/components/schemas/SalesMoneyTotals'
+        - type: object
+          required: [id, number, status, partyId, returnDate, currency, classification]
+          properties:
+            id: { type: string }
+            number: { type: string }
+            status: { $ref: '#/components/schemas/SalesReturnStatus' }
+            partyId: { type: string }
+            orderId: { type: string, nullable: true }
+            deliveryNoteId: { type: string, nullable: true }
+            returnDate: { type: string, format: date }
+            reason: { type: string, nullable: true }
+            currency: { type: string, example: KES }
+            classification: { $ref: '#/components/schemas/Classification' }
+            approvedAt: { type: string, format: date-time, nullable: true }
+            receivedAt: { type: string, format: date-time, nullable: true }
+            createdById: { type: string, nullable: true }
+            lines:
+              type: array
+              items: { $ref: '#/components/schemas/SalesLine' }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+    SalesQuoteList:
+      type: object
+      required: [quotes]
+      properties:
+        quotes:
+          type: array
+          items: { $ref: '#/components/schemas/SalesQuote' }
+    SalesOrderList:
+      type: object
+      required: [orders]
+      properties:
+        orders:
+          type: array
+          items: { $ref: '#/components/schemas/SalesOrder' }
+    SalesDeliveryList:
+      type: object
+      required: [deliveries]
+      properties:
+        deliveries:
+          type: array
+          items: { $ref: '#/components/schemas/DeliveryNote' }
+    SalesReturnList:
+      type: object
+      required: [returns]
+      properties:
+        returns:
+          type: array
+          items: { $ref: '#/components/schemas/SalesReturn' }
+    SalesQuoteCreate:
+      type: object
+      additionalProperties: false
+      required: [partyId, quoteDate, lines]
+      properties:
+        partyId: { type: string, minLength: 1, maxLength: 80 }
+        quoteDate: { type: string, format: date }
+        validUntil: { type: string, format: date, nullable: true }
+        currency: { type: string, default: KES, maxLength: 8 }
+        taxRateId: { type: string, nullable: true, description: VAT rate ID only; never a rate value. }
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 60
+          items: { $ref: '#/components/schemas/SalesLineInput' }
+        notes: { type: string, maxLength: 2000, description: DLP-checked. }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    SalesQuoteUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        partyId: { type: string }
+        quoteDate: { type: string, format: date }
+        validUntil: { type: string, format: date, nullable: true }
+        currency: { type: string, maxLength: 8 }
+        taxRateId: { type: string, nullable: true }
+        lines:
+          type: array
+          maxItems: 60
+          items: { $ref: '#/components/schemas/SalesLineInput' }
+        notes: { type: string, maxLength: 2000 }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    SalesOrderCreate:
+      type: object
+      additionalProperties: false
+      required: [partyId, orderDate]
+      description: At least one of lines or quoteId is required.
+      properties:
+        partyId: { type: string }
+        quoteId: { type: string }
+        orderDate: { type: string, format: date }
+        requestedDate: { type: string, format: date, nullable: true }
+        currency: { type: string, default: KES, maxLength: 8 }
+        taxRateId: { type: string, nullable: true }
+        lines:
+          type: array
+          maxItems: 60
+          items: { $ref: '#/components/schemas/SalesLineInput' }
+        notes: { type: string, maxLength: 2000 }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    SalesOrderUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        partyId: { type: string }
+        requestedDate: { type: string, format: date, nullable: true }
+        currency: { type: string, maxLength: 8 }
+        taxRateId: { type: string, nullable: true }
+        lines:
+          type: array
+          maxItems: 60
+          items: { $ref: '#/components/schemas/SalesLineInput' }
+        notes: { type: string, maxLength: 2000 }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    SalesDeliveryCreate:
+      type: object
+      additionalProperties: false
+      required: [deliveryDate]
+      description: An orderId or both partyId and at least one line are required.
+      properties:
+        orderId: { type: string }
+        partyId: { type: string }
+        deliveryDate: { type: string, format: date }
+        currency: { type: string, default: KES, maxLength: 8 }
+        lines:
+          type: array
+          maxItems: 60
+          items: { $ref: '#/components/schemas/SalesLineInput' }
+        notes: { type: string, maxLength: 2000 }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    SalesDeliveryUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        partyId: { type: string }
+        deliveryDate: { type: string, format: date }
+        currency: { type: string, maxLength: 8 }
+        lines:
+          type: array
+          maxItems: 60
+          items: { $ref: '#/components/schemas/SalesLineInput' }
+        notes: { type: string, maxLength: 2000 }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    SalesReturnCreate:
+      type: object
+      additionalProperties: false
+      required: [returnDate]
+      description: Use orderId or deliveryNoteId, or provide partyId and at least one line. Not both source IDs.
+      properties:
+        orderId: { type: string }
+        deliveryNoteId: { type: string }
+        partyId: { type: string }
+        returnDate: { type: string, format: date }
+        reason: { type: string, maxLength: 1000, description: DLP-checked. }
+        currency: { type: string, default: KES, maxLength: 8 }
+        lines:
+          type: array
+          maxItems: 60
+          items: { $ref: '#/components/schemas/SalesLineInput' }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    SalesReturnUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        reason: { type: string, maxLength: 1000 }
+        currency: { type: string, maxLength: 8 }
+        lines:
+          type: array
+          maxItems: 60
+          items: { $ref: '#/components/schemas/SalesLineInput' }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    SalesConversionResult:
+      type: object
+      required: [quote, order]
+      properties:
+        quote: { $ref: '#/components/schemas/SalesQuote' }
+        order: { $ref: '#/components/schemas/SalesOrder' }
+    SalesInvoiceFromOrderInput:
+      type: object
+      additionalProperties: false
+      properties:
+        issueDate: { type: string, format: date }
+        dueDate: { type: string, format: date, nullable: true }
+        taxRateId: { type: string, description: OPTIONAL. Only a VERIFIED, effective VAT rate ID is accepted. }
+        notes: { type: string, maxLength: 2000, description: DLP-checked. }
+    SalesInvoiceFromOrderResult:
+      type: object
+      required: [invoice, orderId]
+      properties:
+        invoice: { $ref: '#/components/schemas/FinanceInvoice' }
+        orderId: { type: string }
 security:
   - bearerAuth: []

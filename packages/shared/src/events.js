@@ -232,6 +232,44 @@ export const EtimsSubmissionFailedDataSchema = EntityRefSchema.extend({
   classification: ClassificationSchema,
 }).strict()
 
+// Phase 7 sales events are strict and ID/classification-only. Document numbers,
+// amounts, statuses, customer names and free text must be fetched through the
+// authenticated API; they never enter the event bus or a socket frame.
+const SalesEntityRefSchema = z.object({
+  entityType: z.enum(['SALES_QUOTE', 'SALES_ORDER', 'DELIVERY_NOTE', 'SALES_RETURN', 'FINANCE_INVOICE']),
+  entityId: z.string(),
+})
+
+export const SalesQuoteCreatedDataSchema = SalesEntityRefSchema.extend({
+  quoteId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const SalesOrderConfirmedDataSchema = SalesEntityRefSchema.extend({
+  orderId: z.string(),
+  quoteId: z.string().optional(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const DeliveryNoteIssuedDataSchema = SalesEntityRefSchema.extend({
+  deliveryNoteId: z.string(),
+  orderId: z.string().optional(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const SalesReturnApprovedDataSchema = SalesEntityRefSchema.extend({
+  returnId: z.string(),
+  deliveryNoteId: z.string().optional(),
+  orderId: z.string().optional(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const SalesInvoiceCreatedDataSchema = SalesEntityRefSchema.extend({
+  invoiceId: z.string(),
+  orderId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
 export const DomainEventSchemas = {
   MessageSent: MessageSentDataSchema,
   ThreadAssigned: ThreadAssignedDataSchema,
@@ -262,6 +300,11 @@ export const DomainEventSchemas = {
   StatutoryRateVerified: StatutoryRateVerifiedDataSchema,
   EtimsSubmissionQueued: EtimsSubmissionQueuedDataSchema,
   EtimsSubmissionFailed: EtimsSubmissionFailedDataSchema,
+  SalesQuoteCreated: SalesQuoteCreatedDataSchema,
+  SalesOrderConfirmed: SalesOrderConfirmedDataSchema,
+  DeliveryNoteIssued: DeliveryNoteIssuedDataSchema,
+  SalesReturnApproved: SalesReturnApprovedDataSchema,
+  SalesInvoiceCreated: SalesInvoiceCreatedDataSchema,
 }
 
 export function parseEventEnvelope(input) {

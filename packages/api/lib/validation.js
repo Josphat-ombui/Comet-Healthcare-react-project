@@ -635,3 +635,184 @@ export const financeEtimsQuerySchema = z.object({
   invoiceId: financeId.optional(),
   limit: financeLimit,
 })
+
+// ------------------------------------------------------------ phase 7 sales
+//
+// Sales keeps every monetary field in integer cents. Dates are strict
+// YYYY-MM-DD strings. Free text goes through the shared DLP inspector, and all
+// create schemas are strict so a client cannot smuggle companyId or status into
+// a tenant-scoped write.
+
+const salesId = z.string().trim().min(1).max(80)
+const salesDate = z.string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Use a date in YYYY-MM-DD format')
+  .refine(isValidIsoDate, 'Choose a valid date')
+const salesMoneyPositive = z.number().int().positive()
+const salesLineInputSchema = z.object({
+  description: dlpSafeText(240),
+  qty: z.number().positive('Quantity must be greater than zero').max(100_000),
+  unitPriceCents: salesMoneyPositive,
+}).strict()
+
+const salesLineList = z.array(salesLineInputSchema).min(1).max(60)
+const optionalSalesLineList = z.array(salesLineInputSchema).max(60).default([])
+const salesQueryLimit = z.coerce.number().int().min(1).max(200).default(50)
+
+const salesQuoteCreateBase = z.object({
+  partyId: salesId,
+  quoteDate: salesDate,
+  validUntil: salesDate.nullable().optional(),
+  currency: z.string().trim().min(1).max(8).default('KES'),
+  // Only an ID is accepted. Rate values are never supplied by a client, and
+  // invoice issue rejects UNVERIFIED rates through finance.resolveVerifiedRate.
+  taxRateId: salesId.nullable().optional(),
+  lines: salesLineList,
+  notes: dlpSafeText(2000).optional().or(z.literal('')),
+  branchId: salesId.nullable().optional(),
+  classification: classificationSchema.default('INTERNAL'),
+}).strict()
+
+export const salesQuoteCreateSchema = salesQuoteCreateBase
+export const salesQuoteUpdateSchema = salesQuoteCreateBase.partial().refine(
+  (value) => Object.keys(value).length > 0,
+  'At least one field is required'
+)
+
+const salesOrderCreateBase = z.object({
+  partyId: salesId,
+  quoteId: salesId.optional(),
+  orderDate: salesDate,
+  requestedDate: salesDate.nullable().optional(),
+  currency: z.string().trim().min(1).max(8).default('KES'),
+  taxRateId: salesId.nullable().optional(),
+  lines: optionalSalesLineList,
+  notes: dlpSafeText(2000).optional().or(z.literal('')),
+  branchId: salesId.nullable().optional(),
+  classification: classificationSchema.default('INTERNAL'),
+}).strict().superRefine((value, ctx) => {
+  if (!value.quoteId && value.lines.length === 0) {
+    ctx.addIssue({ code: 'custom', path: ['lines'], message: 'At least one line or a quoteId is required' })
+  }
+})
+
+export const salesOrderCreateSchema = salesOrderCreateBase
+export const salesOrderUpdateSchema = z.object({
+  partyId: salesId.optional(),
+  requestedDate: salesDate.nullable().optional(),
+  currency: z.string().trim().min(1).max(8).optional(),
+  taxRateId: salesId.nullable().optional(),
+  lines: optionalSalesLineList.optional(),
+  notes: dlpSafeText(2000).optional().or(z.literal('')),
+  branchId: salesId.nullable().optional(),
+  classification: classificationSchema.optional(),
+}).strict().refine((value) => Object.keys(value).length > 0, 'At least one field is required')
+
+const salesSourceSchema = z.object({
+  orderId: salesId.optional(),
+  deliveryNoteId: salesId.optional(),
+  partyId: salesId.optional(),
+  deliveryDate: salesDate,
+  currency: z.string().trim().min(1).max(8).default('KES'),
+  lines: optionalSalesLineList,
+  notes: dlpSafeText(2000).optional().or(z.literal('')),
+  branchId: salesId.nullable().optional(),
+  classification: classificationSchema.default('INTERNAL'),
+}).strict().superRefine((value, ctx) => {
+  if (!value.orderId && (!value.partyId || value.lines.length === 0)) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['partyId'],
+      message: 'partyId and at least one line are required when orderId is omitted',
+    })
+  }
+})
+
+export const salesDeliveryCreateSchema = salesSourceSchema
+export const salesDeliveryUpdateSchema = z.object({
+  partyId: salesId.optional(),
+  deliveryDate: salesDate.optional(),
+  currency: z.string().trim().min(1).max(8).optional(),
+  lines: optionalSalesLineList.optional(),
+  notes: dlpSafeText(2000).optional().or(z.literal('')),
+  branchId: salesId.nullable().optional(),
+  classification: classificationSchema.optional(),
+}).strict().refine((value) => Object.keys(value).length > 0, 'At least one field is required')
+
+const salesReturnCreateBase = z.object({
+  orderId: salesId.optional(),
+  deliveryNoteId: salesId.optional(),
+  partyId: salesId.optional(),
+  returnDate: salesDate,
+  reason: dlpSafeText(1000).optional().or(z.literal('')),
+  currency: z.string().trim().min(1).max(8).default('KES'),
+  lines: optionalSalesLineList,
+  branchId: salesId.nullable().optional(),
+  classification: classificationSchema.default('INTERNAL'),
+}).strict().superRefine((value, ctx) => {
+  if (value.orderId && value.deliveryNoteId) {
+    ctx.addIssue({ code: 'custom', path: ['deliveryNoteId'], message: 'Use orderId or deliveryNoteId, not both' })
+  }
+  if (!value.orderId && !value.deliveryNoteId && (!value.partyId || value.lines.length === 0)) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['partyId'],
+      message: 'partyId and at least one line are required without a source document',
+    })
+  }
+})
+
+export const salesReturnCreateSchema = salesReturnCreateBase
+export const salesReturnUpdateSchema = z.object({
+  reason: dlpSafeText(1000).optional().or(z.literal('')),
+  currency: z.string().trim().min(1).max(8).optional(),
+  lines: optionalSalesLineList.optional(),
+  branchId: salesId.nullable().optional(),
+  classification: classificationSchema.optional(),
+}).strict().refine((value) => Object.keys(value).length > 0, 'At least one field is required')
+
+export const salesInvoiceFromOrderSchema = z.object({
+  issueDate: salesDate.optional(),
+  dueDate: salesDate.nullable().optional(),
+  taxRateId: salesId.optional(),
+  notes: dlpSafeText(2000).optional().or(z.literal('')),
+}).strict()
+
+const salesStatusQuery = (values) => z.enum(values).optional()
+export const salesQuoteQuerySchema = z.object({
+  status: salesStatusQuery(['DRAFT', 'SENT', 'ACCEPTED', 'REJECTED', 'CONVERTED', 'EXPIRED', 'CANCELLED']),
+  partyId: salesId.optional(),
+  from: salesDate.optional(),
+  to: salesDate.optional(),
+  limit: salesQueryLimit,
+}).strict()
+
+export const salesOrderQuerySchema = z.object({
+  status: salesStatusQuery(['DRAFT', 'CONFIRMED', 'FULFILLED', 'CANCELLED']),
+  partyId: salesId.optional(),
+  from: salesDate.optional(),
+  to: salesDate.optional(),
+  limit: salesQueryLimit,
+}).strict()
+
+export const salesDeliveryQuerySchema = z.object({
+  status: salesStatusQuery(['DRAFT', 'ISSUED', 'IN_TRANSIT', 'DELIVERED', 'CANCELLED']),
+  partyId: salesId.optional(),
+  orderId: salesId.optional(),
+  from: salesDate.optional(),
+  to: salesDate.optional(),
+  limit: salesQueryLimit,
+}).strict()
+
+export const salesReturnQuerySchema = z.object({
+  status: salesStatusQuery(['DRAFT', 'APPROVED', 'RECEIVED', 'REJECTED', 'CANCELLED']),
+  partyId: salesId.optional(),
+  deliveryNoteId: salesId.optional(),
+  from: salesDate.optional(),
+  to: salesDate.optional(),
+  limit: salesQueryLimit,
+}).strict()
+
+// Exported for service-level guards and tests; no calculation uses a rate value
+// from a client or a hardcoded constant.
+export const SALES_CLASSIFICATIONS = ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED']
+export const SALES_MONEY_FIELDS = ['subtotalCents', 'taxCents', 'totalCents']

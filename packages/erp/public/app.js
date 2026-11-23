@@ -1,5 +1,5 @@
 // ERP shell: identity, directory, messaging, platform views (notifications,
-// files, workflow, search, documents) and Phase 6 finance. Uses the same JSON
+// files, workflow, search, documents), Phase 6 finance and Phase 7 sales. Uses the same JSON
 // API as the storefront; no external dependencies. The Socket.IO client is
 // served by the realtime service itself, and the inbox falls back to
 // authenticated polling when sockets are unavailable.
@@ -9,10 +9,15 @@ const API_ORIGIN = API.replace(/\/api\/?$/, '')
 const REALTIME = window.ERP_REALTIME_URL || 'http://localhost:4001'
 const POLL_MS = 6000
 const QUEUE_KEY = 'comet_erp_message_queue'
-const VIEWS = ['inbox', 'directory', 'notifications', 'files', 'workflow', 'search', 'documents', 'finance']
+const VIEWS = ['inbox', 'directory', 'notifications', 'files', 'workflow', 'search', 'documents', 'finance', 'sales']
 const FINANCE_EVENTS = [
   'finance:account', 'finance:journal', 'finance:invoice', 'finance:payment',
   'finance:budget', 'finance:rate', 'finance:etims', 'finance:etims-failed',
+]
+// Sales socket frames carry IDs/classification only. They are invalidation
+// signals: content is always refetched over the authenticated API.
+const SALES_EVENTS = [
+  'sales:quote', 'sales:order', 'sales:delivery', 'sales:return', 'sales:invoice',
 ]
 const $ = (id) => document.getElementById(id)
 
@@ -49,8 +54,15 @@ const state = {
   financePayments: [],
   financeBudgets: [],
   financeSubmissions: [],
+  salesQuotes: [],
+  salesOrders: [],
+  salesDeliveries: [],
+  salesReturns: [],
+  salesCustomers: [],
+  salesRates: [],
 }
 let financeRefreshTimer = null
+let salesRefreshTimer = null
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -181,6 +193,12 @@ function showDashboard(profile) {
     state.financePayments = []
     state.financeBudgets = []
     state.financeSubmissions = []
+    state.salesQuotes = []
+    state.salesOrders = []
+    state.salesDeliveries = []
+    state.salesReturns = []
+    state.salesCustomers = []
+    state.salesRates = []
     state.versionTarget = null
     setUnreadBadge(0)
     $('versionPanel').hidden = true
@@ -1664,6 +1682,242 @@ function onFinanceEvent() {
   }, 250)
 }
 
+// -------------------------------------------------------------------- sales
+
+function shortId(value) {
+  return value ? escapeHtml(String(value).slice(0, 8)) : '—'
+}
+
+function salesLineFrom(prefix) {
+  return [{
+    description: $(`${prefix}LineDescription`).value,
+    qty: Number($(`${prefix}LineQty`).value),
+    unitPriceCents: Number($(`${prefix}LineUnitPriceCents`).value),
+  }]
+}
+
+function salesAction(action, id) {
+  const safe = escapeHtml(id)
+  const labels = {
+    'convert-quote': 'Convert to order',
+    'confirm-order': 'Confirm',
+    'invoice-order': 'Create invoice',
+    'issue-delivery': 'Issue',
+    'deliver-delivery': 'Deliver',
+    'approve-return': 'Approve',
+    'receive-return': 'Receive',
+  }
+  return `<button class="link" type="button" data-sales-action="${action}" data-sales-id="${safe}">${labels[action] || action}</button>`
+}
+
+function renderSales() {
+  renderFinanceRows('quoteRows', state.salesQuotes, [
+    (quote) => `<code>${escapeHtml(quote.number)}</code>`,
+    (quote) => escapeHtml(quote.quoteDate),
+    (quote) => shortId(quote.partyId),
+    (quote) => financeStatus(quote.status),
+    (quote) => escapeHtml(quote.totalCents),
+    (quote) => shortId(quote.taxRateId),
+    (quote) => ['DRAFT', 'SENT', 'ACCEPTED'].includes(quote.status)
+      ? salesAction('convert-quote', quote.id) : '',
+  ], 'No sales quotes for this tenant.')
+
+  renderFinanceRows('orderRows', state.salesOrders, [
+    (order) => `<code>${escapeHtml(order.number)}</code>`,
+    (order) => escapeHtml(order.orderDate),
+    (order) => shortId(order.partyId),
+    (order) => shortId(order.quoteId),
+    (order) => financeStatus(order.status),
+    (order) => escapeHtml(order.totalCents),
+    (order) => shortId(order.financeInvoiceId),
+    (order) => [
+      order.status === 'DRAFT' ? salesAction('confirm-order', order.id) : '',
+      order.status === 'CONFIRMED' && !order.financeInvoiceId ? salesAction('invoice-order', order.id) : '',
+    ].join(' '),
+  ], 'No sales orders for this tenant.')
+
+  renderFinanceRows('deliveryRows', state.salesDeliveries, [
+    (note) => `<code>${escapeHtml(note.number)}</code>`,
+    (note) => escapeHtml(note.deliveryDate),
+    (note) => shortId(note.orderId),
+    (note) => financeStatus(note.status),
+    (note) => escapeHtml(note.totalCents),
+    (note) => [
+      note.status === 'DRAFT' ? salesAction('issue-delivery', note.id) : '',
+      ['ISSUED', 'IN_TRANSIT'].includes(note.status) ? salesAction('deliver-delivery', note.id) : '',
+    ].join(' '),
+  ], 'No delivery notes for this tenant.')
+
+  renderFinanceRows('returnRows', state.salesReturns, [
+    (record) => `<code>${escapeHtml(record.number)}</code>`,
+    (record) => escapeHtml(record.returnDate),
+    (record) => shortId(record.deliveryNoteId),
+    (record) => financeStatus(record.status),
+    (record) => escapeHtml(record.totalCents),
+    (record) => [
+      record.status === 'DRAFT' ? salesAction('approve-return', record.id) : '',
+      record.status === 'APPROVED' ? salesAction('receive-return', record.id) : '',
+    ].join(' '),
+  ], 'No sales returns for this tenant.')
+
+  const customers = state.salesCustomers.map((party) => ({ value: party.id, label: party.name || party.id }))
+  for (const id of ['quoteParty', 'orderParty', 'deliveryParty', 'returnParty']) {
+    fillFinanceSelect($(id), customers, 'Select a customer')
+  }
+  fillFinanceSelect($('quoteTaxRateId'), state.salesRates.map((rate) => ({
+    value: rate.id,
+    label: `${rate.code} — ${rate.label} (${rate.status})`,
+  })), 'No rate reference')
+  fillFinanceSelect($('orderQuoteId'), state.salesQuotes.map((quote) => ({
+    value: quote.id,
+    label: `${quote.number} — ${quote.status}`,
+  })), 'Standalone order')
+  fillFinanceSelect($('deliveryOrderId'), state.salesOrders.map((order) => ({
+    value: order.id,
+    label: `${order.number} — ${order.status}`,
+  })), 'Manual delivery')
+  fillFinanceSelect($('returnDeliveryId'), state.salesDeliveries.map((note) => ({
+    value: note.id,
+    label: `${note.number} — ${note.status}`,
+  })), 'Manual return')
+
+  $('salesView').querySelectorAll('[data-sales-action]').forEach((button) => {
+    button.onclick = () => runSalesAction(button.dataset.salesAction, button.dataset.salesId)
+  })
+}
+
+async function loadSales() {
+  if (!token) return
+  setError('salesError', '')
+  const [quotes, orders, deliveries, returns, customers, rates] = await Promise.allSettled([
+    request('/sales/quotes?limit=200'),
+    request('/sales/orders?limit=200'),
+    request('/sales/deliveries?limit=200'),
+    request('/sales/returns?limit=200'),
+    request('/finance/parties?type=CUSTOMER&limit=200'),
+    request('/finance/statutory-rates?kind=VAT&limit=200'),
+  ])
+  const failures = []
+  const assign = (result, label, setter, key) => {
+    if (result.status === 'fulfilled') setter(financeList(result.value, key))
+    else failures.push(`${label}: ${result.reason?.message || 'unavailable'}`)
+  }
+  assign(quotes, 'Quotes', (value) => { state.salesQuotes = value }, 'quotes')
+  assign(orders, 'Orders', (value) => { state.salesOrders = value }, 'orders')
+  assign(deliveries, 'Deliveries', (value) => { state.salesDeliveries = value }, 'deliveries')
+  assign(returns, 'Returns', (value) => { state.salesReturns = value }, 'returns')
+  assign(customers, 'Customers', (value) => { state.salesCustomers = value }, 'parties')
+  assign(rates, 'Rates', (value) => { state.salesRates = value }, 'rates')
+  renderSales()
+  if (failures.length) setError('salesError', failures.join(' · '))
+}
+
+async function salesMutation(path, body, statusId, message) {
+  setError('salesError', '')
+  if ($(statusId)) $(statusId).textContent = 'Working…'
+  try {
+    await request(path, { method: 'POST', body: JSON.stringify(body) })
+    if ($(statusId)) $(statusId).textContent = message
+    await loadSales()
+    return true
+  } catch (error) {
+    if ($(statusId)) $(statusId).textContent = ''
+    setError('salesError', error.status === 409 ? `Transition blocked: ${error.message}` : error.message)
+    return false
+  }
+}
+
+async function runSalesAction(action, id) {
+  if (!id) return
+  const path = {
+    'convert-quote': `/sales/quotes/${encodeURIComponent(id)}/convert`,
+    'confirm-order': `/sales/orders/${encodeURIComponent(id)}/confirm`,
+    'invoice-order': `/sales/orders/${encodeURIComponent(id)}/invoice`,
+    'issue-delivery': `/sales/deliveries/${encodeURIComponent(id)}/issue`,
+    'deliver-delivery': `/sales/deliveries/${encodeURIComponent(id)}/deliver`,
+    'approve-return': `/sales/returns/${encodeURIComponent(id)}/approve`,
+    'receive-return': `/sales/returns/${encodeURIComponent(id)}/receive`,
+  }[action]
+  if (!path) return
+  // Invoice creation omits taxRateId deliberately: finance applies the verified
+  // effective rate and rejects the issue if none exists. Transition endpoints
+  // ignore the body entirely.
+  const messages = {
+    'convert-quote': 'Quote converted to a draft order',
+    'confirm-order': 'Order confirmed',
+    'invoice-order': 'Invoice request sent — finance applies a VERIFIED rate or rejects',
+    'issue-delivery': 'Delivery note issued',
+    'deliver-delivery': 'Delivery note marked delivered',
+    'approve-return': 'Return approved',
+    'receive-return': 'Return received',
+  }
+  await salesMutation(path, {}, 'salesActionStatus', messages[action] || '')
+}
+
+function onSalesEvent() {
+  // Sales socket frames carry IDs/classification only. Never render them as
+  // content; refetch authoritative records through the authenticated API.
+  if (state.view !== 'sales') return
+  if (salesRefreshTimer) clearTimeout(salesRefreshTimer)
+  salesRefreshTimer = setTimeout(() => {
+    salesRefreshTimer = null
+    loadSales()
+  }, 250)
+}
+
+$('refreshSales').onclick = () => loadSales()
+
+$('quoteForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const body = {
+    partyId: $('quoteParty').value,
+    quoteDate: $('quoteDate').value,
+    lines: salesLineFrom('quote'),
+  }
+  if ($('quoteValidUntil').value) body.validUntil = $('quoteValidUntil').value
+  if ($('quoteTaxRateId').value) body.taxRateId = $('quoteTaxRateId').value
+  if ($('quoteNotes').value) body.notes = $('quoteNotes').value
+  await salesMutation('/sales/quotes', body, 'quoteStatus', 'Quote created as DRAFT')
+}
+
+$('orderForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const quoteId = $('orderQuoteId').value
+  const quote = state.salesQuotes.find((item) => item.id === quoteId)
+  const body = {
+    partyId: quote ? quote.partyId : $('orderParty').value,
+    orderDate: $('orderDate').value,
+    ...(quoteId ? { quoteId } : { lines: salesLineFrom('order') }),
+  }
+  if ($('orderRequestedDate').value) body.requestedDate = $('orderRequestedDate').value
+  await salesMutation('/sales/orders', body, 'orderStatus', 'Order created as DRAFT')
+}
+
+$('deliveryForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const orderId = $('deliveryOrderId').value
+  const order = state.salesOrders.find((item) => item.id === orderId)
+  const body = {
+    partyId: order ? order.partyId : $('deliveryParty').value,
+    deliveryDate: $('deliveryDate').value,
+    ...(orderId ? { orderId } : { lines: salesLineFrom('delivery') }),
+  }
+  await salesMutation('/sales/deliveries', body, 'deliveryStatus', 'Delivery note created as DRAFT')
+}
+
+$('returnForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const deliveryNoteId = $('returnDeliveryId').value
+  const delivery = state.salesDeliveries.find((item) => item.id === deliveryNoteId)
+  const body = {
+    partyId: delivery ? delivery.partyId : $('returnParty').value,
+    returnDate: $('returnDate').value,
+    ...(deliveryNoteId ? { deliveryNoteId } : { lines: salesLineFrom('return') }),
+  }
+  if ($('returnReason').value) body.reason = $('returnReason').value
+  await salesMutation('/sales/returns', body, 'returnStatus', 'Return created as DRAFT')
+}
+
 // ---------------------------------------------------------------- realtime
 
 function loadSocketClient() {
@@ -1772,6 +2026,8 @@ function connectRealtime() {
     // Phase 6 finance events are ID-only signals; onFinanceEvent ignores the
     // payload entirely and reloads the finance view through request().
     for (const event of FINANCE_EVENTS) socket.on(event, onFinanceEvent)
+    // Phase 7 sales events are ID/classification-only company-room signals.
+    for (const event of SALES_EVENTS) socket.on(event, onSalesEvent)
   })
 }
 
@@ -1800,6 +2056,7 @@ function showView(view) {
     refreshDocuments()
   }
   else if (view === 'finance') loadFinance()
+  else if (view === 'sales') loadSales()
 }
 
 $('tabInbox').onclick = () => showView('inbox')
@@ -1810,6 +2067,7 @@ $('tabWorkflow').onclick = () => showView('workflow')
 $('tabSearch').onclick = () => showView('search')
 $('tabDocuments').onclick = () => showView('documents')
 $('tabFinance').onclick = () => showView('finance')
+$('tabSales').onclick = () => showView('sales')
 
 // ------------------------------------------------------------------- boot
 

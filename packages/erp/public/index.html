@@ -42,6 +42,7 @@
         <button id="tabSearch" class="tab" type="button">Search</button>
         <button id="tabDocuments" class="tab" type="button">Documents</button>
         <button id="tabFinance" class="tab" type="button">Finance</button>
+        <button id="tabSales" class="tab" type="button">Sales</button>
         <span id="connection" class="pill connection" aria-live="polite">Connecting…</span>
       </nav>
 
@@ -541,6 +542,109 @@
             </div>
             <p id="etimsPayloadLabel" class="muted" hidden>Payload</p>
             <pre id="etimsPayload" class="finance-payload" hidden></pre>
+          </section>
+        </div>
+      </section>
+
+      <section id="salesView" hidden>
+        <p class="finance-banner" role="note">Sales never hardcode tax: a rate ID is only an intended reference. The finance ledger applies a VERIFIED statutory rate when an invoice is issued. The seeded VAT fixture is UNVERIFIED.</p>
+        <p id="salesError" class="error" role="alert"></p>
+        <p id="salesActionStatus" class="muted" aria-live="polite"></p>
+        <div class="grid">
+          <section class="card span-2">
+            <div class="card-head"><h2>Sales quotes</h2><button id="refreshSales" class="link" type="button">Refresh</button></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Date</th><th>Party</th><th>Status</th><th>Total (cents)</th><th>Rate ref</th><th></th></tr></thead>
+                <tbody id="quoteRows"></tbody>
+              </table>
+            </div>
+            <form id="quoteForm">
+              <div class="field-row finance-field-row">
+                <label>Customer<select id="quoteParty" required></select></label>
+                <label>Quote date<input id="quoteDate" type="date" required /></label>
+                <label>Valid until<input id="quoteValidUntil" type="date" /></label>
+              </div>
+              <div class="field-row finance-field-row">
+                <label>Line description<input id="quoteLineDescription" maxlength="240" value="Pharmaceutical supply" required /></label>
+                <label>Qty<input id="quoteLineQty" type="number" min="0.01" step="0.01" value="1" required /></label>
+                <label>Unit price (cents)<input id="quoteLineUnitPriceCents" type="number" min="1" step="1" value="10000" required /></label>
+                <label>VAT rate ref (optional)<select id="quoteTaxRateId"><option value="">None</option></select></label>
+              </div>
+              <label>Notes<textarea id="quoteNotes" rows="2" maxlength="2000" placeholder="Optional internal handover note"></textarea></label>
+              <div class="form-actions"><button type="submit">Create quote</button><span id="quoteStatus" class="muted" aria-live="polite"></span></div>
+            </form>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Sales orders</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Date</th><th>Party</th><th>Quote</th><th>Status</th><th>Total (cents)</th><th>Invoice</th><th></th></tr></thead>
+                <tbody id="orderRows"></tbody>
+              </table>
+            </div>
+            <form id="orderForm">
+              <div class="field-row finance-field-row">
+                <label>Customer<select id="orderParty" required></select></label>
+                <label>Order date<input id="orderDate" type="date" required /></label>
+                <label>Requested date<input id="orderRequestedDate" type="date" /></label>
+                <label>Quote (optional)<select id="orderQuoteId"><option value="">Standalone order</option></select></label>
+              </div>
+              <div class="field-row finance-field-row">
+                <label>Line description<input id="orderLineDescription" maxlength="240" value="Pharmaceutical supply" required /></label>
+                <label>Qty<input id="orderLineQty" type="number" min="0.01" step="0.01" value="1" required /></label>
+                <label>Unit price (cents)<input id="orderLineUnitPriceCents" type="number" min="1" step="1" value="10000" required /></label>
+              </div>
+              <div class="form-actions"><button type="submit">Create order</button><span id="orderStatus" class="muted" aria-live="polite"></span></div>
+            </form>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Delivery notes</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Date</th><th>Order</th><th>Status</th><th>Total (cents)</th><th></th></tr></thead>
+                <tbody id="deliveryRows"></tbody>
+              </table>
+            </div>
+            <form id="deliveryForm">
+              <div class="field-row finance-field-row">
+                <label>Source order (optional)<select id="deliveryOrderId"><option value="">Manual delivery</option></select></label>
+                <label>Customer<select id="deliveryParty"></select></label>
+                <label>Delivery date<input id="deliveryDate" type="date" required /></label>
+              </div>
+              <div class="field-row finance-field-row">
+                <label>Line description<input id="deliveryLineDescription" maxlength="240" value="Pharmaceutical supply" /></label>
+                <label>Qty<input id="deliveryLineQty" type="number" min="0.01" step="0.01" value="1" /></label>
+                <label>Unit price (cents)<input id="deliveryLineUnitPriceCents" type="number" min="1" step="1" value="10000" /></label>
+              </div>
+              <div class="form-actions"><button type="submit">Create delivery note</button><span id="deliveryStatus" class="muted" aria-live="polite"></span></div>
+            </form>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Sales returns</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Date</th><th>Delivery</th><th>Status</th><th>Total (cents)</th><th></th></tr></thead>
+                <tbody id="returnRows"></tbody>
+              </table>
+            </div>
+            <form id="returnForm">
+              <div class="field-row finance-field-row">
+                <label>Source delivery (optional)<select id="returnDeliveryId"><option value="">Manual return</option></select></label>
+                <label>Customer<select id="returnParty"></select></label>
+                <label>Return date<input id="returnDate" type="date" required /></label>
+              </div>
+              <div class="field-row finance-field-row">
+                <label>Line description<input id="returnLineDescription" maxlength="240" value="Returned goods" /></label>
+                <label>Qty<input id="returnLineQty" type="number" min="0.01" step="0.01" value="1" /></label>
+                <label>Unit price (cents)<input id="returnLineUnitPriceCents" type="number" min="1" step="1" value="10000" /></label>
+              </div>
+              <label>Reason<textarea id="returnReason" rows="2" maxlength="1000" placeholder="Optional quality or customer query"></textarea></label>
+              <div class="form-actions"><button type="submit">Create return</button><span id="returnStatus" class="muted" aria-live="polite"></span></div>
+            </form>
           </section>
         </div>
       </section>

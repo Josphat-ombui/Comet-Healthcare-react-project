@@ -21,6 +21,16 @@ const FINANCE_EVENT_TYPES = new Set([
   'EtimsSubmissionFailed',
 ])
 
+// Phase 7 sales events carry IDs and classification only and are routed to the
+// company room only — never to thread, inbox, branch or user rooms.
+const SALES_EVENT_TYPES = new Set([
+  'SalesQuoteCreated',
+  'SalesOrderConfirmed',
+  'DeliveryNoteIssued',
+  'SalesReturnApproved',
+  'SalesInvoiceCreated',
+])
+
 function eventRooms(event) {
   const prefix = `company:${event.companyId}`
   const data = event.data || {}
@@ -76,6 +86,9 @@ function eventRooms(event) {
     const userId = data.actorId || data.requestedById || data.createdById
     return unique([prefix, userRoom(userId)])
   }
+
+  // --------------------------------------------------------- phase 7 sales
+  if (SALES_EVENT_TYPES.has(event.type)) return unique([prefix])
   return []
 }
 
@@ -103,6 +116,11 @@ function socketEventFor(type) {
     StatutoryRateVerified: 'finance:rate',
     EtimsSubmissionQueued: 'finance:etims',
     EtimsSubmissionFailed: 'finance:etims-failed',
+    SalesQuoteCreated: 'sales:quote',
+    SalesOrderConfirmed: 'sales:order',
+    DeliveryNoteIssued: 'sales:delivery',
+    SalesReturnApproved: 'sales:return',
+    SalesInvoiceCreated: 'sales:invoice',
   }[type] || null
 }
 
