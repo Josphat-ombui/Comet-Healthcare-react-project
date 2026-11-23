@@ -514,6 +514,29 @@ export const BatchReleasedDataSchema = ManufacturingEntityRefSchema.extend({
   classification: ClassificationSchema,
 }).strict()
 
+// Phase 14 reporting events are strict ID/classification-only invalidation
+// signals. Report keys, parameters, counts, integer-cent totals, file IDs and
+// dashboard titles never enter events or Socket.IO payloads.
+const ReportingEntityRefSchema = z.object({
+  entityType: z.enum(['REPORT_RUN', 'DASHBOARD']),
+  entityId: z.string(),
+})
+
+const ReportRunEventDataSchema = ReportingEntityRefSchema.extend({
+  runId: z.string(),
+  definitionId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const ReportRunQueuedDataSchema = ReportRunEventDataSchema
+export const ReportRunCompletedDataSchema = ReportRunEventDataSchema
+export const ReportRunFailedDataSchema = ReportRunEventDataSchema
+
+export const DashboardUpdatedDataSchema = ReportingEntityRefSchema.extend({
+  dashboardId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
 export const DomainEventSchemas = {
   MessageSent: MessageSentDataSchema,
   ThreadAssigned: ThreadAssignedDataSchema,
@@ -581,6 +604,10 @@ export const DomainEventSchemas = {
   BatchRecordOpened: BatchRecordOpenedDataSchema,
   QcCheckFailed: QcCheckFailedDataSchema,
   BatchReleased: BatchReleasedDataSchema,
+  ReportRunQueued: ReportRunQueuedDataSchema,
+  ReportRunCompleted: ReportRunCompletedDataSchema,
+  ReportRunFailed: ReportRunFailedDataSchema,
+  DashboardUpdated: DashboardUpdatedDataSchema,
 }
 
 export function parseEventEnvelope(input) {

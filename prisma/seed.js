@@ -1468,6 +1468,58 @@ async function main() {
   })
   console.log('✓ Seeded active work center, approved BOM and DRAFT production order fixtures')
 
+  // -------------------------------------------------------------- phase 14
+  // Reporting fixtures are cmp_comet-only, idempotent and inert: one
+  // allow-listed definition, one dashboard and one widget. No report run is
+  // seeded, so dashboard summaries explicitly report NO_RUN_YET instead of
+  // showing borrowed or fabricated numbers.
+  const reportDefinitionFixture = await prisma.reportDefinition.upsert({
+    where: { companyId_code: { companyId, code: 'RPT-2026-F001' } },
+    update: {},
+    create: {
+      companyId,
+      code: 'RPT-2026-F001',
+      name: 'Phase 14 fixture trial balance',
+      description: 'Allow-listed reporting fixture. Run it explicitly to collect live finance data.',
+      reportKey: 'finance.trial-balance',
+      querySpec: { reportKey: 'finance.trial-balance' },
+      format: 'JSON',
+      classification: 'INTERNAL',
+      createdByUserId: admin.id,
+    },
+  })
+
+  const reportDashboardFixture = await prisma.dashboard.upsert({
+    where: { companyId_code: { companyId, code: 'DASH-2026-F001' } },
+    update: {},
+    create: {
+      companyId,
+      code: 'DASH-2026-F001',
+      name: 'Phase 14 fixture dashboard',
+      description: 'Fixture dashboard for reporting contract and smoke tests.',
+      classification: 'INTERNAL',
+      createdByUserId: admin.id,
+    },
+  })
+
+  await prisma.dashboardWidget.upsert({
+    where: { dashboardId_code: { dashboardId: reportDashboardFixture.id, code: 'WDG-2026-F001' } },
+    update: {},
+    create: {
+      companyId,
+      dashboardId: reportDashboardFixture.id,
+      definitionId: reportDefinitionFixture.id,
+      code: 'WDG-2026-F001',
+      title: 'Trial balance totals',
+      type: 'METRIC',
+      reportKey: 'finance.trial-balance',
+      position: 0,
+      classification: 'INTERNAL',
+      createdByUserId: admin.id,
+    },
+  })
+  console.log('✓ Seeded allow-listed report definition, dashboard and widget fixtures (no runs)')
+
   console.log('\nSeed complete ✔')
 }
 

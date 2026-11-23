@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Comet Healthcare Enterprise API
-  version: 0.13.0-phase.13
+  version: 0.14.0-phase.14
   summary: REST and webhook contract for the Comet Healthcare enterprise platform.
   description: |
     Phase 3 adds local identity, sessions, MFA, OIDC, organisation directory and audit.
@@ -189,6 +189,34 @@ info:
     `manufacturing:order`, `manufacturing:batch`, `manufacturing:qc`) carry IDs and
     classification only and are routed to the company room only. `Idempotency-Key` remains
     scoped to messaging sends only; Phase 13 writes are not replay-safe.
+
+    Phase 14 adds allow-listed reporting under `/api/reporting`: report definitions, runs,
+    dashboards and widgets. A definition's `querySpec` is exactly `{ reportKey }` from a
+    fixed nine-key allow-list; clients never supply SQL, a table/column name, a `WHERE`
+    clause, `companyId` or `branchId`. Run parameters are typed per key and reject every
+    unknown, tenant or SQL-like field. Collectors call existing authorised finance, sales,
+    inventory, procurement, HR and manufacturing services, so no report bypasses their
+    tenant/branch scope or DLP rules. See ADR-0019.
+
+    Every `resultSummary` carries a `status`-independent shape: available summaries expose
+    only safe integer `counts`, integer-cent `totalsCents` (fields ending in `Cents`), a
+    `totalsAvailable` flag and a generation timestamp; sources with no money columns return
+    `totalsCents: {}` with `totalsAvailable: false` rather than a fabricated zero. When a
+    source cannot be read, the summary is `{ dataAvailable: false, reason, reportKey }` with
+    no counts, totals or source error text. Runs expose `QUEUED`, `RUNNING`, `COMPLETED` or
+    `FAILED`; a terminal run is never re-executed. `reporting.run` is queued through BullMQ
+    with a synchronous fallback when queues are disabled; the job payload and `JobRecord`
+    result contain opaque IDs only.
+
+    Phase 14 permissions: `reporting.definition.read/write`, `reporting.run.read/write` and
+    `reporting.dashboard.read/write`. ADMIN and MANAGER may author definitions/dashboards and
+    queue runs; STAFF has read-only access; COMPLIANCE may read reports and queue runs but
+    cannot author definitions or dashboards. Domain events (`ReportRunQueued`,
+    `ReportRunCompleted`, `ReportRunFailed`, `DashboardUpdated`) and sockets
+    (`reporting:run`, `reporting:dashboard`) carry IDs and classification only and are routed
+    to the company room only. Clients refetch all values through authenticated endpoints.
+    `Idempotency-Key` remains scoped to messaging sends only; reporting writes are not
+    replay-safe. No external filing, payment, email or file export is performed.
   contact:
     name: Comet Healthcare Platform Team
   license:
@@ -227,6 +255,8 @@ tags:
     description: Projects, members, tasks, milestones, time entries and finance-owned budget usage. Added in Phase 12.
   - name: Manufacturing
     description: Work centers, BOMs, production orders, GMP batch records and QC checks. Added in Phase 13.
+  - name: Reporting
+    description: Allow-listed report definitions, queued runs, dashboards and widgets. Added in Phase 14.
 x-phase-roadmap:
   phase1: Architecture and this skeleton only
   phase2: ERD, migrations, workspace split, shared contracts
@@ -241,7 +271,7 @@ x-phase-roadmap:
   phase11: Complete - /api/hr (employees, contracts, verified payroll rates, leave, attendance, payroll runs and lines)
   phase12: Complete - /api/projects (projects, members, tasks, milestones, time entries and finance budget links)
   phase13: Complete - /api/manufacturing (work centers, BOMs, production orders, GMP batch records and QC checks)
-  phase14: /api/reporting
+  phase14: Complete - /api/reporting (allow-listed report definitions, queued runs, dashboards and widgets)
   phase15: /api/public/v1 and /api/webhooks
 x-realtime:
   transport: Socket.IO 4 with Redis adapter; client bundle served by the realtime service.
@@ -315,6 +345,8 @@ x-realtime:
     manufacturing:order: 'ProductionOrderReleased; refetch GET /api/manufacturing/orders.'
     manufacturing:batch: 'BatchRecordOpened or BatchReleased; refetch GET /api/manufacturing/batches.'
     manufacturing:qc: 'QcCheckFailed; refetch GET /api/manufacturing/batches/{id}/qc-checks.'
+    reporting:run: 'ReportRunQueued/Completed/Failed; refetch GET /api/reporting/runs/{id}.'
+    reporting:dashboard: 'DashboardUpdated; refetch GET /api/reporting/dashboards/{id}/summary.'
   eventPayload:
     eventId: string
     type: string
@@ -8333,6 +8365,418 @@ paths:
         '403': { description: Missing `manufacturing.qc.write`. }
         '404': { description: Tenant-scoped QC check not found. }
         '409': { description: QC check cannot be signed in its current state. }
+  /api/reporting/report-keys:
+    get:
+      tags: [Reporting]
+      summary: List the fixed report key allow-list
+      description: Static contract response only; this endpoint never executes a report.
+      operationId: listReportingReportKeys
+      x-permission: reporting.definition.read
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The nine allow-listed report keys.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportingReportKeysEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `reporting.definition.read`. }
+  /api/reporting/definitions:
+    get:
+      tags: [Reporting]
+      summary: List report definitions
+      operationId: listReportingDefinitions
+      x-permission: reporting.definition.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportingReportKeyFilter'
+        - $ref: '#/components/parameters/ReportingLimit'
+      responses:
+        '200':
+          description: Tenant-scoped definitions.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportDefinitionListEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `reporting.definition.read`. }
+    post:
+      tags: [Reporting]
+      summary: Create a report definition
+      description: '`querySpec` must be exactly `{ reportKey }`; SQL and unknown fields are rejected.'
+      operationId: createReportingDefinition
+      x-permission: reporting.definition.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReportDefinitionCreate' }
+      responses:
+        '201':
+          description: Created definition.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportDefinitionEnvelope' }
+        '400': { description: Invalid key/specification or DLP rejection. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `reporting.definition.write`. }
+  /api/reporting/definitions/{id}:
+    get:
+      tags: [Reporting]
+      summary: Get a report definition
+      operationId: getReportingDefinition
+      x-permission: reporting.definition.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportingResourceId'
+      responses:
+        '200':
+          description: Tenant-scoped definition.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportDefinitionEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `reporting.definition.read`. }
+        '404': { description: Tenant-scoped definition not found. }
+    patch:
+      tags: [Reporting]
+      summary: Update a report definition
+      operationId: updateReportingDefinition
+      x-permission: reporting.definition.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportingResourceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReportDefinitionUpdate' }
+      responses:
+        '200':
+          description: Updated definition.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportDefinitionEnvelope' }
+        '400': { description: Invalid key/specification or DLP rejection. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `reporting.definition.write`. }
+        '404': { description: Tenant-scoped definition not found. }
+    delete:
+      tags: [Reporting]
+      summary: Soft-delete a report definition
+      operationId: deleteReportingDefinition
+      x-permission: reporting.definition.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportingResourceId'
+      responses:
+        '200':
+          description: Soft-deleted definition.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportDefinitionEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `reporting.definition.write`. }
+        '404': { description: Tenant-scoped definition not found. }
+  /api/reporting/runs:
+    get:
+      tags: [Reporting]
+      summary: List report runs
+      operationId: listReportingRuns
+      x-permission: reporting.run.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ReportRunStatus' }
+        - name: definitionId
+          in: query
+          schema: { type: string, minLength: 1, maxLength: 80 }
+        - $ref: '#/components/parameters/ReportingReportKeyFilter'
+        - $ref: '#/components/parameters/ReportingLimit'
+      responses:
+        '200':
+          description: Tenant-scoped runs with status and result summary.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportRunListEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `reporting.run.read`. }
+    post:
+      tags: [Reporting]
+      summary: Queue a report run
+      description: Enqueues `reporting.run` with an ID-only payload; falls back to synchronous execution when queues are disabled.
+      operationId: createReportingRun
+      x-permission: reporting.run.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReportRunCreate' }
+      responses:
+        '201':
+          description: Queued, running or completed run. Poll the run for its terminal status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportRunEnvelope' }
+        '400': { description: Invalid typed parameters or unknown fields. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `reporting.run.write`. }
+        '404': { description: Tenant-scoped definition not found. }
+  /api/reporting/runs/{id}:
+    get:
+      tags: [Reporting]
+      summary: Get a report run
+      operationId: getReportingRun
+      x-permission: reporting.run.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportingResourceId'
+      responses:
+        '200':
+          description: Tenant-scoped run; `resultSummary` is never fabricated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportRunEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `reporting.run.read`. }
+        '404': { description: Tenant-scoped run not found. }
+  /api/reporting/runs/{id}/job:
+    get:
+      tags: [Reporting]
+      summary: Get the queue state for a report run
+      description: Returns opaque IDs and state only; no parameters, summary or amounts.
+      operationId: getReportingRunJob
+      x-permission: reporting.run.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportingResourceId'
+      responses:
+        '200':
+          description: ID-only job status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportRunJobEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `reporting.run.read`. }
+        '404': { description: Tenant-scoped run not found. }
+  /api/reporting/dashboards:
+    get:
+      tags: [Reporting]
+      summary: List dashboards
+      operationId: listReportingDashboards
+      x-permission: reporting.dashboard.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportingLimit'
+      responses:
+        '200':
+          description: Tenant-scoped dashboards.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportingDashboardListEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `reporting.dashboard.read`. }
+    post:
+      tags: [Reporting]
+      summary: Create a dashboard
+      operationId: createReportingDashboard
+      x-permission: reporting.dashboard.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReportingDashboardCreate' }
+      responses:
+        '201':
+          description: Created dashboard.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportingDashboardEnvelope' }
+        '400': { description: Invalid request or DLP rejection. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `reporting.dashboard.write`. }
+  /api/reporting/dashboards/{id}:
+    get:
+      tags: [Reporting]
+      summary: Get a dashboard with its widgets
+      operationId: getReportingDashboard
+      x-permission: reporting.dashboard.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportingResourceId'
+      responses:
+        '200':
+          description: Tenant-scoped dashboard.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportingDashboardEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `reporting.dashboard.read`. }
+        '404': { description: Tenant-scoped dashboard not found. }
+    patch:
+      tags: [Reporting]
+      summary: Update a dashboard
+      operationId: updateReportingDashboard
+      x-permission: reporting.dashboard.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportingResourceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReportingDashboardUpdate' }
+      responses:
+        '200':
+          description: Updated dashboard.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportingDashboardEnvelope' }
+        '400': { description: Invalid request or DLP rejection. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `reporting.dashboard.write`. }
+        '404': { description: Tenant-scoped dashboard not found. }
+  /api/reporting/dashboards/{id}/summary:
+    get:
+      tags: [Reporting]
+      summary: Get dashboard widget summaries
+      description: Latest completed result per widget; a widget with no run reports `NO_RUN_YET` explicitly.
+      operationId: getReportingDashboardSummary
+      x-permission: reporting.dashboard.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportingResourceId'
+      responses:
+        '200':
+          description: Per-widget run ID, status and result summary.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportingDashboardSummaryEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `reporting.dashboard.read`. }
+        '404': { description: Tenant-scoped dashboard not found. }
+  /api/reporting/dashboards/{dashboardId}/widgets:
+    get:
+      tags: [Reporting]
+      summary: List dashboard widgets
+      operationId: listReportingWidgets
+      x-permission: reporting.dashboard.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportingDashboardId'
+      responses:
+        '200':
+          description: Tenant-scoped widgets.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DashboardWidgetListEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `reporting.dashboard.read`. }
+        '404': { description: Tenant-scoped dashboard not found. }
+    post:
+      tags: [Reporting]
+      summary: Create a dashboard widget
+      operationId: createReportingWidget
+      x-permission: reporting.dashboard.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportingDashboardId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DashboardWidgetCreate' }
+      responses:
+        '201':
+          description: Created widget.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DashboardWidgetEnvelope' }
+        '400': { description: Invalid report key or DLP rejection. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `reporting.dashboard.write`. }
+        '404': { description: Tenant-scoped dashboard not found. }
+  /api/reporting/widgets/{id}:
+    get:
+      tags: [Reporting]
+      summary: Get a dashboard widget
+      operationId: getReportingWidget
+      x-permission: reporting.dashboard.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportingResourceId'
+      responses:
+        '200':
+          description: Tenant-scoped widget.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DashboardWidgetEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `reporting.dashboard.read`. }
+        '404': { description: Tenant-scoped widget not found. }
+    patch:
+      tags: [Reporting]
+      summary: Update a dashboard widget
+      operationId: updateReportingWidget
+      x-permission: reporting.dashboard.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportingResourceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DashboardWidgetUpdate' }
+      responses:
+        '200':
+          description: Updated widget.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DashboardWidgetEnvelope' }
+        '400': { description: Invalid report key or DLP rejection. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `reporting.dashboard.write`. }
+        '404': { description: Tenant-scoped widget not found. }
+    delete:
+      tags: [Reporting]
+      summary: Soft-delete a dashboard widget
+      operationId: deleteReportingWidget
+      x-permission: reporting.dashboard.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ReportingResourceId'
+      responses:
+        '200':
+          description: Soft-deleted widget.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DashboardWidgetEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `reporting.dashboard.write`. }
+        '404': { description: Tenant-scoped widget not found. }
 components:
   securitySchemes:
     bearerAuth:
@@ -8473,6 +8917,26 @@ components:
       name: limit
       in: query
       schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    ReportingResourceId:
+      name: id
+      in: path
+      required: true
+      description: Opaque reporting resource ID scoped to the authenticated tenant.
+      schema: { type: string, minLength: 1, maxLength: 80 }
+    ReportingDashboardId:
+      name: dashboardId
+      in: path
+      required: true
+      description: Opaque dashboard ID scoped to the authenticated tenant.
+      schema: { type: string, minLength: 1, maxLength: 80 }
+    ReportingLimit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    ReportingReportKeyFilter:
+      name: reportKey
+      in: query
+      schema: { $ref: '#/components/schemas/ReportKey' }
   schemas:
     Inbox:
       type: object
@@ -11966,5 +12430,341 @@ components:
       required: [budget]
       properties:
         budget: { $ref: '#/components/schemas/ProjectBudget' }
+    ReportKey:
+      type: string
+      description: Fixed Phase 14 allow-list. Free-form SQL, table names and field names are never accepted.
+      enum:
+        - finance.trial-balance
+        - finance.income-statement
+        - finance.balance-sheet
+        - finance.receivables-ageing
+        - sales.orders
+        - inventory.stock-value
+        - procurement.purchase-orders
+        - hr.payroll-runs
+        - manufacturing.production-orders
+    ReportFormat:
+      type: string
+      enum: [JSON, CSV, PDF_READY]
+    ReportRunStatus:
+      type: string
+      enum: [QUEUED, RUNNING, COMPLETED, FAILED]
+    DashboardWidgetType:
+      type: string
+      enum: [METRIC, TABLE, CHART]
+    ReportingUnavailableReason:
+      type: string
+      enum:
+        - NO_SOURCE_ROWS
+        - NO_RUN_YET
+        - SOURCE_UNAVAILABLE
+        - SOURCE_ERROR
+        - INVALID_SOURCE_TOTALS
+        - INVALID_REPORT_SPEC
+        - EXECUTION_ERROR
+    ReportingQuerySpec:
+      type: object
+      additionalProperties: false
+      description: Exactly one allow-listed key; no SQL, parameters, companyId or branchId.
+      required: [reportKey]
+      properties:
+        reportKey: { $ref: '#/components/schemas/ReportKey' }
+    ReportingParameters:
+      type: object
+      additionalProperties: false
+      description: Typed parameters only. `sql`, `query`, `where`, `companyId`, `branchId` and unknown fields are rejected.
+      properties:
+        from: { type: string, format: date, description: Strict YYYY-MM-DD. }
+        to: { type: string, format: date, description: Strict YYYY-MM-DD. }
+        asOf: { type: string, format: date, description: Strict YYYY-MM-DD. }
+        direction: { type: string, enum: [SALES, PURCHASE] }
+        status:
+          type: string
+          enum:
+            - DRAFT
+            - CONFIRMED
+            - FULFILLED
+            - CANCELLED
+            - APPROVED
+            - SENT
+            - PARTIALLY_RECEIVED
+            - RECEIVED
+            - CALCULATED
+            - POSTED
+            - RELEASED
+            - IN_PROGRESS
+            - QUALITY_HOLD
+            - COMPLETED
+    ReportResultSummaryAvailable:
+      type: object
+      additionalProperties: false
+      required: [dataAvailable, counts, totalsCents, totalsAvailable, generatedAt]
+      properties:
+        dataAvailable: { type: boolean, enum: [true] }
+        reportKey: { $ref: '#/components/schemas/ReportKey' }
+        counts:
+          type: object
+          description: Safe non-negative integer counts only; never a money amount.
+          additionalProperties: { type: integer, format: int64, minimum: 0 }
+        totalsCents:
+          type: object
+          description: Integer cents only. Empty when the source has no money columns; never a fabricated zero.
+          propertyNames: { pattern: '^[a-zA-Z][a-zA-Z0-9]*Cents$' }
+          additionalProperties: { type: integer, format: int64 }
+        totalsAvailable: { type: boolean, description: False when totalsCents is empty. }
+        generatedAt: { type: string, format: date-time }
+    ReportResultSummaryUnavailable:
+      type: object
+      additionalProperties: false
+      required: [dataAvailable, reason, reportKey]
+      properties:
+        dataAvailable: { type: boolean, enum: [false] }
+        reason: { $ref: '#/components/schemas/ReportingUnavailableReason' }
+        reportKey: { $ref: '#/components/schemas/ReportKey' }
+    ReportResultSummary:
+      description: Available data with integer counts/cents, or explicit unavailability metadata. No counts, totals or source errors are returned when data is unavailable.
+      oneOf:
+        - $ref: '#/components/schemas/ReportResultSummaryAvailable'
+        - $ref: '#/components/schemas/ReportResultSummaryUnavailable'
+    ReportDefinition:
+      type: object
+      required: [id, code, name, reportKey, querySpec, format, classification]
+      properties:
+        id: { type: string }
+        code: { type: string, nullable: true }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        reportKey: { $ref: '#/components/schemas/ReportKey' }
+        querySpec: { $ref: '#/components/schemas/ReportingQuerySpec' }
+        format: { $ref: '#/components/schemas/ReportFormat' }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        createdByUserId: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    ReportDefinitionCreate:
+      type: object
+      additionalProperties: false
+      required: [name, querySpec]
+      properties:
+        code: { type: string, minLength: 1, maxLength: 60, pattern: '^[A-Za-z0-9_-]+$' }
+        name: { type: string, minLength: 2, maxLength: 160, description: DLP-checked. }
+        description: { type: string, maxLength: 1000, description: DLP-checked. }
+        querySpec: { $ref: '#/components/schemas/ReportingQuerySpec' }
+        format: { $ref: '#/components/schemas/ReportFormat' }
+        branchId: { type: string, nullable: true, maxLength: 80 }
+        classification: { $ref: '#/components/schemas/Classification' }
+    ReportDefinitionUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name: { type: string, minLength: 2, maxLength: 160 }
+        description: { type: string, maxLength: 1000 }
+        querySpec: { $ref: '#/components/schemas/ReportingQuerySpec' }
+        format: { $ref: '#/components/schemas/ReportFormat' }
+        branchId: { type: string, nullable: true, maxLength: 80 }
+        classification: { $ref: '#/components/schemas/Classification' }
+    ReportingReportKeysEnvelope:
+      type: object
+      required: [reportKeys]
+      properties:
+        reportKeys:
+          type: array
+          items: { $ref: '#/components/schemas/ReportKey' }
+    ReportDefinitionEnvelope:
+      type: object
+      required: [definition]
+      properties:
+        definition: { $ref: '#/components/schemas/ReportDefinition' }
+    ReportDefinitionListEnvelope:
+      type: object
+      required: [definitions]
+      properties:
+        definitions:
+          type: array
+          items: { $ref: '#/components/schemas/ReportDefinition' }
+    ReportRunCreate:
+      type: object
+      additionalProperties: false
+      required: [definitionId]
+      properties:
+        definitionId: { type: string, minLength: 1, maxLength: 80 }
+        parameters: { $ref: '#/components/schemas/ReportingParameters' }
+    ReportRun:
+      type: object
+      required: [id, definitionId, number, reportKey, format, status, classification]
+      properties:
+        id: { type: string }
+        definitionId: { type: string }
+        number: { type: string }
+        reportKey: { $ref: '#/components/schemas/ReportKey' }
+        format: { $ref: '#/components/schemas/ReportFormat' }
+        status: { $ref: '#/components/schemas/ReportRunStatus' }
+        parameters: { $ref: '#/components/schemas/ReportingParameters' }
+        resultSummary:
+          allOf:
+            - $ref: '#/components/schemas/ReportResultSummary'
+          nullable: true
+        failureReasonCode: { type: string, nullable: true }
+        jobId: { type: string, nullable: true, description: Opaque BullMQ job ID. }
+        fileObjectId: { type: string, nullable: true, description: Opaque reference only; no export is generated. }
+        branchId: { type: string, nullable: true }
+        requestedByUserId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        createdAt: { type: string, format: date-time, nullable: true }
+        startedAt: { type: string, format: date-time, nullable: true }
+        completedAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    ReportRunEnvelope:
+      type: object
+      required: [run]
+      properties:
+        run: { $ref: '#/components/schemas/ReportRun' }
+    ReportRunListEnvelope:
+      type: object
+      required: [runs]
+      properties:
+        runs:
+          type: array
+          items: { $ref: '#/components/schemas/ReportRun' }
+    ReportRunJobStatus:
+      type: object
+      required: [runId, jobId, status, state]
+      properties:
+        runId: { type: string }
+        jobId: { type: string, nullable: true }
+        status: { $ref: '#/components/schemas/ReportRunStatus' }
+        state: { type: string, description: Queue state from the opaque job ID, or LOCAL/UNKNOWN. }
+    ReportRunJobEnvelope:
+      type: object
+      required: [job]
+      properties:
+        job: { $ref: '#/components/schemas/ReportRunJobStatus' }
+    ReportingDashboard:
+      type: object
+      required: [id, code, name, classification]
+      properties:
+        id: { type: string }
+        code: { type: string, nullable: true }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        createdByUserId: { type: string, nullable: true }
+        widgets:
+          type: array
+          items: { $ref: '#/components/schemas/DashboardWidget' }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    ReportingDashboardCreate:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        code: { type: string, minLength: 1, maxLength: 60, pattern: '^[A-Za-z0-9_-]+$' }
+        name: { type: string, minLength: 2, maxLength: 160, description: DLP-checked. }
+        description: { type: string, maxLength: 1000, description: DLP-checked. }
+        branchId: { type: string, nullable: true, maxLength: 80 }
+        classification: { $ref: '#/components/schemas/Classification' }
+    ReportingDashboardUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name: { type: string, minLength: 2, maxLength: 160 }
+        description: { type: string, maxLength: 1000 }
+        branchId: { type: string, nullable: true, maxLength: 80 }
+        classification: { $ref: '#/components/schemas/Classification' }
+    ReportingDashboardEnvelope:
+      type: object
+      required: [dashboard]
+      properties:
+        dashboard: { $ref: '#/components/schemas/ReportingDashboard' }
+    ReportingDashboardListEnvelope:
+      type: object
+      required: [dashboards]
+      properties:
+        dashboards:
+          type: array
+          items: { $ref: '#/components/schemas/ReportingDashboard' }
+    DashboardWidget:
+      type: object
+      required: [id, dashboardId, code, title, type, reportKey, position, classification]
+      properties:
+        id: { type: string }
+        dashboardId: { type: string }
+        definitionId: { type: string, nullable: true }
+        code: { type: string, nullable: true }
+        title: { type: string }
+        type: { $ref: '#/components/schemas/DashboardWidgetType' }
+        reportKey: { $ref: '#/components/schemas/ReportKey' }
+        position: { type: integer, minimum: 0, maximum: 1000 }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    DashboardWidgetCreate:
+      type: object
+      additionalProperties: false
+      required: [title, reportKey]
+      properties:
+        code: { type: string, minLength: 1, maxLength: 60, pattern: '^[A-Za-z0-9_-]+$' }
+        title: { type: string, minLength: 2, maxLength: 160, description: DLP-checked. }
+        type: { $ref: '#/components/schemas/DashboardWidgetType' }
+        reportKey: { $ref: '#/components/schemas/ReportKey' }
+        definitionId: { type: string, nullable: true, maxLength: 80 }
+        position: { type: integer, minimum: 0, maximum: 1000 }
+        branchId: { type: string, nullable: true, maxLength: 80 }
+        classification: { $ref: '#/components/schemas/Classification' }
+    DashboardWidgetUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        title: { type: string, minLength: 2, maxLength: 160 }
+        type: { $ref: '#/components/schemas/DashboardWidgetType' }
+        reportKey: { $ref: '#/components/schemas/ReportKey' }
+        definitionId: { type: string, nullable: true, maxLength: 80 }
+        position: { type: integer, minimum: 0, maximum: 1000 }
+        branchId: { type: string, nullable: true, maxLength: 80 }
+        classification: { $ref: '#/components/schemas/Classification' }
+    DashboardWidgetEnvelope:
+      type: object
+      required: [widget]
+      properties:
+        widget: { $ref: '#/components/schemas/DashboardWidget' }
+    DashboardWidgetListEnvelope:
+      type: object
+      required: [widgets]
+      properties:
+        widgets:
+          type: array
+          items: { $ref: '#/components/schemas/DashboardWidget' }
+    ReportingDashboardSummaryItem:
+      type: object
+      required: [widgetId, reportKey, status, resultSummary]
+      properties:
+        widgetId: { type: string }
+        reportKey: { $ref: '#/components/schemas/ReportKey' }
+        latestRunId: { type: string, nullable: true }
+        status:
+          allOf:
+            - $ref: '#/components/schemas/ReportRunStatus'
+          nullable: true
+        resultSummary: { $ref: '#/components/schemas/ReportResultSummary' }
+    ReportingDashboardSummary:
+      type: object
+      required: [dashboardId, widgets]
+      properties:
+        dashboardId: { type: string }
+        widgets:
+          type: array
+          items: { $ref: '#/components/schemas/ReportingDashboardSummaryItem' }
+    ReportingDashboardSummaryEnvelope:
+      type: object
+      required: [summary]
+      properties:
+        summary: { $ref: '#/components/schemas/ReportingDashboardSummary' }
 security:
   - bearerAuth: []

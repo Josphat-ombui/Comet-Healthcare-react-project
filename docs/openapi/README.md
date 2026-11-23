@@ -1,6 +1,6 @@
 # OpenAPI Contract
 
-Comet Healthcare Enterprise Platform — Phase 13 contract complete (`0.13.0-phase.13`)
+Comet Healthcare Enterprise Platform — Phase 14 contract complete (`0.14.0-phase.14`)
 
 This directory holds the versioned REST and webhook contracts. Phase 1 created the skeleton;
 Phase 3 added identity/organisation/audit, Phase 4 added messaging and realtime, Phase 5
@@ -8,8 +8,9 @@ completed the shared-services surface (files, workflow, notifications, search, d
 Phase 6 added the tenant/branch-scoped finance surface under `/api/finance`, Phase 7 added
 the sales lifecycle under `/api/sales`, Phase 8 added inventory under `/api/inventory`,
 Phase 9 added procurement under `/api/procurement`, Phase 10 added service under `/api/service`,
-Phase 11 added HR under `/api/hr`, Phase 12 added projects under `/api/projects`, and Phase 13
-adds GMP manufacturing under `/api/manufacturing`.
+Phase 11 added HR under `/api/hr`, Phase 12 added projects under `/api/projects`, Phase 13 added
+GMP manufacturing under `/api/manufacturing`, and Phase 14 adds allow-listed reporting under
+`/api/reporting`.
 
 ## Files
 
@@ -36,6 +37,35 @@ adds GMP manufacturing under `/api/manufacturing`.
 - Response envelopes follow the implementation: named collections such as `files`,
   `definitions`, `instances`, `tasks`, `notifications` and `preferences` are used rather than a
   generic `items` key. `GET /api/search` and `GET /api/documents` use `items` as before.
+
+## Phase 14 scope
+
+- `Reporting` tag paths (11 paths / 18 operations): `/api/reporting/report-keys`,
+  `/definitions` (list/create), `/definitions/{id}` (get/patch/delete), `/runs` (list/create),
+  `/runs/{id}` (get), `/runs/{id}/job` (get), `/dashboards` (list/create),
+  `/dashboards/{id}` (get/patch), `/dashboards/{id}/summary` (get),
+  `/dashboards/{dashboardId}/widgets` (list/create) and `/widgets/{id}` (get/patch/delete).
+- All Phase 3–13 paths and schemas remain intact. Every operation declares
+  `security: [{ bearerAuth: [] }]` and an `x-permission` from the six-entry `reporting.*` set.
+  Strict request schemas reject client-supplied `companyId`, `branchId`, SQL, unknown parameters
+  and computed summary fields; free text is DLP-checked and fails closed.
+- A definition's `querySpec` is exactly `{ reportKey }` from the fixed nine-key allow-list. There is
+  no SQL, table name, field name or `WHERE` clause anywhere in the API. Run parameters are typed per
+  key, and collectors call existing authorised module services rather than opening a second
+  data-access path. See ADR-0019.
+- `resultSummary` either contains safe integer `counts` and integer-cent `totalsCents` with
+  `totalsAvailable`, or explicit `{ dataAvailable: false, reason, reportKey }` metadata. Count-only
+  sources return `totalsCents: {}` with `totalsAvailable: false`; no zero is fabricated and no
+  exception text is returned. Dashboard summaries reuse this shape with `NO_RUN_YET`.
+- Runs expose `QUEUED`, `RUNNING`, `COMPLETED` and `FAILED`. `reporting.run` is queued through BullMQ
+  with an ID-only payload and a synchronous fallback when queues are disabled; terminal runs are
+  never re-executed. `GET /runs/{id}/job` returns opaque IDs and state only.
+- Domain events are `ReportRunQueued`, `ReportRunCompleted`, `ReportRunFailed` and `DashboardUpdated`.
+  Socket events are `reporting:run` and `reporting:dashboard`. Frames carry IDs/classification only
+  and are routed to the company room only — never user, thread, inbox or branch rooms. Clients
+  refetch all values through `/api/reporting`; see `x-realtime`.
+- `Idempotency-Key` remains scoped to `POST /api/messaging/threads/{id}/messages` only; no
+  `/api/reporting` endpoint consumes it. No filing, payment, email or file export is performed.
 
 ## Phase 13 scope
 
@@ -293,6 +323,10 @@ adds GMP manufacturing under `/api/manufacturing`.
 17. Phase 13 manufacturing frames are ID/classification-only invalidation signals routed to the
     company room. Adding batch numbers, GMP dates, quantities, costs, check codes, observed values,
     statuses, notes, user names or inventory movement details is a contract violation.
+18. Phase 14 reporting frames and queue payloads are ID/classification-only invalidation signals
+    routed to the company room. Adding report keys, parameters, counts, cent amounts, statuses, file
+    IDs, dashboard titles or run results is a contract violation. A result summary must use the
+    explicit available/unavailable shapes; zero-valued substitutes are not permitted.
 
 ## Security schemes
 
@@ -313,14 +347,15 @@ adds GMP manufacturing under `/api/manufacturing`.
    ```
 
    An OpenAPI-aware linter (for example `npx @redocly/cli lint docs/openapi/openapi.yaml`) is
-   optional when network access to the generator is available. At the Phase 13 gate the parsed
-   document has version `0.13.0-phase.13`, 234 paths (21 under `/api/manufacturing`) and 293
-   schemas. At the Phase 12 gate it had version `0.12.0-phase.12`, 213 paths (17 under
+   optional when network access to the generator is available. At the Phase 14 gate the parsed
+   document has version `0.14.0-phase.14`, 245 paths (11 under `/api/reporting`), 328 schemas,
+   22 parameters and 1070 `$ref`s resolving with 0 missing. At the Phase 13 gate it had version
+   `0.13.0-phase.13`, 234 paths (21 under `/api/manufacturing`) and 293 schemas. At the Phase 12 gate it had version `0.12.0-phase.12`, 213 paths (17 under
    `/api/projects`) and 245 schemas. At the Phase 11 gate it had version `0.11.0-phase.11`,
    196 paths (21 under `/api/hr`) and 203 schemas.
    At the Phase 10 gate it had version `0.10.0-phase.10`, 175 paths and 179 schemas; at the Phase 9
    gate, 148 paths and 145 schemas; at the Phase 8 gate, 130 paths and 114 schemas.
-4. Confirm all `$ref` targets resolve and that no Phase 3/4/5/6/7/8/9/10 path was removed. A local check:
+4. Confirm all `$ref` targets resolve and that no Phase 3–13 path was removed. A local check:
 
    ```bash
    python - <<'PY'
@@ -357,8 +392,11 @@ adds GMP manufacturing under `/api/manufacturing`.
     events, permission separation, finance delegation/unavailable metadata and tenant scope.
     Phase 13 manufacturing tests (21) cover cent math, lifecycle/QC release guards, GMP fields,
     encrypted notes, strict ID-only events, permission separation, DTO safety and tenant scope.
-    At the Phase 13 gate 971 refs resolve; at the Phase 12 gate 842 refs resolved, and at the
-    Phase 11 gate 721 refs resolved.
+    Phase 14 reporting tests (16) cover the fixed allow-list, SQL-injection rejection, typed
+    parameters, DLP fail-closed, integer-cent/count validation, explicit unavailability, terminal
+    status guards, safe DTOs, strict ID-only events, socket routing, permission separation and
+    source contracts. At the Phase 14 gate 1070 refs resolve; at the Phase 13 gate 971 refs
+    resolved; at the Phase 12 gate 842 refs resolved, and at the Phase 11 gate 721 refs resolved.
 
 ## Phase gate requirement
 

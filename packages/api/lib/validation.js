@@ -1881,3 +1881,136 @@ export const manufacturingQcQuerySchema = z.object({
 
 export const MANUFACTURING_CLASSIFICATIONS = ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED']
 export const MANUFACTURING_MONEY_FIELDS = ['standardCostCents', 'unitCostCents']
+
+// ------------------------------------------------------------ phase 14 reporting
+//
+// Reporting never accepts SQL, table names, field names or predicates. A report
+// definition may only point at one of the allow-listed report keys below; runs
+// may only supply the small, typed parameter vocabulary each key declares.
+// Strict objects reject every other property, including `sql`, `query`,
+// `where`, `companyId` and `branchId`.
+
+export const REPORT_FORMATS = ['JSON', 'CSV', 'PDF_READY']
+export const REPORT_RUN_STATUSES = ['QUEUED', 'RUNNING', 'COMPLETED', 'FAILED']
+export const DASHBOARD_WIDGET_TYPES = ['METRIC', 'TABLE', 'CHART']
+
+export const REPORT_KEYS = Object.freeze([
+  'finance.trial-balance',
+  'finance.income-statement',
+  'finance.balance-sheet',
+  'finance.receivables-ageing',
+  'sales.orders',
+  'inventory.stock-value',
+  'procurement.purchase-orders',
+  'hr.payroll-runs',
+  'manufacturing.production-orders',
+])
+
+const reportingId = z.string().trim().min(1).max(80)
+const reportingCode = z.string().trim().min(1).max(60).regex(/^[A-Za-z0-9_-]+$/, 'Use letters, numbers, _ or -')
+const reportingName = dlpSafeText(160).min(2)
+const reportingDescription = dlpSafeText(1000).optional().or(z.literal(''))
+const reportingDate = z.string().refine(isValidIsoDate, 'Choose a valid date')
+const reportingLimit = z.coerce.number().int().min(1).max(200).default(50)
+const reportKeySchema = z.enum(REPORT_KEYS)
+
+export const reportingQuerySpecSchema = z.object({
+  reportKey: reportKeySchema,
+}).strict()
+
+export const reportingReportDefinitionCreateSchema = z.object({
+  code: reportingCode.optional(),
+  name: reportingName,
+  description: reportingDescription,
+  querySpec: reportingQuerySpecSchema,
+  format: z.enum(REPORT_FORMATS).default('JSON'),
+  branchId: reportingId.nullable().optional(),
+  classification: classificationSchema.default('INTERNAL'),
+}).strict()
+
+export const reportingReportDefinitionUpdateSchema = z.object({
+  name: reportingName.optional(),
+  description: reportingDescription,
+  querySpec: reportingQuerySpecSchema.optional(),
+  format: z.enum(REPORT_FORMATS).optional(),
+  branchId: reportingId.nullable().optional(),
+  classification: classificationSchema.optional(),
+}).strict().refine((value) => Object.keys(value).length > 0, 'At least one field is required')
+
+export const reportingDefinitionQuerySchema = z.object({
+  reportKey: reportKeySchema.optional(),
+  limit: reportingLimit,
+}).strict()
+
+export const reportingParametersSchema = z.object({
+  from: reportingDate.optional(),
+  to: reportingDate.optional(),
+  asOf: reportingDate.optional(),
+  direction: z.enum(['SALES', 'PURCHASE']).optional(),
+  status: z.enum([
+    'DRAFT', 'CONFIRMED', 'FULFILLED', 'CANCELLED', 'APPROVED', 'SENT',
+    'PARTIALLY_RECEIVED', 'RECEIVED', 'CALCULATED', 'POSTED', 'RELEASED',
+    'IN_PROGRESS', 'QUALITY_HOLD', 'COMPLETED',
+  ]).optional(),
+}).strict().refine(
+  (value) => !value.from || !value.to || value.from <= value.to,
+  'from must not be after to',
+)
+
+export const reportingRunCreateSchema = z.object({
+  definitionId: reportingId,
+  parameters: reportingParametersSchema.default({}),
+}).strict()
+
+export const reportingRunQuerySchema = z.object({
+  status: z.enum(REPORT_RUN_STATUSES).optional(),
+  definitionId: reportingId.optional(),
+  reportKey: reportKeySchema.optional(),
+  limit: reportingLimit,
+}).strict()
+
+export const reportingDashboardCreateSchema = z.object({
+  code: reportingCode.optional(),
+  name: reportingName,
+  description: reportingDescription,
+  branchId: reportingId.nullable().optional(),
+  classification: classificationSchema.default('INTERNAL'),
+}).strict()
+
+export const reportingDashboardUpdateSchema = z.object({
+  name: reportingName.optional(),
+  description: reportingDescription,
+  branchId: reportingId.nullable().optional(),
+  classification: classificationSchema.optional(),
+}).strict().refine((value) => Object.keys(value).length > 0, 'At least one field is required')
+
+export const reportingDashboardQuerySchema = z.object({
+  limit: reportingLimit,
+}).strict()
+
+export const reportingWidgetCreateSchema = z.object({
+  code: reportingCode.optional(),
+  title: reportingName,
+  type: z.enum(DASHBOARD_WIDGET_TYPES).default('METRIC'),
+  reportKey: reportKeySchema,
+  definitionId: reportingId.nullable().optional(),
+  position: z.number().int().min(0).max(1000).default(0),
+  branchId: reportingId.nullable().optional(),
+  classification: classificationSchema.default('INTERNAL'),
+}).strict()
+
+export const reportingWidgetUpdateSchema = z.object({
+  title: reportingName.optional(),
+  type: z.enum(DASHBOARD_WIDGET_TYPES).optional(),
+  reportKey: reportKeySchema.optional(),
+  definitionId: reportingId.nullable().optional(),
+  position: z.number().int().min(0).max(1000).optional(),
+  branchId: reportingId.nullable().optional(),
+  classification: classificationSchema.optional(),
+}).strict().refine((value) => Object.keys(value).length > 0, 'At least one field is required')
+
+export const REPORTING_MONEY_FIELDS = [
+  'subtotalCents', 'taxCents', 'totalCents', 'debitCents', 'creditCents',
+  'netCents', 'balanceCents', 'totalValueCents', 'grossCents',
+  'deductionsCents', 'employerCostCents',
+]

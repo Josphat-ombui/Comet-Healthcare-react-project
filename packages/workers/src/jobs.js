@@ -20,6 +20,8 @@ import {
   verifyMagicNumber,
 } from '../../api/lib/object-storage.js'
 import { localIsoDay, addDays } from '../../api/lib/slots.js'
+import { runWithTenant } from '../../api/lib/tenant.js'
+import { executeReportRun } from '../../api/lib/reporting.js'
 
 const int = (value, fallback) => {
   const parsed = Number.parseInt(value, 10)
@@ -522,6 +524,28 @@ export function createProcessors(prisma) {
     return result
   }
 
+  // --------------------------------------------------------- reporting.run
+  async function runReport(job) {
+    const { reportRunId, companyId, branchId, correlationId } = job.data
+    if (!reportRunId || !companyId) throw new Error('Invalid reporting job payload')
+
+    await updateJobRecord(prisma, job, 'RUNNING')
+    const run = await runWithTenant(
+      { companyId, branchId: branchId || '', correlationId: correlationId || null },
+      () => executeReportRun(reportRunId, {
+        client: prisma,
+        companyId,
+        branchId: branchId || null,
+      }),
+    )
+    // The queue result, JobRecord and outbox event deliberately carry only the
+    // run ID. Parameters, counts, totals and file references are read through
+    // the authenticated reporting API.
+    const result = { reportRunId: run.id }
+    await updateJobRecord(prisma, job, 'COMPLETED', result)
+    return result
+  }
+
   return {
     'files.scan': scanFile,
     'notifications.dispatch': dispatchNotification,
@@ -529,5 +553,6 @@ export function createProcessors(prisma) {
     'search.index': indexEntity,
     'retention.sweep': retentionSweep,
     'finance.etims.submit': submitEtims,
+    'reporting.run': runReport,
   }
 }

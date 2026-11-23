@@ -54,6 +54,7 @@ import { serviceRouter } from './routes/service.routes.js'
 import { hrRouter } from './routes/hr.routes.js'
 import { projectsRouter } from './routes/projects.routes.js'
 import { manufacturingRouter } from './routes/manufacturing.routes.js'
+import { reportingRouter } from './routes/reporting.routes.js'
 import { storageMode } from './lib/object-storage.js'
 import { requireAuth } from './lib/auth.js'
 import { resolvePrincipal } from './lib/authorize.js'
@@ -133,6 +134,7 @@ app.use('/api/service', serviceRouter)
 app.use('/api/hr', hrRouter)
 app.use('/api/projects', projectsRouter)
 app.use('/api/manufacturing', manufacturingRouter)
+app.use('/api/reporting', reportingRouter)
 app.use('/api/admin', requireAuth, adminRouter)
 
 // ---- production: serve the built frontend from dist/ and SPA-fallback ----

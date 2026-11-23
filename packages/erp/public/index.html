@@ -49,6 +49,7 @@
         <button id="tabHr" class="tab" type="button">HR</button>
         <button id="tabProjects" class="tab" type="button">Projects</button>
         <button id="tabManufacturing" class="tab" type="button">Manufacturing</button>
+        <button id="tabReporting" class="tab" type="button">Reporting</button>
         <span id="connection" class="pill connection" aria-live="polite">Connecting…</span>
       </nav>
 
@@ -1591,6 +1592,62 @@
               </div>
               <div class="form-actions"><button type="submit">Add QC check</button></div>
             </form>
+          </section>
+        </div>
+      </section>
+
+      <section id="reportingView" hidden>
+        <p class="finance-banner" role="note">Reporting uses a fixed allow-list of report keys - no SQL, table names or free-form filters are accepted. Money is integer cents. When a source has no rows the API returns explicit <code>dataAvailable: false</code> metadata with no invented counts or totals. Socket frames carry IDs/classification only - every value below is refetched through the authenticated API.</p>
+        <p id="reportingError" class="error" role="alert"></p>
+        <div class="finance-grid">
+          <section class="card span-2">
+            <div class="card-head"><h2>Report definitions</h2><button id="refreshReporting" class="link" type="button">Refresh all</button></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Code</th><th>Name</th><th>Report key</th><th>Format</th><th>Classification</th></tr></thead>
+                <tbody id="reportingDefinitionRows"></tbody>
+              </table>
+            </div>
+            <form id="reportingRunForm" class="form-grid">
+              <label>Definition<select id="reportingRunDefinition" required></select></label>
+              <label>As of<input id="reportingRunAsOf" type="date" /></label>
+              <label>From<input id="reportingRunFrom" type="date" /></label>
+              <label>To<input id="reportingRunTo" type="date" /></label>
+              <label>Status<select id="reportingRunStatus"><option value="">Any</option><option value="DRAFT">Draft</option><option value="CONFIRMED">Confirmed</option><option value="APPROVED">Approved</option><option value="RELEASED">Released</option><option value="IN_PROGRESS">In progress</option><option value="COMPLETED">Completed</option><option value="POSTED">Posted</option></select></label>
+              <div class="form-actions"><button type="submit">Queue report run</button></div>
+              <p id="reportingRunStatusText" class="muted" aria-live="polite"></p>
+            </form>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Report runs</h2><span id="reportingRunCount" class="pill"></span></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Report key</th><th>Status</th><th>Job</th><th>Result</th></tr></thead>
+                <tbody id="reportingRunRows"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Dashboards</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Code</th><th>Name</th><th>Widgets</th><th>Classification</th></tr></thead>
+                <tbody id="reportingDashboardRows"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Dashboard widget readiness</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Dashboard</th><th>Widget</th><th>Report key</th><th>Latest run</th><th>Data</th></tr></thead>
+                <tbody id="reportingSummaryRows"></tbody>
+              </table>
+            </div>
+            <p class="muted">A widget with no completed run reports <code>NO_RUN_YET</code>. Available summaries are fetched from the run record; no value is pushed over a socket.</p>
           </section>
         </div>
       </section>

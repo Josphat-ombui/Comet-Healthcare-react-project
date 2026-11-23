@@ -11,7 +11,7 @@ const API_ORIGIN = API.replace(/\/api\/?$/, '')
 const REALTIME = window.ERP_REALTIME_URL || 'http://localhost:4001'
 const POLL_MS = 6000
 const QUEUE_KEY = 'comet_erp_message_queue'
-const VIEWS = ['inbox', 'directory', 'notifications', 'files', 'workflow', 'search', 'documents', 'finance', 'sales', 'inventory', 'procurement', 'service', 'hr', 'projects', 'manufacturing']
+const VIEWS = ['inbox', 'directory', 'notifications', 'files', 'workflow', 'search', 'documents', 'finance', 'sales', 'inventory', 'procurement', 'service', 'hr', 'projects', 'manufacturing', 'reporting']
 const FINANCE_EVENTS = [
   'finance:account', 'finance:journal', 'finance:invoice', 'finance:payment',
   'finance:budget', 'finance:rate', 'finance:etims', 'finance:etims-failed',
@@ -53,6 +53,9 @@ const PROJECT_EVENTS = [
 const MANUFACTURING_EVENTS = [
   'manufacturing:bom', 'manufacturing:order', 'manufacturing:batch', 'manufacturing:qc',
 ]
+// Reporting socket frames carry IDs/classification only. Reports, summaries and
+// dashboard values are always refetched through the authenticated API.
+const REPORTING_EVENTS = ['reporting:run', 'reporting:dashboard']
 const $ = (id) => document.getElementById(id)
 
 let token = sessionStorage.getItem('comet_erp_token') || ''
@@ -137,6 +140,10 @@ const state = {
   manufacturingQcChecks: [],
   manufacturingItems: [],
   manufacturingWarehouses: [],
+  reportingDefinitions: [],
+  reportingRuns: [],
+  reportingDashboards: [],
+  reportingSummary: null,
 }
 let financeRefreshTimer = null
 let salesRefreshTimer = null
@@ -146,6 +153,7 @@ let serviceRefreshTimer = null
 let hrRefreshTimer = null
 let projectsRefreshTimer = null
 let manufacturingRefreshTimer = null
+let reportingRefreshTimer = null
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -3925,6 +3933,7 @@ function connectRealtime() {
     // Phase 12 projects events are ID/classification-only company-room signals.
     for (const event of PROJECT_EVENTS) socket.on(event, onProjectEvent)
     for (const event of MANUFACTURING_EVENTS) socket.on(event, onManufacturingEvent)
+    for (const event of REPORTING_EVENTS) socket.on(event, onReportingEvent)
   })
 }
 
@@ -4202,6 +4211,141 @@ $('manufacturingQcForm').onsubmit = async (event) => {
   await manufacturingMutation(`/batches/${encodeURIComponent($('manufacturingQcCreateBatch').value)}/qc-checks`, body)
 }
 
+// --------------------------------------------------------- phase 14 reporting
+
+function reportingOptional(id) {
+  const value = $(id)?.value.trim()
+  return value || undefined
+}
+
+function reportingParameters(definition) {
+  const key = definition?.reportKey
+  const params = {}
+  if (['finance.trial-balance', 'finance.balance-sheet', 'finance.receivables-ageing'].includes(key)) {
+    const asOf = reportingOptional('reportingRunAsOf')
+    if (asOf) params.asOf = asOf
+  } else if (key === 'finance.income-statement') {
+    const from = reportingOptional('reportingRunFrom')
+    const to = reportingOptional('reportingRunTo')
+    if (from) params.from = from
+    if (to) params.to = to
+  } else if (['sales.orders', 'procurement.purchase-orders', 'hr.payroll-runs'].includes(key)) {
+    const from = reportingOptional('reportingRunFrom')
+    const to = reportingOptional('reportingRunTo')
+    const status = reportingOptional('reportingRunStatus')
+    if (from) params.from = from
+    if (to) params.to = to
+    if (status) params.status = status
+  } else if (key === 'manufacturing.production-orders') {
+    const status = reportingOptional('reportingRunStatus')
+    if (status) params.status = status
+  }
+  return params
+}
+
+async function loadReporting() {
+  if (!token) return
+  setError('reportingError', '')
+  const results = await Promise.allSettled([
+    request('/reporting/definitions?limit=200'),
+    request('/reporting/runs?limit=200'),
+    request('/reporting/dashboards?limit=200'),
+  ])
+  const failures = []
+  results.forEach((result, index) => {
+    if (result.status === 'rejected') failures.push(`request ${index + 1}: ${result.reason?.message || 'failed'}`)
+  })
+  state.reportingDefinitions = results[0].status === 'fulfilled'
+    ? financeList(results[0].value, 'definitions') : []
+  state.reportingRuns = results[1].status === 'fulfilled'
+    ? financeList(results[1].value, 'runs') : []
+  state.reportingDashboards = results[2].status === 'fulfilled'
+    ? financeList(results[2].value, 'dashboards') : []
+
+  state.reportingSummary = null
+  const dashboard = state.reportingDashboards[0]
+  if (dashboard) {
+    const summary = await request(`/reporting/dashboards/${encodeURIComponent(dashboard.id)}/summary`)
+      .catch(() => ({ summary: null }))
+    state.reportingSummary = summary.summary || null
+  }
+  renderReporting()
+  if (failures.length) setError('reportingError', failures.join(' · '))
+}
+
+function renderReporting() {
+  $('reportingDefinitionRows').innerHTML = state.reportingDefinitions.map((row) => `
+    <tr><td>${escapeHtml(row.code)}</td><td>${escapeHtml(row.name)}</td>
+      <td><code>${escapeHtml(row.reportKey)}</code></td><td>${escapeHtml(row.format)}</td>
+      <td>${escapeHtml(row.classification)}</td></tr>`
+  ).join('') || '<tr><td colspan="5" class="muted">No report definitions yet.</td></tr>'
+
+  $('reportingRunDefinition').innerHTML = state.reportingDefinitions.map((row) =>
+    `<option value="${escapeHtml(row.id)}">${escapeHtml(row.code)} - ${escapeHtml(row.reportKey)}</option>`
+  ).join('') || '<option value="">No definitions available</option>'
+
+  $('reportingRunCount').textContent = `${state.reportingRuns.length} runs`
+  $('reportingRunRows').innerHTML = state.reportingRuns.map((row) => {
+    const summary = row.resultSummary
+    const result = summary?.dataAvailable === true
+      ? `counts ${escapeHtml(JSON.stringify(summary.counts || {}))}${summary.totalsAvailable === false ? ' (no money source)' : ''}`
+      : escapeHtml(summary?.reason || 'Pending')
+    return `<tr><td>${escapeHtml(row.number)}</td><td><code>${escapeHtml(row.reportKey)}</code></td>
+      <td>${escapeHtml(row.status)}</td><td>${shortId(row.jobId)}</td>
+      <td>${result}</td></tr>`
+  }).join('') || '<tr><td colspan="5" class="muted">No report runs yet.</td></tr>'
+
+  $('reportingDashboardRows').innerHTML = state.reportingDashboards.map((row) => `
+    <tr><td>${escapeHtml(row.code)}</td><td>${escapeHtml(row.name)}</td>
+      <td>${Array.isArray(row.widgets) ? row.widgets.length : 0}</td>
+      <td>${escapeHtml(row.classification)}</td></tr>`
+  ).join('') || '<tr><td colspan="4" class="muted">No dashboards yet.</td></tr>'
+
+  const dashboardsById = new Map(state.reportingDashboards.map((row) => [row.id, row]))
+  const widgets = Array.isArray(state.reportingSummary?.widgets) ? state.reportingSummary.widgets : []
+  $('reportingSummaryRows').innerHTML = widgets.map((item) => {
+    const dashboard = dashboardsById.get(state.reportingSummary.dashboardId)
+    const summary = item.resultSummary || {}
+    const data = summary.dataAvailable === true
+      ? `counts ${escapeHtml(JSON.stringify(summary.counts || {}))}`
+      : escapeHtml(summary.reason || 'No metadata')
+    return `<tr><td>${escapeHtml(dashboard?.code || shortId(state.reportingSummary.dashboardId))}</td>
+      <td>${shortId(item.widgetId)}</td><td><code>${escapeHtml(item.reportKey)}</code></td>
+      <td>${shortId(item.latestRunId)}</td><td>${data}</td></tr>`
+  }).join('') || '<tr><td colspan="5" class="muted">No widgets on this dashboard.</td></tr>'
+}
+
+function onReportingEvent() {
+  // Reporting frames carry IDs/classification only. Never treat a frame as
+  // report content - reload every value through the authenticated API.
+  if (state.view !== 'reporting') return
+  if (reportingRefreshTimer) clearTimeout(reportingRefreshTimer)
+  reportingRefreshTimer = setTimeout(() => {
+    reportingRefreshTimer = null
+    loadReporting()
+  }, 250)
+}
+
+$('refreshReporting').onclick = () => loadReporting()
+$('reportingRunForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const definitionId = $('reportingRunDefinition').value
+  const definition = state.reportingDefinitions.find((row) => row.id === definitionId)
+  if (!definition) return
+  $('reportingRunStatusText').textContent = 'Queuing report run...'
+  try {
+    await request('/reporting/runs', {
+      method: 'POST',
+      body: JSON.stringify({ definitionId, parameters: reportingParameters(definition) }),
+    })
+    $('reportingRunStatusText').textContent = 'Report run queued. Refreshing runs...'
+    await loadReporting()
+  } catch (error) {
+    setError('reportingError', error.message || 'Report run failed')
+    $('reportingRunStatusText').textContent = 'Report run could not be queued.'
+  }
+}
+
 window.addEventListener('online', () => {
   if (token) flushQueue().then(refreshInbox)
 })
@@ -4234,6 +4378,7 @@ function showView(view) {
   else if (view === 'hr') loadHr()
   else if (view === 'projects') loadProjects()
   else if (view === 'manufacturing') loadManufacturing()
+  else if (view === 'reporting') loadReporting()
 }
 
 $('tabInbox').onclick = () => showView('inbox')
@@ -4251,6 +4396,7 @@ $('tabService').onclick = () => showView('service')
 $('tabHr').onclick = () => showView('hr')
 $('tabProjects').onclick = () => showView('projects')
 $('tabManufacturing').onclick = () => showView('manufacturing')
+$('tabReporting').onclick = () => showView('reporting')
 
 // ------------------------------------------------------------------- boot
 

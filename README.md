@@ -138,6 +138,14 @@ Phase 5 does not change the seed accounts or their passwords.
   no filing, payment or email. The ERP at `:5174` has a Manufacturing tab.
   Contract: `docs/openapi/openapi.yaml` (`0.13.0-phase.13`); decision:
   `docs/decisions/ADR-0018-gmp-batch-records.md`.
+- **Reporting (Phase 14)** — tenant/branch-scoped report definitions, queued runs, dashboards and
+  widgets. A definition is an allow-listed `reportKey` only — no SQL, table/column names or tenant
+  fields. Collectors call the authorised module services; counts are integers, money is integer
+  cents, and missing data is reported as `dataAvailable: false` instead of fabricated zeros. Runs
+  are queued through `reporting.run` with an ID-only payload, and events/sockets carry IDs only.
+  The ERP at `:5174` has a Reporting tab.
+  Contract: `docs/openapi/openapi.yaml` (`0.14.0-phase.14`); decision:
+  `docs/decisions/ADR-0019-report-allowlist.md`.
 
 > **Rate warning:** verify statutory rates against current KRA/Government publications before
 > use — finance and HR fixture rates are `UNVERIFIED`. Sales may reference an unverified rate on a
@@ -147,7 +155,7 @@ Phase 5 does not change the seed accounts or their passwords.
 
 ### API namespaces
 
-| Namespace | Phase 5/6/7/8/9/10/11/12/13 endpoints (summary) |
+| Namespace | Phase 5/6/7/8/9/10/11/12/13/14 endpoints (summary) |
 | --- | --- |
 | `/api/files` | `POST /uploads`, `POST /uploads/:id/confirm`, `GET /?purpose&status&limit`, `GET /:id`, `GET /:id/download`, `POST /:id/versions`, `DELETE /:id`. Local fallback ticket URLs: `/local-upload/:token`, `/local-download/:token`. |
 | `/api/workflow` | `GET|POST /definitions`, `GET|POST /instances`, `GET /tasks?mine=1`, `POST /tasks/:id/decide`, `POST /tasks/:id/delegate`. |
@@ -162,8 +170,9 @@ Phase 5 does not change the seed accounts or their passwords.
 | `/api/hr` | `GET|POST /employees`, `GET|PATCH /employees/:id`, `GET|POST /contracts`, `GET /contracts/:id`, `POST /contracts/:id/{activate,expire,terminate,cancel}`, `GET|POST /rates`, `GET /rates/:id`, `POST /rates/:id/verify`, `GET|POST /leave`, `GET /leave/:id`, `POST /leave/:id/decision`, `GET|POST /attendance`, `GET /attendance/:id`, `GET|POST /payroll/runs`, `GET /payroll/runs/:id`, `POST /payroll/runs/:id/{calculate,approve,post}`. |
 | `/api/projects` | `GET|POST /`, `GET|PATCH /:id`, `POST /:id/status`, `GET|POST /:id/members`, `GET|PATCH /:id/members/:memberId`, `GET|POST /:id/milestones`, `GET /:id/milestones/:milestoneId`, `POST /:id/milestones/:milestoneId/status`, `GET|POST /:id/tasks`, `GET|PATCH /:id/tasks/:taskId`, `POST /:id/tasks/:taskId/status`, `GET|POST /:id/time`, `GET /:id/time/:timeId`, `POST /:id/time/:timeId/{decision,invoice}`, `GET /:id/budget`, `POST /:id/budget/links`. |
 | `/api/manufacturing` | `GET|POST /work-centers`, `GET|PATCH|DELETE /work-centers/:id`, `GET|POST /boms`, `GET|PATCH /boms/:id`, `POST /boms/:id/status`, `GET|POST /orders`, `GET|PATCH /orders/:id`, `POST /orders/:id/{release,start,complete,cancel}`, `GET|POST /batches`, `GET|PATCH /batches/:id`, `POST /batches/:id/{start,review,reject,issue,release}`, `GET|POST /batches/:id/qc-checks`, `GET|PATCH /qc-checks/:id`, `POST /qc-checks/:id/sign`. |
+| `/api/reporting` | `GET /report-keys`, `GET|POST /definitions`, `GET|PATCH|DELETE /definitions/:id`, `GET|POST /runs`, `GET /runs/:id`, `GET /runs/:id/job`, `GET|POST /dashboards`, `GET|PATCH /dashboards/:id`, `GET /dashboards/:id/summary`, `GET|POST /dashboards/:dashboardId/widgets`, `GET|PATCH|DELETE /widgets/:id`. |
 
-`Idempotency-Key` is required only for Phase 4 messaging sends; Phase 5, Phase 6, Phase 7, Phase 8, Phase 9, Phase 10, Phase 11, Phase 12 and Phase 13 writes do not use it.
+`Idempotency-Key` is required only for Phase 4 messaging sends; Phase 5, Phase 6, Phase 7, Phase 8, Phase 9, Phase 10, Phase 11, Phase 12, Phase 13 and Phase 14 writes do not use it.
 The `finance.etims.submit` worker queue records `PENDING` submissions for a certified provider and
 creates in-app notifications only — no live KRA filing occurs.
 
@@ -176,7 +185,7 @@ creates in-app notifications only — no live KRA filing occurs.
 | `npm run dev:api`        | Express only (watch)                                |
 | `npm run dev:erp`        | ERP shell + inbox on `:5174`                        |
 | `npm run dev:realtime`   | Socket.IO + Redis adapter on `:4001`                |
-| `npm run dev:workers`    | Outbox publisher + BullMQ workers (scans, notifications, documents, search, retention, `finance.etims.submit`) |
+| `npm run dev:workers`    | Outbox publisher + BullMQ workers (scans, notifications, documents, search, retention, `finance.etims.submit`, `reporting.run`) |
 | `npm run build`          | Production build to `packages/web/dist/`            |
 | `npm start`              | Production server (serves the web build too)        |
 | `npm run lint`           | Oxlint                                              |
@@ -228,17 +237,17 @@ packages/
   api/                Express app: index.js, lib/, routes/, tests/
   web/                Storefront: src/, public/, tests/, Vite config
   cms/                Content Studio workspace scaffold
-  erp/                Internal suite: ERP shell + messaging UI + Finance/Sales/Inventory/Procurement/Service/HR/Projects/Manufacturing tabs (public/, static server)
+  erp/                Internal suite: ERP shell + messaging UI + Finance/Sales/Inventory/Procurement/Service/HR/Projects/Manufacturing/Reporting tabs (public/, static server)
   realtime/           Socket.IO server, Redis adapter and stream relay (Phase 4)
-  workers/            Outbox publisher + BullMQ job processors (Phase 5/6)
+  workers/            Outbox publisher + BullMQ job processors (Phase 5/6/14)
 prisma/
   schema.prisma       PostgreSQL 16 schema (identity, org, messaging, shared services, finance, sales, inventory, procurement, legacy)
   migrations/         Versioned SQL + RLS/role/audit rules
   seed.js             Tenant, branches, departments, inboxes, demo data
 docs/
   architecture/       Phase 1 architecture + Phase 3 ERD
-  decisions/          ADRs (0001-0018; finance in ADR-0011, sales in ADR-0012, inventory in ADR-0013, procurement in ADR-0014, service in ADR-0015, payroll rates in ADR-0016, project budget links in ADR-0017, GMP batch records in ADR-0018)
-  openapi/            Phase 13 API contract (0.13.0-phase.13)
+  decisions/          ADRs (0001-0019; finance in ADR-0011, sales in ADR-0012, inventory in ADR-0013, procurement in ADR-0014, service in ADR-0015, payroll rates in ADR-0016, project budget links in ADR-0017, GMP batch records in ADR-0018, report allow-list in ADR-0019)
+  openapi/            Phase 14 API contract (0.14.0-phase.14)
 ```
 
 ## Production-readiness notes
@@ -260,6 +269,7 @@ This codebase is a solid foundation, not a finished compliance deliverable.
 - **HR (Phase 11)** — payroll rates must be verified against current KRA/Government publications before use. Bank and KRA-PIN values are encrypted at rest and masked in DTOs, but production still needs a reviewed key-rotation policy, ODPC data-location sign-off, and a certified filing/payment integration before any live statutory submission or bank transfer. Posting creates an internal balanced journal only.
 - **Projects (Phase 12)** — budget usage and invoice arithmetic are delegated to finance; a finance failure is returned as explicit `unavailable` metadata, never as zero or estimated totals. Invoice creation requires a VERIFIED effective VAT rate and only queues internal eTIMS work; no live filing, payment or email is performed.
 - **Manufacturing (Phase 13)** — GMP batch release is blocked by any QC FAIL, missing mandatory check, invalid GMP fields or shared reviewer/releaser identity. Deviation and result notes are encrypted but a production-grade key-rotation and retention policy is still required before real batch records are stored. Stock issue/receipt stays in the inventory ledger; no regulatory filing, label generation, payment or email is performed.
+- **Reporting (Phase 14)** — reports are allow-listed and reuse the authorised module services, with integer-cent totals and explicit unavailability metadata; no SQL, fabricated zero or external export exists. Adding a report still requires a code change and collector tests. Production needs a retention/access-review policy for report runs and dashboards before sensitive reporting is enabled.
 - **Payments** for consultations/CDMO orders aren't wired; add a provider (e.g.
   M-Pesa Daraja/Stripe) if charging clients. Phase 6 finance payments record ledger
   entries only (including `CARD_TOKEN` references) and never charge a card.

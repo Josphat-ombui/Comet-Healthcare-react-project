@@ -95,6 +95,16 @@ const MANUFACTURING_EVENT_TYPES = new Set([
   'BatchReleased',
 ])
 
+// Phase 14 reporting events are ID/classification-only company-wide
+// invalidation signals - never branch, user, thread or inbox rooms. No report
+// key, parameter, count, cent total or file ID is pushed over a socket.
+const REPORTING_EVENT_TYPES = new Set([
+  'ReportRunQueued',
+  'ReportRunCompleted',
+  'ReportRunFailed',
+  'DashboardUpdated',
+])
+
 function eventRooms(event) {
   const prefix = `company:${event.companyId}`
   const data = event.data || {}
@@ -171,6 +181,9 @@ function eventRooms(event) {
 
   // ----------------------------------------------------- phase 13 manufacturing
   if (MANUFACTURING_EVENT_TYPES.has(event.type)) return unique([prefix])
+
+  // ---------------------------------------------------------- phase 14 reporting
+  if (REPORTING_EVENT_TYPES.has(event.type)) return unique([prefix])
   return []
 }
 
@@ -235,6 +248,10 @@ function socketEventFor(type) {
     BatchRecordOpened: 'manufacturing:batch',
     QcCheckFailed: 'manufacturing:qc',
     BatchReleased: 'manufacturing:batch',
+    ReportRunQueued: 'reporting:run',
+    ReportRunCompleted: 'reporting:run',
+    ReportRunFailed: 'reporting:run',
+    DashboardUpdated: 'reporting:dashboard',
   }[type] || null
 }
 

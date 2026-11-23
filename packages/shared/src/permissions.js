@@ -175,6 +175,15 @@ export const PERMISSIONS = Object.freeze({
   'manufacturing.batch.release': 'Release GMP batch records into stock',
   'manufacturing.qc.read': 'Read QC checks',
   'manufacturing.qc.write': 'Record and sign QC checks',
+  // Phase 14 reporting. Definition/dashboard authoring is separate from
+  // executing a run; compliance may run allow-listed reports but cannot change
+  // their definitions or dashboards.
+  'reporting.definition.read': 'Read report definitions',
+  'reporting.definition.write': 'Manage report definitions',
+  'reporting.run.read': 'Read report runs and job status',
+  'reporting.run.write': 'Queue allow-listed report runs',
+  'reporting.dashboard.read': 'Read reporting dashboards and widgets',
+  'reporting.dashboard.write': 'Manage reporting dashboards and widgets',
 })
 
 export const ROLE_PERMISSIONS = Object.freeze({
@@ -318,6 +327,12 @@ export const ROLE_PERMISSIONS = Object.freeze({
     'manufacturing.batch.read',
     'manufacturing.batch.write',
     'manufacturing.qc.read',
+    'reporting.definition.read',
+    'reporting.definition.write',
+    'reporting.run.read',
+    'reporting.run.write',
+    'reporting.dashboard.read',
+    'reporting.dashboard.write',
   ],
   STAFF: [
     'messaging.inbox.read',
@@ -395,6 +410,9 @@ export const ROLE_PERMISSIONS = Object.freeze({
     'manufacturing.order.read',
     'manufacturing.batch.read',
     'manufacturing.qc.read',
+    'reporting.definition.read',
+    'reporting.run.read',
+    'reporting.dashboard.read',
   ],
   COMPLIANCE: [
     'audit.read',
@@ -463,6 +481,10 @@ export const ROLE_PERMISSIONS = Object.freeze({
     'manufacturing.batch.release',
     'manufacturing.qc.read',
     'manufacturing.qc.write',
+    'reporting.definition.read',
+    'reporting.run.read',
+    'reporting.run.write',
+    'reporting.dashboard.read',
   ],
 })
 
