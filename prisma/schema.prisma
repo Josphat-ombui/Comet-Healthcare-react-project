@@ -424,6 +424,44 @@ enum BatchStatus {
   RECALLED
 }
 
+// Phase 13 manufacturing statuses. Status transitions are enforced in the
+// service layer; QC FAIL is always terminal for a batch release decision.
+enum WorkCenterStatus {
+  ACTIVE
+  INACTIVE
+  MAINTENANCE
+}
+
+enum BomStatus {
+  DRAFT
+  APPROVED
+  OBSOLETE
+}
+
+enum ProductionOrderStatus {
+  DRAFT
+  RELEASED
+  IN_PROGRESS
+  QUALITY_HOLD
+  COMPLETED
+  CANCELLED
+}
+
+enum BatchRecordStatus {
+  OPEN
+  IN_PROGRESS
+  REVIEW
+  RELEASED
+  REJECTED
+}
+
+enum QcCheckStatus {
+  PENDING
+  REVIEW
+  PASS
+  FAIL
+}
+
 // ---------------------------------------------------------------------------
 // Organisation
 // ---------------------------------------------------------------------------
@@ -549,6 +587,14 @@ model Company {
   milestones               Milestone[]
   timeEntries              TimeEntry[]
   projectBudgetLinks       ProjectBudgetLink[]
+  // Phase 13 manufacturing
+  workCenters              WorkCenter[]
+  boms                     Bom[]
+  bomLines                 BomLine[]
+  productionOrders         ProductionOrder[]
+  productionOrderLines     ProductionOrderLine[]
+  batchRecords             BatchRecord[]
+  qcChecks                 QcCheck[]
 }
 
 model Branch {
@@ -633,6 +679,14 @@ model Branch {
   milestones               Milestone[]
   timeEntries              TimeEntry[]
   projectBudgetLinks       ProjectBudgetLink[]
+  // Phase 13 manufacturing
+  workCenters              WorkCenter[]
+  boms                     Bom[]
+  bomLines                 BomLine[]
+  productionOrders         ProductionOrder[]
+  productionOrderLines     ProductionOrderLine[]
+  batchRecords             BatchRecord[]
+  qcChecks                 QcCheck[]
 
   @@unique([companyId, code])
   @@index([companyId, isActive])
@@ -3722,4 +3776,215 @@ model ProjectBudgetLink {
 
   @@unique([projectId, budgetId])
   @@index([companyId, budgetId])
+}
+
+// ---------------------------------------------------------------------------
+// Phase 13 manufacturing
+//
+// GMP work centers, approved BOMs, production orders, batch records and QC
+// checks. Every table is tenant/branch scoped. Batch numbers, manufacturing
+// dates and expiry dates are required before release. Deviation/result notes
+// are stored encrypted and never decrypted into DTOs, events or audit logs.
+// Costs are integer cents; no statutory, tax or filing constants are stored.
+// ---------------------------------------------------------------------------
+
+model WorkCenter {
+  id                String             @id @default(cuid())
+  companyId         String             @default("cmp_comet")
+  tenant            Company            @relation(fields: [companyId], references: [id])
+  branchId          String?
+  branch            Branch?            @relation(fields: [branchId], references: [id])
+  code              String
+  name              String
+  description       String?
+  status            WorkCenterStatus   @default(ACTIVE)
+  capacityPerDay    Decimal?           @db.Decimal(14, 3)
+  classification    DataClassification @default(INTERNAL)
+  createdByUserId   String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  deletedAt         DateTime?
+
+  productionOrders ProductionOrder[]
+
+  @@unique([companyId, code])
+  @@index([companyId, branchId])
+  @@index([companyId, status])
+}
+
+model Bom {
+  id                String             @id @default(cuid())
+  companyId         String             @default("cmp_comet")
+  tenant            Company            @relation(fields: [companyId], references: [id])
+  branchId          String?
+  branch            Branch?            @relation(fields: [branchId], references: [id])
+  code              String
+  name              String
+  productItemId     String
+  version           String             @default("1")
+  status            BomStatus          @default(DRAFT)
+  standardCostCents Int                @default(0)
+  effectiveFrom     DateTime?
+  effectiveTo       DateTime?
+  approvedByUserId  String?
+  approvedAt        DateTime?
+  classification    DataClassification @default(INTERNAL)
+  createdByUserId   String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  deletedAt         DateTime?
+
+  lines             BomLine[]
+  productionOrders  ProductionOrder[]
+
+  @@unique([companyId, code])
+  @@unique([companyId, productItemId, version])
+  @@index([companyId, branchId])
+  @@index([companyId, status])
+}
+
+model BomLine {
+  id             String             @id @default(cuid())
+  companyId      String             @default("cmp_comet")
+  tenant         Company            @relation(fields: [companyId], references: [id])
+  branchId       String?
+  branch         Branch?            @relation(fields: [branchId], references: [id])
+  bomId          String
+  bom            Bom                @relation(fields: [bomId], references: [id], onDelete: Cascade)
+  itemId         String
+  quantity       Decimal            @db.Decimal(14, 3)
+  uom            String             @default("EA")
+  unitCostCents  Int                @default(0)
+  isCritical     Boolean            @default(false)
+  sequence       Int                @default(0)
+  classification DataClassification @default(INTERNAL)
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  @@unique([bomId, itemId])
+  @@index([companyId, bomId])
+}
+
+model ProductionOrder {
+  id                  String                @id @default(cuid())
+  companyId           String                @default("cmp_comet")
+  tenant              Company               @relation(fields: [companyId], references: [id])
+  branchId            String?
+  branch              Branch?               @relation(fields: [branchId], references: [id])
+  orderNumber         String
+  bomId               String
+  bom                 Bom                   @relation(fields: [bomId], references: [id])
+  workCenterId        String
+  workCenter          WorkCenter            @relation(fields: [workCenterId], references: [id])
+  productItemId       String
+  quantityPlanned     Decimal               @db.Decimal(14, 3)
+  quantityProduced    Decimal               @default(0) @db.Decimal(14, 3)
+  uom                 String                @default("EA")
+  status              ProductionOrderStatus @default(DRAFT)
+  plannedStartDate    DateTime?
+  plannedEndDate      DateTime?
+  releasedByUserId    String?
+  releasedAt          DateTime?
+  startedByUserId     String?
+  startedAt           DateTime?
+  completedByUserId   String?
+  completedAt         DateTime?
+  classification      DataClassification    @default(INTERNAL)
+  createdByUserId     String?
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+  deletedAt           DateTime?
+
+  lines               ProductionOrderLine[]
+  batches             BatchRecord[]
+
+  @@unique([companyId, orderNumber])
+  @@index([companyId, branchId])
+  @@index([companyId, status])
+  @@index([companyId, workCenterId])
+}
+
+model ProductionOrderLine {
+  id               String             @id @default(cuid())
+  companyId        String             @default("cmp_comet")
+  tenant           Company            @relation(fields: [companyId], references: [id])
+  branchId         String?
+  branch           Branch?            @relation(fields: [branchId], references: [id])
+  orderId          String
+  order            ProductionOrder    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  itemId           String
+  quantityRequired Decimal            @db.Decimal(14, 3)
+  quantityIssued   Decimal            @default(0) @db.Decimal(14, 3)
+  uom              String             @default("EA")
+  sequence         Int                @default(0)
+  classification   DataClassification @default(INTERNAL)
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  @@unique([orderId, itemId])
+  @@index([companyId, orderId])
+}
+
+model BatchRecord {
+  id                      String             @id @default(cuid())
+  companyId               String             @default("cmp_comet")
+  tenant                  Company            @relation(fields: [companyId], references: [id])
+  branchId                String?
+  branch                  Branch?            @relation(fields: [branchId], references: [id])
+  batchNumber             String
+  productionOrderId       String
+  productionOrder         ProductionOrder   @relation(fields: [productionOrderId], references: [id])
+  bomId                   String
+  productItemId           String
+  workCenterId            String?
+  inventoryBatchId        String?
+  quantityProduced        Decimal            @default(0) @db.Decimal(14, 3)
+  uom                     String             @default("EA")
+  status                  BatchRecordStatus @default(OPEN)
+  manufacturingDate       DateTime?          @db.Date
+  expiryDate              DateTime?          @db.Date
+  deviationNotesEncrypted String?
+  deviationNotesKeyId     String?
+  openedByUserId          String
+  reviewedByUserId        String?
+  reviewedAt              DateTime?
+  releasedByUserId        String?
+  releasedAt              DateTime?
+  rejectedReason          String?
+  classification          DataClassification @default(RESTRICTED)
+  createdAt               DateTime           @default(now())
+  updatedAt               DateTime           @updatedAt
+
+  qcChecks                QcCheck[]
+
+  @@unique([companyId, batchNumber])
+  @@index([companyId, productionOrderId])
+  @@index([companyId, status])
+  @@index([companyId, expiryDate])
+}
+
+model QcCheck {
+  id                    String             @id @default(cuid())
+  companyId             String             @default("cmp_comet")
+  tenant                Company            @relation(fields: [companyId], references: [id])
+  branchId              String?
+  branch                Branch?            @relation(fields: [branchId], references: [id])
+  batchId               String
+  batch                 BatchRecord        @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  checkCode             String
+  name                  String
+  isMandatory           Boolean            @default(true)
+  status                QcCheckStatus      @default(PENDING)
+  observedValue         String?
+  resultNotesEncrypted  String?
+  resultNotesKeyId      String?
+  signedByUserId        String?
+  signedAt              DateTime?
+  classification        DataClassification @default(CONFIDENTIAL)
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  @@unique([batchId, checkCode])
+  @@index([companyId, batchId])
+  @@index([companyId, status])
 }

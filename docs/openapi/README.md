@@ -1,6 +1,6 @@
 # OpenAPI Contract
 
-Comet Healthcare Enterprise Platform — Phase 12 contract complete (`0.12.0-phase.12`)
+Comet Healthcare Enterprise Platform — Phase 13 contract complete (`0.13.0-phase.13`)
 
 This directory holds the versioned REST and webhook contracts. Phase 1 created the skeleton;
 Phase 3 added identity/organisation/audit, Phase 4 added messaging and realtime, Phase 5
@@ -8,7 +8,8 @@ completed the shared-services surface (files, workflow, notifications, search, d
 Phase 6 added the tenant/branch-scoped finance surface under `/api/finance`, Phase 7 added
 the sales lifecycle under `/api/sales`, Phase 8 added inventory under `/api/inventory`,
 Phase 9 added procurement under `/api/procurement`, Phase 10 added service under `/api/service`,
-Phase 11 added HR under `/api/hr`, and Phase 12 adds projects under `/api/projects`.
+Phase 11 added HR under `/api/hr`, Phase 12 added projects under `/api/projects`, and Phase 13
+adds GMP manufacturing under `/api/manufacturing`.
 
 ## Files
 
@@ -35,6 +36,36 @@ Phase 11 added HR under `/api/hr`, and Phase 12 adds projects under `/api/projec
 - Response envelopes follow the implementation: named collections such as `files`,
   `definitions`, `instances`, `tasks`, `notifications` and `preferences` are used rather than a
   generic `items` key. `GET /api/search` and `GET /api/documents` use `items` as before.
+
+## Phase 13 scope
+
+- `Manufacturing` tag paths (21 paths / 32 operations): `/api/manufacturing/work-centers`
+  (list/create/get/patch/delete), `/boms` (list/create/get/patch) with `/{id}/status`, `/orders`
+  (list/create/get/patch) with `/{id}/{release,start,complete,cancel}`, `/batches`
+  (list/create/get/patch) with `/{id}/{start,review,reject,issue,release}`, and
+  `/batches/{id}/qc-checks` (list/create) plus `/qc-checks/{id}` (get/patch/sign).
+- All Phase 3–12 paths and schemas remain intact. Every operation declares
+  `security: [{ bearerAuth: [] }]` and an `x-permission` from the 15-entry `manufacturing.*` set.
+  Strict request schemas reject client-supplied `companyId`, statuses, signatures, computed costs
+  and calculated columns; free text is DLP-checked and fails closed.
+- BOM standard cost and per-line cost are computed server-side from integer milli-units with a
+  single half-up rounding at the cent boundary. Quantities accept at most three decimals; all money
+  is safe integer cents. No statutory, tax or filing constant is present.
+- Batch number, manufacturing date and expiry date are mandatory GMP fields. Signatures are
+  authenticated user IDs only. Deviation notes and QC result notes are encrypted at rest and appear
+  only as `deviationNotesPresent`/`resultNotesPresent` booleans in DTOs, audits and events.
+- Release requires REVIEW status, all GMP fields and signatures, at least one mandatory QC check and
+  every check PASS. A FAIL blocks release; the QA reviewer cannot be the releaser, and production
+  users cannot release their own batch. Material issue and finished-goods receipt delegate to the
+  Phase 8 inventory helpers (`issueStock`, `createBatch`, `receiveStock`); no filing, payment or
+  email is performed. See ADR-0018.
+- Domain events are `BomApproved`, `ProductionOrderReleased`, `BatchRecordOpened`, `QcCheckFailed`
+  and `BatchReleased`. Socket events are `manufacturing:bom`, `manufacturing:order`,
+  `manufacturing:batch` and `manufacturing:qc`. Frames carry IDs/classification only and are routed
+  to the company room only — never user, thread, inbox or branch rooms. Clients refetch through
+  `/api/manufacturing`; see `x-realtime`.
+- `Idempotency-Key` remains scoped to `POST /api/messaging/threads/{id}/messages` only; no
+  `/api/manufacturing` endpoint consumes it.
 
 ## Phase 12 scope
 
@@ -259,6 +290,9 @@ Phase 11 added HR under `/api/hr`, and Phase 12 adds projects under `/api/projec
 16. Phase 12 projects frames are ID/classification-only invalidation signals routed to the company
     room. Adding project names, task titles, milestone dates, hours, rates, amounts, statuses,
     notes or finance references is a contract violation.
+17. Phase 13 manufacturing frames are ID/classification-only invalidation signals routed to the
+    company room. Adding batch numbers, GMP dates, quantities, costs, check codes, observed values,
+    statuses, notes, user names or inventory movement details is a contract violation.
 
 ## Security schemes
 
@@ -279,10 +313,11 @@ Phase 11 added HR under `/api/hr`, and Phase 12 adds projects under `/api/projec
    ```
 
    An OpenAPI-aware linter (for example `npx @redocly/cli lint docs/openapi/openapi.yaml`) is
-   optional when network access to the generator is available. At the Phase 12 gate the parsed
-   document has version `0.12.0-phase.12`, 213 paths (17 under `/api/projects`) and 245 schemas.
-   At the Phase 11 gate it had version `0.11.0-phase.11`, 196 paths (21 under `/api/hr`) and 203
-   schemas.
+   optional when network access to the generator is available. At the Phase 13 gate the parsed
+   document has version `0.13.0-phase.13`, 234 paths (21 under `/api/manufacturing`) and 293
+   schemas. At the Phase 12 gate it had version `0.12.0-phase.12`, 213 paths (17 under
+   `/api/projects`) and 245 schemas. At the Phase 11 gate it had version `0.11.0-phase.11`,
+   196 paths (21 under `/api/hr`) and 203 schemas.
    At the Phase 10 gate it had version `0.10.0-phase.10`, 175 paths and 179 schemas; at the Phase 9
    gate, 148 paths and 145 schemas; at the Phase 8 gate, 130 paths and 114 schemas.
 4. Confirm all `$ref` targets resolve and that no Phase 3/4/5/6/7/8/9/10 path was removed. A local check:
@@ -320,7 +355,10 @@ Phase 11 added HR under `/api/hr`, and Phase 12 adds projects under `/api/projec
     integer-cent payroll math, masked/encrypted DTOs, strict ID-only events and tenant scope;
     Phase 12 projects tests (20) cover lifecycle guards, cent/hours math, DLP, strict ID-only
     events, permission separation, finance delegation/unavailable metadata and tenant scope.
-    At the Phase 12 gate 842 refs resolve; at the Phase 11 gate 721 refs resolved.
+    Phase 13 manufacturing tests (21) cover cent math, lifecycle/QC release guards, GMP fields,
+    encrypted notes, strict ID-only events, permission separation, DTO safety and tenant scope.
+    At the Phase 13 gate 971 refs resolve; at the Phase 12 gate 842 refs resolved, and at the
+    Phase 11 gate 721 refs resolved.
 
 ## Phase gate requirement
 

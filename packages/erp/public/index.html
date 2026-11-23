@@ -47,6 +47,8 @@
         <button id="tabProcurement" class="tab" type="button">Procurement</button>
         <button id="tabService" class="tab" type="button">Service</button>
         <button id="tabHr" class="tab" type="button">HR</button>
+        <button id="tabProjects" class="tab" type="button">Projects</button>
+        <button id="tabManufacturing" class="tab" type="button">Manufacturing</button>
         <span id="connection" class="pill connection" aria-live="polite">Connecting…</span>
       </nav>
 
@@ -1470,6 +1472,125 @@
               <div class="form-actions"><button type="submit">Link budget</button><span id="projectBudgetStatusText" class="muted" aria-live="polite"></span></div>
             </form>
             <pre id="projectBudgetUsage" class="finance-payload" aria-live="polite">Select a project to load finance-owned budget usage.</pre>
+          </section>
+        </div>
+      </section>
+
+      <section id="manufacturingView" hidden>
+        <p class="finance-banner" role="note">Manufacturing records are company/branch scoped. GMP batch numbers, manufacturing and expiry dates and user-ID signatures are mandatory before release. Deviation and QC notes are encrypted and never displayed. QC failures block batch release. Socket frames carry IDs/classification only — every value below is refetched through the authenticated API.</p>
+        <p id="manufacturingError" class="error" role="alert"></p>
+        <p id="manufacturingActionStatus" class="muted" aria-live="polite"></p>
+        <div class="grid">
+          <section class="card span-2">
+            <div class="card-head"><h2>Work centers</h2><button id="refreshManufacturing" class="link" type="button">Refresh all</button></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Code</th><th>Name</th><th>Status</th><th>Capacity/day</th><th>Actions</th></tr></thead>
+                <tbody id="manufacturingWorkCenterRows"></tbody>
+              </table>
+            </div>
+            <form id="manufacturingWorkCenterForm">
+              <div class="field-row finance-field-row">
+                <label>Code (optional)<input id="manufacturingWorkCenterCode" maxlength="60" pattern="[A-Za-z0-9_-]+" /></label>
+                <label>Name<input id="manufacturingWorkCenterName" required maxlength="160" /></label>
+                <label>Status
+                  <select id="manufacturingWorkCenterStatus">
+                    <option value="ACTIVE" selected>Active</option><option value="MAINTENANCE">Maintenance</option><option value="INACTIVE">Inactive</option>
+                  </select>
+                </label>
+                <label>Capacity/day<input id="manufacturingWorkCenterCapacity" type="number" min="0.001" max="1000000" step="0.001" /></label>
+              </div>
+              <div class="form-actions"><button type="submit">Create work center</button></div>
+            </form>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Bills of materials</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Code</th><th>Product</th><th>Version</th><th>Status</th><th>Standard cost (cents)</th><th>Actions</th></tr></thead>
+                <tbody id="manufacturingBomRows"></tbody>
+              </table>
+            </div>
+            <form id="manufacturingBomForm">
+              <div class="field-row finance-field-row">
+                <label>Code (optional)<input id="manufacturingBomCode" maxlength="60" pattern="[A-Za-z0-9_-]+" /></label>
+                <label>Name<input id="manufacturingBomName" required maxlength="160" /></label>
+                <label>Output item<select id="manufacturingBomProduct" required></select></label>
+                <label>Version<input id="manufacturingBomVersion" value="1" maxlength="60" required /></label>
+              </div>
+              <div class="field-row finance-field-row">
+                <label>Component item<select id="manufacturingBomItem" required></select></label>
+                <label>Quantity<input id="manufacturingBomQuantity" type="number" min="0.001" max="1000000" step="0.001" value="1" required /></label>
+                <label>Unit cost (cents)<input id="manufacturingBomUnitCost" type="number" min="0" step="1" value="0" required /></label>
+              </div>
+              <div class="form-actions"><button type="submit">Create draft BOM</button><span class="muted">Standard cost is computed from the line.</span></div>
+            </form>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Production orders</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Product</th><th>Planned</th><th>Status</th><th>Actions</th></tr></thead>
+                <tbody id="manufacturingOrderRows"></tbody>
+              </table>
+            </div>
+            <form id="manufacturingOrderForm">
+              <div class="field-row finance-field-row">
+                <label>Number (optional)<input id="manufacturingOrderNumber" maxlength="60" pattern="[A-Za-z0-9_-]+" /></label>
+                <label>Approved BOM<select id="manufacturingOrderBom" required></select></label>
+                <label>Work center<select id="manufacturingOrderWorkCenter" required></select></label>
+                <label>Quantity<input id="manufacturingOrderQuantity" type="number" min="0.001" max="1000000" step="0.001" value="100" required /></label>
+              </div>
+              <div class="form-actions"><button type="submit">Create draft order</button></div>
+            </form>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>GMP batch records</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Batch</th><th>Order</th><th>Manufactured</th><th>Expiry</th><th>Status</th><th>Notes</th><th>Actions</th></tr></thead>
+                <tbody id="manufacturingBatchRows"></tbody>
+              </table>
+            </div>
+            <form id="manufacturingBatchForm">
+              <div class="field-row finance-field-row">
+                <label>Batch number<input id="manufacturingBatchNumber" maxlength="60" pattern="[A-Za-z0-9_-]+" required /></label>
+                <label>Production order<select id="manufacturingBatchOrder" required></select></label>
+                <label>Quantity produced<input id="manufacturingBatchQuantity" type="number" min="0.001" max="1000000" step="0.001" value="100" required /></label>
+              </div>
+              <div class="field-row finance-field-row">
+                <label>Manufacturing date<input id="manufacturingBatchMade" type="date" required /></label>
+                <label>Expiry date<input id="manufacturingBatchExpiry" type="date" required /></label>
+                <label>Deviation notes (encrypted)<textarea id="manufacturingBatchNotes" rows="2" maxlength="1000"></textarea></label>
+              </div>
+              <div class="form-actions"><button type="submit">Open batch record</button></div>
+            </form>
+            <div class="field-row finance-field-row">
+              <label>Release warehouse<select id="manufacturingReleaseWarehouse"></select></label>
+              <label>Unit cost (cents, optional)<input id="manufacturingReleaseCost" type="number" min="0" step="1" placeholder="Uses BOM standard cost" /></label>
+            </div>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>QC checks</h2><label>Batch<select id="manufacturingQcBatch"><option value="">Select batch</option></select></label></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Code</th><th>Name</th><th>Mandatory</th><th>Status</th><th>Signed by</th><th>Actions</th></tr></thead>
+                <tbody id="manufacturingQcRows"></tbody>
+              </table>
+            </div>
+            <form id="manufacturingQcForm">
+              <div class="field-row finance-field-row">
+                <label>Batch<select id="manufacturingQcCreateBatch" required></select></label>
+                <label>Check code<input id="manufacturingQcCode" maxlength="60" pattern="[A-Za-z0-9_-]+" required /></label>
+                <label>Name<input id="manufacturingQcName" maxlength="160" required /></label>
+                <label class="inline-check"><input id="manufacturingQcMandatory" type="checkbox" checked /> Mandatory</label>
+              </div>
+              <div class="form-actions"><button type="submit">Add QC check</button></div>
+            </form>
           </section>
         </div>
       </section>

@@ -1370,6 +1370,104 @@ async function main() {
   })
   console.log('✓ Seeded PLANNED project with PLANNED milestone and TODO task fixtures')
 
+  // -------------------------------------------------------------- phase 13
+  // Manufacturing fixtures are cmp_comet-only and idempotent. The BOM is
+  // APPROVED with an explicit QA approver identifier; the production order
+  // stays DRAFT. No batch, QC result or stock movement is implied by a fixture.
+  const finishedItem = await prisma.inventoryItem.upsert({
+    where: { companyId_code: { companyId, code: 'itm_metformin_500mg_fg' } },
+    update: {},
+    create: {
+      companyId,
+      code: 'itm_metformin_500mg_fg',
+      name: 'Metformin HCl 500mg Tablets',
+      type: 'FINISHED_GOOD',
+      unit: 'EA',
+      standardCostCents: 3750,
+      reorderLevel: 1000,
+      trackBatches: true,
+      isActive: true,
+      description: 'Manufacturing phase 13 fixture — finished batch-tracked tablets.',
+      classification: 'INTERNAL',
+      createdById: admin.id,
+    },
+  })
+
+  const workCenterFixture = await prisma.workCenter.upsert({
+    where: { companyId_code: { companyId, code: 'WC-001' } },
+    update: {},
+    create: {
+      companyId,
+      code: 'WC-001',
+      name: 'Tablet Compression Line 1',
+      description: 'Fixture work center for manufacturing lifecycle tests.',
+      status: 'ACTIVE',
+      capacityPerDay: 5000,
+      classification: 'INTERNAL',
+      createdByUserId: admin.id,
+    },
+  })
+
+  const bomFixture = await prisma.bom.upsert({
+    where: { companyId_code: { companyId, code: 'BOM-2026-F001' } },
+    update: {},
+    create: {
+      companyId,
+      code: 'BOM-2026-F001',
+      name: 'Metformin 500mg BOM',
+      productItemId: finishedItem.id,
+      version: '1',
+      status: 'APPROVED',
+      standardCostCents: 3750,
+      effectiveFrom: new Date('2026-01-01T00:00:00.000Z'),
+      approvedByUserId: admin.id,
+      approvedAt: new Date('2026-01-02T00:00:00.000Z'),
+      classification: 'INTERNAL',
+      createdByUserId: null,
+    },
+  })
+
+  for (const line of [
+    { itemId: apiItem.id, quantity: 1, unitCostCents: 1250, sequence: 0 },
+    { itemId: foilItem.id, quantity: 10, unitCostCents: 250, sequence: 1 },
+  ]) {
+    await prisma.bomLine.upsert({
+      where: { bomId_itemId: { bomId: bomFixture.id, itemId: line.itemId } },
+      update: {},
+      create: {
+        companyId,
+        bomId: bomFixture.id,
+        itemId: line.itemId,
+        quantity: line.quantity,
+        uom: line.itemId === apiItem.id ? 'KG' : 'EA',
+        unitCostCents: line.unitCostCents,
+        isCritical: line.itemId === apiItem.id,
+        sequence: line.sequence,
+        classification: 'INTERNAL',
+      },
+    })
+  }
+
+  await prisma.productionOrder.upsert({
+    where: { companyId_orderNumber: { companyId, orderNumber: 'PO-2026-F001' } },
+    update: {},
+    create: {
+      companyId,
+      orderNumber: 'PO-2026-F001',
+      bomId: bomFixture.id,
+      workCenterId: workCenterFixture.id,
+      productItemId: finishedItem.id,
+      quantityPlanned: 100,
+      uom: 'EA',
+      status: 'DRAFT',
+      plannedStartDate: new Date('2026-02-01T00:00:00.000Z'),
+      plannedEndDate: new Date('2026-02-05T00:00:00.000Z'),
+      classification: 'INTERNAL',
+      createdByUserId: null,
+    },
+  })
+  console.log('✓ Seeded active work center, approved BOM and DRAFT production order fixtures')
+
   console.log('\nSeed complete ✔')
 }
 

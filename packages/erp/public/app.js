@@ -1,7 +1,7 @@
 // ERP shell: identity, directory, messaging, platform views (notifications,
 // files, workflow, search, documents), Phase 6 finance, Phase 7 sales,
 // Phase 8 inventory, Phase 9 procurement, Phase 10 service, Phase 11 HR and
-// Phase 12 projects. Uses the same JSON API as the
+// Phase 12 projects and Phase 13 manufacturing. Uses the same JSON API as the
 // storefront; no external dependencies. The Socket.IO client is served by the
 // realtime service itself, and the inbox falls back to authenticated polling
 // when sockets are unavailable.
@@ -11,7 +11,7 @@ const API_ORIGIN = API.replace(/\/api\/?$/, '')
 const REALTIME = window.ERP_REALTIME_URL || 'http://localhost:4001'
 const POLL_MS = 6000
 const QUEUE_KEY = 'comet_erp_message_queue'
-const VIEWS = ['inbox', 'directory', 'notifications', 'files', 'workflow', 'search', 'documents', 'finance', 'sales', 'inventory', 'procurement', 'service', 'hr', 'projects']
+const VIEWS = ['inbox', 'directory', 'notifications', 'files', 'workflow', 'search', 'documents', 'finance', 'sales', 'inventory', 'procurement', 'service', 'hr', 'projects', 'manufacturing']
 const FINANCE_EVENTS = [
   'finance:account', 'finance:journal', 'finance:invoice', 'finance:payment',
   'finance:budget', 'finance:rate', 'finance:etims', 'finance:etims-failed',
@@ -47,6 +47,11 @@ const HR_EVENTS = [
 // amounts and budget totals always come from the authenticated projects API.
 const PROJECT_EVENTS = [
   'projects:project', 'projects:task', 'projects:milestone', 'projects:time',
+]
+// Manufacturing socket frames carry IDs/classification only. GMP values are
+// always refetched through the authenticated manufacturing API.
+const MANUFACTURING_EVENTS = [
+  'manufacturing:bom', 'manufacturing:order', 'manufacturing:batch', 'manufacturing:qc',
 ]
 const $ = (id) => document.getElementById(id)
 
@@ -125,6 +130,13 @@ const state = {
   projectFinanceBudgets: [],
   projectBudget: null,
   selectedProjectId: null,
+  manufacturingWorkCenters: [],
+  manufacturingBoms: [],
+  manufacturingOrders: [],
+  manufacturingBatches: [],
+  manufacturingQcChecks: [],
+  manufacturingItems: [],
+  manufacturingWarehouses: [],
 }
 let financeRefreshTimer = null
 let salesRefreshTimer = null
@@ -133,6 +145,7 @@ let procurementRefreshTimer = null
 let serviceRefreshTimer = null
 let hrRefreshTimer = null
 let projectsRefreshTimer = null
+let manufacturingRefreshTimer = null
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -3911,7 +3924,282 @@ function connectRealtime() {
     for (const event of HR_EVENTS) socket.on(event, onHrEvent)
     // Phase 12 projects events are ID/classification-only company-room signals.
     for (const event of PROJECT_EVENTS) socket.on(event, onProjectEvent)
+    for (const event of MANUFACTURING_EVENTS) socket.on(event, onManufacturingEvent)
   })
+}
+
+// --------------------------------------------------------- phase 13 manufacturing
+
+function manufacturingOptional(id) {
+  const value = $(id)?.value.trim()
+  return value || undefined
+}
+
+function manufacturingDay(id) {
+  return manufacturingOptional(id) || null
+}
+
+function manufacturingStatus(value) {
+  const text = String(value ?? '—')
+  const key = text.toLowerCase().replace(/[^a-z]/g, '')
+  const known = [
+    'active', 'inactive', 'maintenance', 'draft', 'approved', 'obsolete',
+    'released', 'inprogress', 'qualityhold', 'completed', 'cancelled',
+    'open', 'review', 'rejected', 'pending', 'fail', 'pass',
+  ]
+  return known.includes(key) ? `<span class="pill status-${escapeHtml(key)}">${escapeHtml(text)}</span>` : escapeHtml(text)
+}
+
+function fillManufacturingSelect(id, rows, label, { empty = '', selected = '' } = {}) {
+  const element = $(id)
+  if (!element) return
+  element.innerHTML = `${empty ? `<option value="">${escapeHtml(empty)}</option>` : ''}${rows.map((row) => (
+    `<option value="${escapeHtml(row.id)}">${escapeHtml(label(row))}</option>`
+  )).join('')}`
+  if (selected) element.value = selected
+}
+
+async function manufacturingMutation(path, body, method = 'POST') {
+  setError('manufacturingError', '')
+  try {
+    await request(`/manufacturing${path}`, {
+      method,
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    })
+    const status = $('manufacturingActionStatus')
+    if (status) status.textContent = 'Manufacturing API updated the record.'
+    await loadManufacturing()
+    return true
+  } catch (error) {
+    setError('manufacturingError', error.message || 'Manufacturing request failed')
+    return false
+  }
+}
+
+async function loadManufacturing() {
+  if (!token) return
+  setError('manufacturingError', '')
+  const results = await Promise.allSettled([
+    request('/manufacturing/work-centers?limit=200'),
+    request('/manufacturing/boms?limit=200'),
+    request('/manufacturing/orders?limit=200'),
+    request('/manufacturing/batches?limit=200'),
+    request('/inventory/items?limit=200'),
+    request('/inventory/warehouses?limit=200'),
+  ])
+  const failures = []
+  const assign = (result, key, label) => {
+    if (result.status === 'fulfilled') state[key] = financeList(result.value, label)
+    else {
+      state[key] = []
+      failures.push(`${label}: ${result.reason?.message || 'unavailable'}`)
+    }
+  }
+  assign(results[0], 'manufacturingWorkCenters', 'workCenters')
+  assign(results[1], 'manufacturingBoms', 'boms')
+  assign(results[2], 'manufacturingOrders', 'orders')
+  assign(results[3], 'manufacturingBatches', 'batches')
+  assign(results[4], 'manufacturingItems', 'items')
+  assign(results[5], 'manufacturingWarehouses', 'warehouses')
+
+  const batch = state.manufacturingBatches.find((row) => row.id === state.manufacturingSelectedBatchId)
+    || state.manufacturingBatches[0] || null
+  state.manufacturingSelectedBatchId = batch?.id || null
+  state.manufacturingQcChecks = []
+  if (batch) {
+    const qc = await request(`/manufacturing/batches/${encodeURIComponent(batch.id)}/qc-checks?limit=200`)
+      .catch(() => ({ qcChecks: [] }))
+    state.manufacturingQcChecks = financeList(qc, 'qcChecks')
+  }
+  renderManufacturing()
+  if (failures.length) setError('manufacturingError', failures.join(' · '))
+}
+
+function renderManufacturing() {
+  const itemLabel = (row) => `${row.code} — ${row.name}`
+  const ordersById = new Map(state.manufacturingOrders.map((row) => [row.id, row]))
+  const bomsById = new Map(state.manufacturingBoms.map((row) => [row.id, row]))
+
+  $('manufacturingWorkCenterRows').innerHTML = state.manufacturingWorkCenters.map((row) => (
+    `<tr><td>${escapeHtml(row.code)}</td><td>${escapeHtml(row.name)}</td><td>${manufacturingStatus(row.status)}</td>
+      <td>${escapeHtml(row.capacityPerDay ?? '—')}</td>
+      <td><button class="link" type="button" data-action="wc-delete" data-id="${escapeHtml(row.id)}">Delete</button></td></tr>`
+  )).join('') || '<tr><td colspan="5" class="muted">No work centers yet.</td></tr>'
+
+  $('manufacturingBomRows').innerHTML = state.manufacturingBoms.map((row) => (
+    `<tr><td>${escapeHtml(row.code)}</td><td>${escapeHtml(row.productItemId)}</td><td>${escapeHtml(row.version)}</td>
+      <td>${manufacturingStatus(row.status)}</td><td>${escapeHtml(row.standardCostCents)}</td>
+      <td>${row.status === 'DRAFT'
+        ? `<button class="link" type="button" data-action="bom-approve" data-id="${escapeHtml(row.id)}">Approve</button>`
+        : '—'}</td></tr>`
+  )).join('') || '<tr><td colspan="6" class="muted">No BOMs yet.</td></tr>'
+
+  $('manufacturingOrderRows').innerHTML = state.manufacturingOrders.map((row) => {
+    const actions = []
+    if (row.status === 'DRAFT') actions.push(`<button class="link" type="button" data-action="order-release" data-id="${escapeHtml(row.id)}">Release</button>`)
+    if (row.status === 'RELEASED') actions.push(`<button class="link" type="button" data-action="order-start" data-id="${escapeHtml(row.id)}">Start</button>`)
+    if (row.status === 'IN_PROGRESS' || row.status === 'QUALITY_HOLD') actions.push(`<button class="link" type="button" data-action="order-complete" data-id="${escapeHtml(row.id)}">Complete</button>`)
+    return `<tr><td>${escapeHtml(row.orderNumber)}</td><td>${escapeHtml(row.productItemId)}</td>
+      <td>${escapeHtml(row.quantityPlanned)}</td><td>${manufacturingStatus(row.status)}</td>
+      <td>${actions.join(' ') || '—'}</td></tr>`
+  }).join('') || '<tr><td colspan="5" class="muted">No production orders yet.</td></tr>'
+
+  $('manufacturingBatchRows').innerHTML = state.manufacturingBatches.map((row) => {
+    const actions = []
+    if (row.status === 'OPEN') actions.push(`<button class="link" type="button" data-action="batch-start" data-id="${escapeHtml(row.id)}">Start</button>`)
+    if (row.status === 'IN_PROGRESS') actions.push(`<button class="link" type="button" data-action="batch-review" data-id="${escapeHtml(row.id)}">Review</button>`)
+    if (row.status === 'REVIEW') actions.push(`<button class="link" type="button" data-action="batch-release" data-id="${escapeHtml(row.id)}">Release</button>`)
+    return `<tr><td>${escapeHtml(row.batchNumber)}</td><td>${escapeHtml(ordersById.get(row.productionOrderId)?.orderNumber || row.productionOrderId)}</td>
+      <td>${escapeHtml(row.manufacturingDate || '—')}</td><td>${escapeHtml(row.expiryDate || '—')}</td>
+      <td>${manufacturingStatus(row.status)}</td><td>${row.deviationNotesPresent ? 'Encrypted' : '—'}</td>
+      <td>${actions.join(' ') || '—'}</td></tr>`
+  }).join('') || '<tr><td colspan="7" class="muted">No batch records yet.</td></tr>'
+
+  $('manufacturingQcRows').innerHTML = state.manufacturingQcChecks.map((row) => {
+    const actions = ['PENDING', 'REVIEW'].includes(row.status)
+      ? `<button class="link" type="button" data-action="qc-pass" data-id="${escapeHtml(row.id)}">Pass</button>
+         <button class="link" type="button" data-action="qc-fail" data-id="${escapeHtml(row.id)}">Fail</button>`
+      : '—'
+    return `<tr><td>${escapeHtml(row.checkCode)}</td><td>${escapeHtml(row.name)}</td>
+      <td>${row.isMandatory ? 'Yes' : 'No'}</td><td>${manufacturingStatus(row.status)}</td>
+      <td>${escapeHtml(row.signedByUserId || '—')}</td><td>${actions}</td></tr>`
+  }).join('') || '<tr><td colspan="6" class="muted">No QC checks for this batch.</td></tr>'
+
+  fillManufacturingSelect('manufacturingBomProduct', state.manufacturingItems, itemLabel)
+  fillManufacturingSelect('manufacturingBomItem', state.manufacturingItems, itemLabel)
+  fillManufacturingSelect('manufacturingOrderBom', state.manufacturingBoms.filter((row) => row.status === 'APPROVED'),
+    (row) => `${row.code} — ${bomsById.get(row.id)?.productItemId || row.productItemId}`)
+  fillManufacturingSelect('manufacturingOrderWorkCenter', state.manufacturingWorkCenters.filter((row) => row.status === 'ACTIVE'), itemLabel)
+  fillManufacturingSelect('manufacturingBatchOrder', state.manufacturingOrders.filter((row) => ['RELEASED', 'IN_PROGRESS'].includes(row.status)),
+    (row) => `${row.orderNumber} — ${row.productItemId}`)
+  fillManufacturingSelect('manufacturingQcCreateBatch', state.manufacturingBatches.filter((row) => ['OPEN', 'IN_PROGRESS'].includes(row.status)),
+    (row) => row.batchNumber)
+  fillManufacturingSelect('manufacturingReleaseWarehouse', state.manufacturingWarehouses, itemLabel)
+  fillManufacturingSelect('manufacturingQcBatch', state.manufacturingBatches, (row) => row.batchNumber,
+    { empty: 'Select batch', selected: state.manufacturingSelectedBatchId || '' })
+}
+
+async function runManufacturingAction(action, id) {
+  const enc = encodeURIComponent(id)
+  const warehouseId = manufacturingOptional('manufacturingReleaseWarehouse')
+  const costText = $('manufacturingReleaseCost')?.value.trim()
+  const bodies = {
+    'wc-delete': undefined,
+    'bom-approve': { status: 'APPROVED' },
+    'order-release': undefined,
+    'order-start': undefined,
+    'order-complete': undefined,
+    'batch-start': undefined,
+    'batch-review': undefined,
+    'batch-release': {
+      ...(warehouseId ? { warehouseId } : {}),
+      ...(costText ? { unitCostCents: Number(costText) } : {}),
+    },
+    'qc-pass': { decision: 'PASS' },
+    'qc-fail': { decision: 'FAIL' },
+  }
+  const paths = {
+    'wc-delete': `/work-centers/${enc}`,
+    'bom-approve': `/boms/${enc}/status`,
+    'order-release': `/orders/${enc}/release`,
+    'order-start': `/orders/${enc}/start`,
+    'order-complete': `/orders/${enc}/complete`,
+    'batch-start': `/batches/${enc}/start`,
+    'batch-review': `/batches/${enc}/review`,
+    'batch-release': `/batches/${enc}/release`,
+    'qc-pass': `/qc-checks/${enc}/sign`,
+    'qc-fail': `/qc-checks/${enc}/sign`,
+  }
+  if (!paths[action]) return false
+  return manufacturingMutation(paths[action], bodies[action], action === 'wc-delete' ? 'DELETE' : 'POST')
+}
+
+function onManufacturingEvent() {
+  // Manufacturing frames carry IDs/classification only. Never treat a frame as
+  // content — reload every record through the authenticated API instead.
+  if (state.view !== 'manufacturing') return
+  if (manufacturingRefreshTimer) clearTimeout(manufacturingRefreshTimer)
+  manufacturingRefreshTimer = setTimeout(() => {
+    manufacturingRefreshTimer = null
+    loadManufacturing()
+  }, 250)
+}
+
+$('refreshManufacturing').onclick = () => loadManufacturing()
+$('manufacturingQcBatch').onchange = (event) => {
+  state.manufacturingSelectedBatchId = event.target.value || null
+  loadManufacturing()
+}
+$('manufacturingView').onclick = (event) => {
+  const button = event.target.closest('button[data-action]')
+  if (button) runManufacturingAction(button.dataset.action, button.dataset.id)
+}
+
+$('manufacturingWorkCenterForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const body = { name: $('manufacturingWorkCenterName').value }
+  const code = manufacturingOptional('manufacturingWorkCenterCode')
+  if (code) body.code = code
+  body.status = $('manufacturingWorkCenterStatus').value
+  const capacity = $('manufacturingWorkCenterCapacity').value.trim()
+  if (capacity) body.capacityPerDay = Number(capacity)
+  await manufacturingMutation('/work-centers', body)
+}
+
+$('manufacturingBomForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const body = {
+    name: $('manufacturingBomName').value,
+    productItemId: $('manufacturingBomProduct').value,
+    version: $('manufacturingBomVersion').value,
+    lines: [{
+      itemId: $('manufacturingBomItem').value,
+      quantity: Number($('manufacturingBomQuantity').value),
+      unitCostCents: Number($('manufacturingBomUnitCost').value),
+    }],
+  }
+  const code = manufacturingOptional('manufacturingBomCode')
+  if (code) body.code = code
+  await manufacturingMutation('/boms', body)
+}
+
+$('manufacturingOrderForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const bomId = $('manufacturingOrderBom').value
+  const bom = state.manufacturingBoms.find((row) => row.id === bomId)
+  if (!bom) return
+  const body = {
+    bomId,
+    workCenterId: $('manufacturingOrderWorkCenter').value,
+    productItemId: bom.productItemId,
+    quantityPlanned: Number($('manufacturingOrderQuantity').value),
+  }
+  const number = manufacturingOptional('manufacturingOrderNumber')
+  if (number) body.orderNumber = number
+  await manufacturingMutation('/orders', body)
+}
+
+$('manufacturingBatchForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const body = {
+    batchNumber: $('manufacturingBatchNumber').value,
+    productionOrderId: $('manufacturingBatchOrder').value,
+    quantityProduced: Number($('manufacturingBatchQuantity').value),
+    manufacturingDate: manufacturingDay('manufacturingBatchMade'),
+    expiryDate: manufacturingDay('manufacturingBatchExpiry'),
+    deviationNotes: $('manufacturingBatchNotes').value,
+  }
+  await manufacturingMutation('/batches', body)
+}
+
+$('manufacturingQcForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const body = {
+    checkCode: $('manufacturingQcCode').value,
+    name: $('manufacturingQcName').value,
+    isMandatory: $('manufacturingQcMandatory').checked,
+  }
+  await manufacturingMutation(`/batches/${encodeURIComponent($('manufacturingQcCreateBatch').value)}/qc-checks`, body)
 }
 
 window.addEventListener('online', () => {
@@ -3945,6 +4233,7 @@ function showView(view) {
   else if (view === 'service') loadService()
   else if (view === 'hr') loadHr()
   else if (view === 'projects') loadProjects()
+  else if (view === 'manufacturing') loadManufacturing()
 }
 
 $('tabInbox').onclick = () => showView('inbox')
@@ -3961,6 +4250,7 @@ $('tabProcurement').onclick = () => showView('procurement')
 $('tabService').onclick = () => showView('service')
 $('tabHr').onclick = () => showView('hr')
 $('tabProjects').onclick = () => showView('projects')
+$('tabManufacturing').onclick = () => showView('manufacturing')
 
 // ------------------------------------------------------------------- boot
 

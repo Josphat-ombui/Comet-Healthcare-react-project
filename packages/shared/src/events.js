@@ -473,6 +473,47 @@ export const TimeEntryApprovedDataSchema = ProjectEntityRefSchema.extend({
   classification: ClassificationSchema,
 }).strict()
 
+// Phase 13 manufacturing events are strict ID/classification-only invalidation
+// signals. Batch numbers, manufacturing/expiry dates, deviation notes, QC
+// observations, quantities, costs and user signatures never enter events.
+const ManufacturingEntityRefSchema = z.object({
+  entityType: z.enum(['BOM', 'PRODUCTION_ORDER', 'BATCH_RECORD', 'QC_CHECK']),
+  entityId: z.string(),
+})
+
+export const BomApprovedDataSchema = ManufacturingEntityRefSchema.extend({
+  bomId: z.string(),
+  productItemId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const ProductionOrderReleasedDataSchema = ManufacturingEntityRefSchema.extend({
+  orderId: z.string(),
+  bomId: z.string(),
+  workCenterId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const BatchRecordOpenedDataSchema = ManufacturingEntityRefSchema.extend({
+  batchId: z.string(),
+  orderId: z.string(),
+  productItemId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const QcCheckFailedDataSchema = ManufacturingEntityRefSchema.extend({
+  qcCheckId: z.string(),
+  batchId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const BatchReleasedDataSchema = ManufacturingEntityRefSchema.extend({
+  batchId: z.string(),
+  orderId: z.string(),
+  inventoryBatchId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
 export const DomainEventSchemas = {
   MessageSent: MessageSentDataSchema,
   ThreadAssigned: ThreadAssignedDataSchema,
@@ -535,6 +576,11 @@ export const DomainEventSchemas = {
   ProjectTaskCompleted: ProjectTaskCompletedDataSchema,
   MilestoneMet: MilestoneMetDataSchema,
   TimeEntryApproved: TimeEntryApprovedDataSchema,
+  BomApproved: BomApprovedDataSchema,
+  ProductionOrderReleased: ProductionOrderReleasedDataSchema,
+  BatchRecordOpened: BatchRecordOpenedDataSchema,
+  QcCheckFailed: QcCheckFailedDataSchema,
+  BatchReleased: BatchReleasedDataSchema,
 }
 
 export function parseEventEnvelope(input) {

@@ -8,6 +8,61 @@ The format follows a phase-gate model: each enterprise phase ends with passing t
 
 ## [Unreleased]
 
+### Phase 13 — Manufacturing
+
+**Added**
+
+- Tenant/branch-scoped GMP manufacturing domain with strict Zod contracts: work centers, bills of
+  materials, production orders, batch records and QC checks in `packages/api/lib/manufacturing.js`.
+  BOM line and standard costs are computed server-side from integer milli-units with one half-up
+  rounding at the cent boundary; all money stays in safe integer cents and quantities allow at most
+  three decimals. No statutory, tax or filing constant is present.
+- `/api/manufacturing` endpoints for all seven tables, including BOM approval, order
+  release/start/complete/cancel, batch open/review/reject, material issue, batch release and QC
+  sign-off. Fifteen new `manufacturing.*` permissions are enforced with bearer auth; client-supplied
+  tenant IDs, statuses, signatures, computed costs and timestamps are rejected.
+- GMP release guard: batch number and manufacturing/expiry dates are mandatory, signatures are
+  authenticated user IDs only, at least one mandatory QC check must PASS, any FAIL blocks release,
+  reviewer and releaser must be different users, and production users cannot release their own
+  batch. Material issue delegates to `issueStock`; release creates a RELEASED `InventoryBatch` and
+  receives finished stock through existing `createBatch`/`receiveStock` helpers. Movement IDs only
+  are returned. See ADR-0018.
+- Migration `20261123000700_phase13_manufacturing` with seven new RLS-protected tables, generated
+  by shadow-DB diff, plus an idempotent dynamic `tenant_branch_scope` DO block. Idempotent
+  `cmp_comet`-only fixtures seed a work center, an approved BOM with two lines and a DRAFT
+  production order.
+- ERP Manufacturing tab with work centers, BOMs, orders, batch records and QC checks. Socket frames
+  only invalidate the open view; content is always refetched through the authenticated API.
+- Strict shared manufacturing event schemas and company-room-only sockets: `BomApproved`,
+  `ProductionOrderReleased`, `BatchRecordOpened`, `QcCheckFailed` and `BatchReleased` map to
+  `manufacturing:bom`, `manufacturing:order`, `manufacturing:batch` and `manufacturing:qc`. Frames
+  carry IDs/classification only; deviation and result notes are encrypted at rest and never emitted.
+  OpenAPI `0.13.0-phase.13`, ADR-0018, README and OpenAPI README updates.
+- `packages/api/tests/phase13-manufacturing.test.js` with 21 tests covering cent math, lifecycle
+  and QC release guards, GMP fields, DLP fail-closed, strict ID-only events, permission separation,
+  DTO safety, socket routing, tenant scope and source contracts.
+
+**Changed**
+
+- Work centers are soft-deleted with `deletedAt` and cannot be removed while referenced by an
+  active production order.
+- `Idempotency-Key` remains scoped to messaging sends; manufacturing writes are not replay-safe.
+
+**Verification**
+
+- `npm test` — 210 passed (21 Phase 13), 0 failed; `npm run test:smoke` — 31 passed (7 files).
+- `npm run lint` passes with 21 pre-existing non-blocking warnings; no Phase 13 warnings.
+  `npm run build` passes (`✓ built in 2.46s`, 2335 modules transformed).
+- `node --check` passes for `packages/erp/public/app.js`, `packages/api/lib/manufacturing.js`,
+  `packages/api/routes/manufacturing.routes.js` and `packages/api/tests/phase13-manufacturing.test.js`.
+- OpenAPI YAML parses as `0.13.0-phase.13` with 234 paths (21 paths / 32 operations under
+  `/api/manufacturing`), 293 schemas, 18 parameters and 971 `$ref`s resolving with 0 missing.
+- Cross-tenant RLS probe with `comet_app`: `cmp_other` sees 0 rows in all seven manufacturing
+  tables; `cmp_comet` sees 1 work center / 1 BOM / 2 BOM lines / 1 production order and 0 in the
+  remaining three.
+- `npm run db:deploy` and `npm run db:generate` pass; `npm run db:seed` is idempotent and reports
+  `✓ Seeded active work center, approved BOM and DRAFT production order fixtures`.
+
 ### Phase 12 — Projects
 
 **Added**

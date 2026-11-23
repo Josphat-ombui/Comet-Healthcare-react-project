@@ -84,6 +84,17 @@ const PROJECT_EVENT_TYPES = new Set([
   'TimeEntryApproved',
 ])
 
+// Phase 13 manufacturing events are ID/classification-only company-wide
+// invalidation signals — never branch, user, thread or inbox rooms. GMP batch
+// numbers, dates, notes, QC values and signatures are never pushed over sockets.
+const MANUFACTURING_EVENT_TYPES = new Set([
+  'BomApproved',
+  'ProductionOrderReleased',
+  'BatchRecordOpened',
+  'QcCheckFailed',
+  'BatchReleased',
+])
+
 function eventRooms(event) {
   const prefix = `company:${event.companyId}`
   const data = event.data || {}
@@ -157,6 +168,9 @@ function eventRooms(event) {
 
   // ---------------------------------------------------------- phase 12 projects
   if (PROJECT_EVENT_TYPES.has(event.type)) return unique([prefix])
+
+  // ----------------------------------------------------- phase 13 manufacturing
+  if (MANUFACTURING_EVENT_TYPES.has(event.type)) return unique([prefix])
   return []
 }
 
@@ -216,6 +230,11 @@ function socketEventFor(type) {
     ProjectTaskCompleted: 'projects:task',
     MilestoneMet: 'projects:milestone',
     TimeEntryApproved: 'projects:time',
+    BomApproved: 'manufacturing:bom',
+    ProductionOrderReleased: 'manufacturing:order',
+    BatchRecordOpened: 'manufacturing:batch',
+    QcCheckFailed: 'manufacturing:qc',
+    BatchReleased: 'manufacturing:batch',
   }[type] || null
 }
 

@@ -1674,3 +1674,210 @@ export const projectActionSchema = z.object({}).strict()
 
 export const PROJECT_CLASSIFICATIONS = ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED']
 export const PROJECT_MONEY_FIELDS = ['budgetCents', 'hourlyRateCents', 'amountCents']
+
+// ------------------------------------------------------------ phase 13 manufacturing
+//
+// GMP records use strict schemas. Batch numbers, dates and signature references
+// are explicit; deviation/result notes pass through the shared DLP inspector and
+// are stored encrypted. Money is integer cents and quantities are rounded to
+// three decimals by the service, never by the client.
+
+const manufacturingId = z.string().trim().min(1).max(80)
+const manufacturingCode = z.string().trim().min(1).max(60)
+const manufacturingName = dlpSafeText(160).min(2)
+const manufacturingText = dlpSafeText(1000)
+const manufacturingDate = z.string().refine(isValidIsoDate, 'Choose a valid date')
+const manufacturingLimit = z.coerce.number().int().min(1).max(200).default(50)
+const manufacturingMoney = z.number().int().nonnegative()
+const manufacturingQuantity = z.number().positive().max(1_000_000).refine(
+  (value) => Number.isFinite(value) && Math.abs(value * 1000 - Math.round(value * 1000)) < 1e-6,
+  'Use at most three decimal places',
+)
+const manufacturingClassification = classificationSchema.default('INTERNAL')
+
+const workCenterStatus = z.enum(['ACTIVE', 'INACTIVE', 'MAINTENANCE'])
+const bomStatus = z.enum(['DRAFT', 'APPROVED', 'OBSOLETE'])
+const productionOrderStatus = z.enum([
+  'DRAFT', 'RELEASED', 'IN_PROGRESS', 'QUALITY_HOLD', 'COMPLETED', 'CANCELLED',
+])
+const batchRecordStatus = z.enum(['OPEN', 'IN_PROGRESS', 'REVIEW', 'RELEASED', 'REJECTED'])
+const qcCheckStatus = z.enum(['PENDING', 'REVIEW', 'PASS', 'FAIL'])
+
+const bomLineInput = z.object({
+  itemId: manufacturingId,
+  quantity: manufacturingQuantity,
+  uom: z.string().trim().min(1).max(12).default('EA'),
+  unitCostCents: manufacturingMoney,
+  isCritical: z.boolean().default(false),
+  sequence: z.number().int().min(0).max(1_000_000).default(0),
+}).strict()
+
+export const manufacturingWorkCenterCreateSchema = z.object({
+  code: manufacturingCode.optional(),
+  name: manufacturingName,
+  description: manufacturingText.optional().or(z.literal('')),
+  status: workCenterStatus.default('ACTIVE'),
+  capacityPerDay: manufacturingQuantity.nullable().optional(),
+  branchId: manufacturingId.nullable().optional(),
+  classification: manufacturingClassification,
+}).strict()
+
+export const manufacturingWorkCenterUpdateSchema = z.object({
+  name: manufacturingName.optional(),
+  description: manufacturingText.optional().or(z.literal('')),
+  status: workCenterStatus.optional(),
+  capacityPerDay: manufacturingQuantity.nullable().optional(),
+  branchId: manufacturingId.nullable().optional(),
+  classification: classificationSchema.optional(),
+}).strict().refine((value) => Object.keys(value).length > 0, 'At least one field is required')
+
+export const manufacturingWorkCenterQuerySchema = z.object({
+  status: workCenterStatus.optional(),
+  limit: manufacturingLimit,
+}).strict()
+
+export const manufacturingBomCreateSchema = z.object({
+  code: manufacturingCode.optional(),
+  name: manufacturingName,
+  productItemId: manufacturingId,
+  version: manufacturingCode.default('1'),
+  effectiveFrom: manufacturingDate.nullable().optional(),
+  effectiveTo: manufacturingDate.nullable().optional(),
+  branchId: manufacturingId.nullable().optional(),
+  classification: manufacturingClassification,
+  lines: z.array(bomLineInput).min(1, 'A BOM needs at least one line').max(40),
+}).strict()
+
+export const manufacturingBomUpdateSchema = z.object({
+  name: manufacturingName.optional(),
+  effectiveFrom: manufacturingDate.nullable().optional(),
+  effectiveTo: manufacturingDate.nullable().optional(),
+  branchId: manufacturingId.nullable().optional(),
+  classification: classificationSchema.optional(),
+  lines: z.array(bomLineInput).min(1).max(40).optional(),
+}).strict().refine((value) => Object.keys(value).length > 0, 'At least one field is required')
+
+export const manufacturingBomTransitionSchema = z.object({ status: bomStatus }).strict()
+
+export const manufacturingBomQuerySchema = z.object({
+  status: bomStatus.optional(),
+  productItemId: manufacturingId.optional(),
+  limit: manufacturingLimit,
+}).strict()
+
+export const manufacturingOrderCreateSchema = z.object({
+  orderNumber: manufacturingCode.optional(),
+  bomId: manufacturingId,
+  workCenterId: manufacturingId,
+  productItemId: manufacturingId,
+  quantityPlanned: manufacturingQuantity,
+  uom: z.string().trim().min(1).max(12).default('EA'),
+  plannedStartDate: manufacturingDate.nullable().optional(),
+  plannedEndDate: manufacturingDate.nullable().optional(),
+  branchId: manufacturingId.nullable().optional(),
+  classification: manufacturingClassification,
+}).strict()
+
+export const manufacturingOrderUpdateSchema = z.object({
+  quantityPlanned: manufacturingQuantity.optional(),
+  uom: z.string().trim().min(1).max(12).optional(),
+  plannedStartDate: manufacturingDate.nullable().optional(),
+  plannedEndDate: manufacturingDate.nullable().optional(),
+  branchId: manufacturingId.nullable().optional(),
+  classification: classificationSchema.optional(),
+}).strict().refine((value) => Object.keys(value).length > 0, 'At least one field is required')
+
+export const manufacturingOrderTransitionSchema = z.object({
+  status: z.enum(['RELEASED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED']),
+}).strict()
+
+export const manufacturingOrderQuerySchema = z.object({
+  status: productionOrderStatus.optional(),
+  workCenterId: manufacturingId.optional(),
+  limit: manufacturingLimit,
+}).strict()
+
+export const manufacturingBatchCreateSchema = z.object({
+  batchNumber: manufacturingCode,
+  productionOrderId: manufacturingId,
+  quantityProduced: manufacturingQuantity,
+  uom: z.string().trim().min(1).max(12).default('EA'),
+  manufacturingDate: manufacturingDate,
+  expiryDate: manufacturingDate,
+  deviationNotes: manufacturingText.optional().or(z.literal('')),
+  branchId: manufacturingId.nullable().optional(),
+  classification: z.enum(['CONFIDENTIAL', 'RESTRICTED']).default('RESTRICTED'),
+}).strict().refine(
+  (value) => new Date(`${value.expiryDate}T00:00:00.000Z`) >= new Date(`${value.manufacturingDate}T00:00:00.000Z`),
+  'Expiry date must not precede manufacturing date',
+)
+
+export const manufacturingBatchUpdateSchema = z.object({
+  quantityProduced: manufacturingQuantity.optional(),
+  manufacturingDate: manufacturingDate.optional(),
+  expiryDate: manufacturingDate.optional(),
+  deviationNotes: manufacturingText.optional().or(z.literal('')),
+  branchId: manufacturingId.nullable().optional(),
+  classification: z.enum(['CONFIDENTIAL', 'RESTRICTED']).optional(),
+}).strict().refine((value) => Object.keys(value).length > 0, 'At least one field is required')
+
+export const manufacturingBatchTransitionSchema = z.object({
+  status: z.enum(['IN_PROGRESS', 'REVIEW', 'REJECTED']),
+  reason: manufacturingText.optional().or(z.literal('')),
+}).strict()
+
+export const manufacturingBatchQuerySchema = z.object({
+  status: batchRecordStatus.optional(),
+  productionOrderId: manufacturingId.optional(),
+  limit: manufacturingLimit,
+}).strict()
+
+export const manufacturingBatchReleaseSchema = z.object({
+  warehouseId: manufacturingId,
+  unitCostCents: manufacturingMoney.optional(),
+  branchId: manufacturingId.nullable().optional(),
+}).strict()
+
+export const manufacturingBatchIssueLineSchema = z.object({
+  orderLineId: manufacturingId,
+  quantity: manufacturingQuantity,
+  warehouseId: manufacturingId,
+  batchId: manufacturingId.nullable().optional(),
+  branchId: manufacturingId.nullable().optional(),
+}).strict()
+
+export const manufacturingBatchIssueSchema = z.object({
+  lines: z.array(manufacturingBatchIssueLineSchema).min(1).max(40),
+}).strict()
+
+export const manufacturingQcCheckCreateSchema = z.object({
+  checkCode: manufacturingCode,
+  name: manufacturingName,
+  isMandatory: z.boolean().default(true),
+  observedValue: dlpSafeText(180).optional().or(z.literal('')),
+  resultNotes: manufacturingText.optional().or(z.literal('')),
+  branchId: manufacturingId.nullable().optional(),
+  classification: classificationSchema.default('CONFIDENTIAL'),
+}).strict()
+
+export const manufacturingQcCheckUpdateSchema = z.object({
+  name: manufacturingName.optional(),
+  isMandatory: z.boolean().optional(),
+  observedValue: dlpSafeText(180).optional().or(z.literal('')),
+  resultNotes: manufacturingText.optional().or(z.literal('')),
+  branchId: manufacturingId.nullable().optional(),
+  classification: classificationSchema.optional(),
+}).strict().refine((value) => Object.keys(value).length > 0, 'At least one field is required')
+
+export const manufacturingQcDecisionSchema = z.object({
+  decision: z.enum(['PASS', 'FAIL', 'REVIEW']),
+  resultNotes: manufacturingText.optional().or(z.literal('')),
+}).strict()
+
+export const manufacturingQcQuerySchema = z.object({
+  status: qcCheckStatus.optional(),
+  limit: manufacturingLimit,
+}).strict()
+
+export const MANUFACTURING_CLASSIFICATIONS = ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED']
+export const MANUFACTURING_MONEY_FIELDS = ['standardCostCents', 'unitCostCents']

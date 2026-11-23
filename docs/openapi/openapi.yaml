@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Comet Healthcare Enterprise API
-  version: 0.12.0-phase.12
+  version: 0.13.0-phase.13
   summary: REST and webhook contract for the Comet Healthcare enterprise platform.
   description: |
     Phase 3 adds local identity, sessions, MFA, OIDC, organisation directory and audit.
@@ -170,6 +170,25 @@ info:
     (`projects:project`, `projects:task`, `projects:milestone`, `projects:time`) carry IDs and
     classification only and are routed to the company room only. `Idempotency-Key` remains
     scoped to messaging sends only; Phase 12 writes are not replay-safe.
+
+    Phase 13 adds GMP manufacturing under `/api/manufacturing`: work centers, bills of
+    materials, production orders, batch records and QC checks. All seven new tables are
+    tenant/branch scoped with RLS. BOM standard cost is computed server-side from integer
+    cent lines and is never accepted from a client. Batch numbers and manufacturing/expiry
+    dates are mandatory; signatures are authenticated user IDs only. Deviation and QC result
+    notes are encrypted at rest and appear only as boolean presence flags in DTOs, audits and
+    events. A FAIL or any non-PASS mandatory check blocks batch release, and the QA reviewer
+    cannot be the releaser. Inventory issue/receipt delegates to the Phase 8 stock helpers;
+    no filing, payment or email is performed. See ADR-0018.
+
+    Phase 13 permissions: `manufacturing.workcenter.read/write`,
+    `manufacturing.bom.read/write/approve`, `manufacturing.order.read/write/release/complete`,
+    `manufacturing.batch.read/write/review/release` and `manufacturing.qc.read/write`.
+    Domain events (`BomApproved`, `ProductionOrderReleased`, `BatchRecordOpened`,
+    `QcCheckFailed`, `BatchReleased`) and sockets (`manufacturing:bom`,
+    `manufacturing:order`, `manufacturing:batch`, `manufacturing:qc`) carry IDs and
+    classification only and are routed to the company room only. `Idempotency-Key` remains
+    scoped to messaging sends only; Phase 13 writes are not replay-safe.
   contact:
     name: Comet Healthcare Platform Team
   license:
@@ -206,6 +225,8 @@ tags:
     description: Employee records, contracts, verified payroll rates, leave, attendance and payroll runs. Added in Phase 11.
   - name: Projects
     description: Projects, members, tasks, milestones, time entries and finance-owned budget usage. Added in Phase 12.
+  - name: Manufacturing
+    description: Work centers, BOMs, production orders, GMP batch records and QC checks. Added in Phase 13.
 x-phase-roadmap:
   phase1: Architecture and this skeleton only
   phase2: ERD, migrations, workspace split, shared contracts
@@ -219,7 +240,7 @@ x-phase-roadmap:
   phase10: Complete - /api/service (contracts/SLAs, tickets, work orders, visits, part usage, optional invoice creation)
   phase11: Complete - /api/hr (employees, contracts, verified payroll rates, leave, attendance, payroll runs and lines)
   phase12: Complete - /api/projects (projects, members, tasks, milestones, time entries and finance budget links)
-  phase13: /api/manufacturing
+  phase13: Complete - /api/manufacturing (work centers, BOMs, production orders, GMP batch records and QC checks)
   phase14: /api/reporting
   phase15: /api/public/v1 and /api/webhooks
 x-realtime:
@@ -290,6 +311,10 @@ x-realtime:
     projects:task: 'ProjectTaskCompleted; refetch GET /api/projects/{id}/tasks.'
     projects:milestone: 'MilestoneMet; refetch GET /api/projects/{id}/milestones.'
     projects:time: 'TimeEntryApproved; refetch GET /api/projects/{id}/time.'
+    manufacturing:bom: 'BomApproved; refetch GET /api/manufacturing/boms.'
+    manufacturing:order: 'ProductionOrderReleased; refetch GET /api/manufacturing/orders.'
+    manufacturing:batch: 'BatchRecordOpened or BatchReleased; refetch GET /api/manufacturing/batches.'
+    manufacturing:qc: 'QcCheckFailed; refetch GET /api/manufacturing/batches/{id}/qc-checks.'
   eventPayload:
     eventId: string
     type: string
@@ -7572,6 +7597,742 @@ paths:
         '403': { description: Missing `projects.budget.link` or `finance.budget.write`. }
         '404': { description: Project or finance budget not found in scope. }
         '409': { description: Budget is not APPROVED or is already linked. }
+  /api/manufacturing/work-centers:
+    get:
+      tags: [Manufacturing]
+      summary: List work centers
+      operationId: listManufacturingWorkCenters
+      x-permission: manufacturing.workcenter.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ManufacturingWorkCenterStatus' }
+        - $ref: '#/components/parameters/ManufacturingLimit'
+      responses:
+        '200':
+          description: Tenant/branch-scoped work centers.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingWorkCenterListEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.workcenter.read`. }
+    post:
+      tags: [Manufacturing]
+      summary: Create a work center
+      operationId: createManufacturingWorkCenter
+      x-permission: manufacturing.workcenter.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ManufacturingWorkCenterCreate' }
+      responses:
+        '201':
+          description: Work center created in ACTIVE status by default.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingWorkCenterEnvelope' }
+        '400': { description: Invalid request or strict schema violation. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.workcenter.write`. }
+        '409': { description: Duplicate work center code. }
+  /api/manufacturing/work-centers/{id}:
+    get:
+      tags: [Manufacturing]
+      summary: Read a work center
+      operationId: getManufacturingWorkCenter
+      x-permission: manufacturing.workcenter.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ManufacturingResourceId'
+      description: A read audit records the work center ID and classification only.
+      responses:
+        '200':
+          description: Work center DTO.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingWorkCenterEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.workcenter.read`. }
+        '404': { description: Tenant-scoped work center not found. }
+    patch:
+      tags: [Manufacturing]
+      summary: Update a work center
+      operationId: updateManufacturingWorkCenter
+      x-permission: manufacturing.workcenter.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ManufacturingResourceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ManufacturingWorkCenterUpdate' }
+      responses:
+        '200':
+          description: Updated work center.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingWorkCenterEnvelope' }
+        '400': { description: Invalid request or strict schema violation. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.workcenter.write`. }
+        '404': { description: Tenant-scoped work center not found. }
+    delete:
+      tags: [Manufacturing]
+      summary: Soft-delete a work center
+      operationId: deleteManufacturingWorkCenter
+      x-permission: manufacturing.workcenter.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ManufacturingResourceId'
+      description: Sets `deletedAt`; rejected while active production orders reference the center.
+      responses:
+        '200':
+          description: Soft-deleted work center with `deletedAt` set.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingWorkCenterEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.workcenter.write`. }
+        '404': { description: Tenant-scoped work center not found. }
+        '409': { description: Work center is referenced by an active production order. }
+  /api/manufacturing/boms:
+    get:
+      tags: [Manufacturing]
+      summary: List bills of materials
+      operationId: listManufacturingBoms
+      x-permission: manufacturing.bom.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ManufacturingBomStatus' }
+        - name: productItemId
+          in: query
+          schema: { type: string, minLength: 1, maxLength: 80 }
+        - $ref: '#/components/parameters/ManufacturingLimit'
+      responses:
+        '200':
+          description: Tenant/branch-scoped BOMs with lines.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingBomListEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.bom.read`. }
+    post:
+      tags: [Manufacturing]
+      summary: Create a bill of materials
+      operationId: createManufacturingBom
+      x-permission: manufacturing.bom.write
+      security:
+        - bearerAuth: []
+      description: '`standardCostCents` and line `lineCostCents` are computed server-side from integer cents; clients cannot submit them.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ManufacturingBomCreate' }
+      responses:
+        '201':
+          description: BOM created in DRAFT status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingBomEnvelope' }
+        '400': { description: Invalid request or strict schema violation. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.bom.write`. }
+        '409': { description: Duplicate BOM code or invalid inventory item. }
+  /api/manufacturing/boms/{id}:
+    get:
+      tags: [Manufacturing]
+      summary: Read a bill of materials
+      operationId: getManufacturingBom
+      x-permission: manufacturing.bom.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ManufacturingResourceId'
+      responses:
+        '200':
+          description: BOM with computed line and standard costs.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingBomEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.bom.read`. }
+        '404': { description: Tenant-scoped BOM not found. }
+    patch:
+      tags: [Manufacturing]
+      summary: Update a draft bill of materials
+      operationId: updateManufacturingBom
+      x-permission: manufacturing.bom.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ManufacturingResourceId'
+      description: Only DRAFT BOMs can be edited; replacing lines recomputes the standard cost.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ManufacturingBomUpdate' }
+      responses:
+        '200':
+          description: Updated BOM.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingBomEnvelope' }
+        '400': { description: Invalid request or strict schema violation. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.bom.write`. }
+        '404': { description: Tenant-scoped BOM not found. }
+        '409': { description: Only DRAFT BOMs can be updated. }
+  /api/manufacturing/boms/{id}/status:
+    post:
+      tags: [Manufacturing]
+      summary: Approve or obsolete a bill of materials
+      operationId: transitionManufacturingBom
+      x-permission: manufacturing.bom.approve
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ManufacturingResourceId'
+      description: QA/COMPLIANCE only; the BOM author cannot approve their own BOM. Emits `BomApproved`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ManufacturingBomTransition' }
+      responses:
+        '200':
+          description: BOM with updated status and user-ID approval signature.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingBomEnvelope' }
+        '400': { description: Invalid request or strict schema violation. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.bom.approve` or self-approval attempted. }
+        '404': { description: Tenant-scoped BOM not found. }
+        '409': { description: Invalid status transition. }
+  /api/manufacturing/orders:
+    get:
+      tags: [Manufacturing]
+      summary: List production orders
+      operationId: listManufacturingOrders
+      x-permission: manufacturing.order.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ManufacturingOrderStatus' }
+        - name: workCenterId
+          in: query
+          schema: { type: string, minLength: 1, maxLength: 80 }
+        - $ref: '#/components/parameters/ManufacturingLimit'
+      responses:
+        '200':
+          description: Tenant/branch-scoped production orders with lines.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingOrderListEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.order.read`. }
+    post:
+      tags: [Manufacturing]
+      summary: Create a production order
+      operationId: createManufacturingOrder
+      x-permission: manufacturing.order.write
+      security:
+        - bearerAuth: []
+      description: Requires an APPROVED BOM and an ACTIVE work center; order lines are projected from the BOM.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ManufacturingOrderCreate' }
+      responses:
+        '201':
+          description: Order created in DRAFT status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingOrderEnvelope' }
+        '400': { description: Invalid request or strict schema violation. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.order.write`. }
+        '409': { description: BOM is not APPROVED or work center is unavailable. }
+  /api/manufacturing/orders/{id}:
+    get:
+      tags: [Manufacturing]
+      summary: Read a production order
+      operationId: getManufacturingOrder
+      x-permission: manufacturing.order.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ManufacturingResourceId'
+      responses:
+        '200':
+          description: Production order with material lines.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingOrderEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.order.read`. }
+        '404': { description: Tenant-scoped order not found. }
+    patch:
+      tags: [Manufacturing]
+      summary: Update a draft production order
+      operationId: updateManufacturingOrder
+      x-permission: manufacturing.order.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ManufacturingResourceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ManufacturingOrderUpdate' }
+      responses:
+        '200':
+          description: Updated order.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingOrderEnvelope' }
+        '400': { description: Invalid request or strict schema violation. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.order.write`. }
+        '404': { description: Tenant-scoped order not found. }
+        '409': { description: Only DRAFT orders can be updated. }
+  /api/manufacturing/orders/{id}/release:
+    post:
+      tags: [Manufacturing]
+      summary: Release a production order
+      operationId: releaseManufacturingOrder
+      x-permission: manufacturing.order.release
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ManufacturingResourceId'
+      description: MANAGER only; records a user-ID signature. Emits `ProductionOrderReleased`.
+      responses:
+        '200':
+          description: Released order.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingOrderEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.order.release`. }
+        '404': { description: Tenant-scoped order not found. }
+        '409': { description: Only DRAFT orders can be released. }
+  /api/manufacturing/orders/{id}/start:
+    post:
+      tags: [Manufacturing]
+      summary: Start a released production order
+      operationId: startManufacturingOrder
+      x-permission: manufacturing.order.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ManufacturingResourceId'
+      responses:
+        '200':
+          description: In-progress order.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingOrderEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.order.write`. }
+        '404': { description: Tenant-scoped order not found. }
+        '409': { description: Only RELEASED orders can be started. }
+  /api/manufacturing/orders/{id}/complete:
+    post:
+      tags: [Manufacturing]
+      summary: Complete a production order
+      operationId: completeManufacturingOrder
+      x-permission: manufacturing.order.complete
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ManufacturingResourceId'
+      description: MANAGER only; requires an IN_PROGRESS order and a positive produced quantity on its batch.
+      responses:
+        '200':
+          description: Completed order.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingOrderEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.order.complete`. }
+        '404': { description: Tenant-scoped order not found. }
+        '409': { description: Order cannot be completed in its current state. }
+  /api/manufacturing/orders/{id}/cancel:
+    post:
+      tags: [Manufacturing]
+      summary: Cancel a production order
+      operationId: cancelManufacturingOrder
+      x-permission: manufacturing.order.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ManufacturingResourceId'
+      responses:
+        '200':
+          description: Cancelled order.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingOrderEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.order.write`. }
+        '404': { description: Tenant-scoped order not found. }
+        '409': { description: Order cannot be cancelled in its current state. }
+  /api/manufacturing/batches:
+    get:
+      tags: [Manufacturing]
+      summary: List GMP batch records
+      operationId: listManufacturingBatches
+      x-permission: manufacturing.batch.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ManufacturingBatchStatus' }
+        - name: productionOrderId
+          in: query
+          schema: { type: string, minLength: 1, maxLength: 80 }
+        - $ref: '#/components/parameters/ManufacturingLimit'
+      responses:
+        '200':
+          description: Tenant/branch-scoped batch records.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingBatchListEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.batch.read`. }
+    post:
+      tags: [Manufacturing]
+      summary: Open a GMP batch record
+      operationId: createManufacturingBatch
+      x-permission: manufacturing.batch.write
+      security:
+        - bearerAuth: []
+      description: Batch number, manufacturing date and expiry date are mandatory; deviation notes are encrypted and never returned in the DTO.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ManufacturingBatchCreate' }
+      responses:
+        '201':
+          description: Batch opened in OPEN status. Emits `BatchRecordOpened`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingBatchEnvelope' }
+        '400': { description: Invalid request, missing GMP fields, or invalid dates. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.batch.write`. }
+        '409': { description: Duplicate batch number or invalid production order. }
+  /api/manufacturing/batches/{id}:
+    get:
+      tags: [Manufacturing]
+      summary: Read a GMP batch record
+      operationId: getManufacturingBatch
+      x-permission: manufacturing.batch.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ManufacturingResourceId'
+      responses:
+        '200':
+          description: Batch record with encrypted-note presence flags only.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingBatchEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.batch.read`. }
+        '404': { description: Tenant-scoped batch not found. }
+    patch:
+      tags: [Manufacturing]
+      summary: Update an open GMP batch record
+      operationId: updateManufacturingBatch
+      x-permission: manufacturing.batch.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ManufacturingResourceId'
+      description: Only OPEN or IN_PROGRESS batches can be edited; GMP fields remain mandatory.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ManufacturingBatchUpdate' }
+      responses:
+        '200':
+          description: Updated batch record.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingBatchEnvelope' }
+        '400': { description: Invalid request or DLP rejection. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.batch.write`. }
+        '404': { description: Tenant-scoped batch not found. }
+        '409': { description: Batch cannot be edited in its current state. }
+  /api/manufacturing/batches/{id}/start:
+    post:
+      tags: [Manufacturing]
+      summary: Start a batch record
+      operationId: startManufacturingBatch
+      x-permission: manufacturing.batch.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ManufacturingResourceId'
+      responses:
+        '200':
+          description: In-progress batch record.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingBatchEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.batch.write`. }
+        '404': { description: Tenant-scoped batch not found. }
+        '409': { description: Only OPEN batches can be started. }
+  /api/manufacturing/batches/{id}/review:
+    post:
+      tags: [Manufacturing]
+      summary: Submit a batch for QA review
+      operationId: reviewManufacturingBatch
+      x-permission: manufacturing.batch.review
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ManufacturingResourceId'
+      description: QA/COMPLIANCE only; stores a user-ID review signature.
+      responses:
+        '200':
+          description: Batch in REVIEW status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingBatchEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.batch.review`. }
+        '404': { description: Tenant-scoped batch not found. }
+        '409': { description: Only IN_PROGRESS batches can be reviewed. }
+  /api/manufacturing/batches/{id}/reject:
+    post:
+      tags: [Manufacturing]
+      summary: Reject a batch record
+      operationId: rejectManufacturingBatch
+      x-permission: manufacturing.batch.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ManufacturingResourceId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ManufacturingBatchReject' }
+      responses:
+        '200':
+          description: Rejected batch record.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingBatchEnvelope' }
+        '400': { description: Invalid request or DLP rejection. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.batch.write`. }
+        '404': { description: Tenant-scoped batch not found. }
+        '409': { description: Batch cannot be rejected in its current state. }
+  /api/manufacturing/batches/{id}/issue:
+    post:
+      tags: [Manufacturing]
+      summary: Issue materials against a batch
+      operationId: issueManufacturingBatchMaterials
+      x-permission: manufacturing.batch.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ManufacturingResourceId'
+      description: Delegates each line to `issueStock`; returns order-line IDs and stock-movement IDs only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ManufacturingBatchIssueRequest' }
+      responses:
+        '200':
+          description: Issued lines with movement ID references.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingBatchIssueEnvelope' }
+        '400': { description: Invalid request or issue exceeds remaining requirement. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.batch.write`. }
+        '404': { description: Batch or production order line not found in scope. }
+        '409': { description: Batch must be in progress before issuing materials. }
+  /api/manufacturing/batches/{id}/release:
+    post:
+      tags: [Manufacturing]
+      summary: Release a reviewed batch
+      operationId: releaseManufacturingBatch
+      x-permission: manufacturing.batch.release
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ManufacturingResourceId'
+      description: |
+        QA/COMPLIANCE only. Requires REVIEW status, mandatory GMP fields and signatures,
+        at least one mandatory QC check and every check PASS. A FAIL blocks release.
+        Reviewer and releaser must be different users. Creates a RELEASED InventoryBatch
+        and receives finished stock using integer cents. Emits `BatchReleased`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ManufacturingBatchReleaseRequest' }
+      responses:
+        '200':
+          description: Released batch with inventory batch and stock movement references.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingBatchReleaseEnvelope' }
+        '400': { description: Missing warehouse, invalid cost, or missing GMP signatures. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.batch.release` or self-release attempted. }
+        '404': { description: Tenant-scoped batch or warehouse not found. }
+        '409': { description: Batch is not REVIEW, or QC checks are failing/pending/mandatory-check missing. }
+  /api/manufacturing/batches/{id}/qc-checks:
+    get:
+      tags: [Manufacturing]
+      summary: List QC checks for a batch
+      operationId: listManufacturingQcChecks
+      x-permission: manufacturing.qc.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ManufacturingBatchId'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ManufacturingQcStatus' }
+        - $ref: '#/components/parameters/ManufacturingLimit'
+      responses:
+        '200':
+          description: Tenant-scoped QC checks with encrypted-note presence flags only.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingQcCheckListEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.qc.read`. }
+        '404': { description: Tenant-scoped batch not found. }
+    post:
+      tags: [Manufacturing]
+      summary: Add a QC check to a batch
+      operationId: createManufacturingQcCheck
+      x-permission: manufacturing.qc.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ManufacturingBatchId'
+      description: QA/COMPLIANCE only; result notes are encrypted at rest and are never returned.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ManufacturingQcCheckCreate' }
+      responses:
+        '201':
+          description: QC check created in PENDING status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingQcCheckEnvelope' }
+        '400': { description: Invalid request or DLP rejection. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.qc.write`. }
+        '404': { description: Tenant-scoped batch not found. }
+        '409': { description: Batch cannot accept new QC checks in its current state. }
+  /api/manufacturing/qc-checks/{id}:
+    get:
+      tags: [Manufacturing]
+      summary: Read a QC check
+      operationId: getManufacturingQcCheck
+      x-permission: manufacturing.qc.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ManufacturingQcCheckId'
+      responses:
+        '200':
+          description: QC check DTO.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingQcCheckEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.qc.read`. }
+        '404': { description: Tenant-scoped QC check not found. }
+    patch:
+      tags: [Manufacturing]
+      summary: Update a pending QC check
+      operationId: updateManufacturingQcCheck
+      x-permission: manufacturing.qc.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ManufacturingQcCheckId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ManufacturingQcCheckUpdate' }
+      responses:
+        '200':
+          description: Updated QC check.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingQcCheckEnvelope' }
+        '400': { description: Invalid request or DLP rejection. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.qc.write`. }
+        '404': { description: Tenant-scoped QC check not found. }
+        '409': { description: Only PENDING or REVIEW checks can be updated. }
+  /api/manufacturing/qc-checks/{id}/sign:
+    post:
+      tags: [Manufacturing]
+      summary: Sign a QC check as PASS, FAIL or REVIEW
+      operationId: signManufacturingQcCheck
+      x-permission: manufacturing.qc.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ManufacturingQcCheckId'
+      description: QA/COMPLIANCE only; signs with the authenticated user ID. A FAIL emits `QcCheckFailed` and blocks batch release.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ManufacturingQcDecision' }
+      responses:
+        '200':
+          description: Signed QC check.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManufacturingQcCheckEnvelope' }
+        '400': { description: Invalid decision or DLP rejection. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `manufacturing.qc.write`. }
+        '404': { description: Tenant-scoped QC check not found. }
+        '409': { description: QC check cannot be signed in its current state. }
 components:
   securitySchemes:
     bearerAuth:
@@ -7687,6 +8448,28 @@ components:
       description: Opaque time entry ID scoped to the parent project.
       schema: { type: string, minLength: 1, maxLength: 80 }
     ProjectLimit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    ManufacturingResourceId:
+      name: id
+      in: path
+      required: true
+      description: Opaque manufacturing resource ID scoped to the authenticated tenant.
+      schema: { type: string, minLength: 1, maxLength: 80 }
+    ManufacturingBatchId:
+      name: id
+      in: path
+      required: true
+      description: Opaque GMP batch record ID scoped to the parent batch.
+      schema: { type: string, minLength: 1, maxLength: 80 }
+    ManufacturingQcCheckId:
+      name: id
+      in: path
+      required: true
+      description: Opaque QC check ID scoped to the authenticated tenant.
+      schema: { type: string, minLength: 1, maxLength: 80 }
+    ManufacturingLimit:
       name: limit
       in: query
       schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
@@ -10724,6 +11507,460 @@ components:
         budgets:
           type: array
           items: { $ref: '#/components/schemas/ProjectBudgetUsage' }
+    ManufacturingWorkCenterStatus:
+      type: string
+      enum: [ACTIVE, INACTIVE, MAINTENANCE]
+    ManufacturingBomStatus:
+      type: string
+      enum: [DRAFT, APPROVED, OBSOLETE]
+    ManufacturingOrderStatus:
+      type: string
+      enum: [DRAFT, RELEASED, IN_PROGRESS, QUALITY_HOLD, COMPLETED, CANCELLED]
+    ManufacturingBatchStatus:
+      type: string
+      enum: [OPEN, IN_PROGRESS, REVIEW, RELEASED, REJECTED]
+    ManufacturingQcStatus:
+      type: string
+      enum: [PENDING, REVIEW, PASS, FAIL]
+    ManufacturingWorkCenter:
+      type: object
+      required: [id, code, name, status, classification]
+      properties:
+        id: { type: string }
+        code: { type: string, nullable: true }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        status: { $ref: '#/components/schemas/ManufacturingWorkCenterStatus' }
+        capacityPerDay: { type: number, nullable: true }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    ManufacturingWorkCenterCreate:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        code: { type: string, minLength: 1, maxLength: 60 }
+        name: { type: string, minLength: 2, maxLength: 160, description: DLP-checked. }
+        description: { type: string, maxLength: 1000, description: DLP-checked. }
+        status: { $ref: '#/components/schemas/ManufacturingWorkCenterStatus' }
+        capacityPerDay: { type: number, exclusiveMinimum: 0, maximum: 1000000, nullable: true, description: At most three decimal places. }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    ManufacturingWorkCenterUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name: { type: string, minLength: 2, maxLength: 160, description: DLP-checked. }
+        description: { type: string, maxLength: 1000, description: DLP-checked. }
+        status: { $ref: '#/components/schemas/ManufacturingWorkCenterStatus' }
+        capacityPerDay: { type: number, exclusiveMinimum: 0, maximum: 1000000, nullable: true }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    ManufacturingWorkCenterList:
+      type: object
+      required: [workCenters]
+      properties:
+        workCenters:
+          type: array
+          items: { $ref: '#/components/schemas/ManufacturingWorkCenter' }
+    ManufacturingWorkCenterEnvelope:
+      type: object
+      required: [workCenter]
+      properties:
+        workCenter: { $ref: '#/components/schemas/ManufacturingWorkCenter' }
+    ManufacturingWorkCenterListEnvelope:
+      type: object
+      required: [workCenters]
+      properties:
+        workCenters:
+          type: array
+          items: { $ref: '#/components/schemas/ManufacturingWorkCenter' }
+    ManufacturingBomLine:
+      type: object
+      required: [id, bomId, itemId, quantity, uom, unitCostCents, lineCostCents, isCritical, sequence]
+      properties:
+        id: { type: string }
+        bomId: { type: string }
+        itemId: { type: string }
+        quantity: { type: number, exclusiveMinimum: 0, maximum: 1000000, description: Three decimal places maximum. }
+        uom: { type: string }
+        unitCostCents: { type: integer, format: int64, minimum: 0 }
+        lineCostCents: { type: integer, format: int64, minimum: 0, description: Server-calculated once, half-up at the cent boundary. }
+        isCritical: { type: boolean }
+        sequence: { type: integer, minimum: 0 }
+        classification: { $ref: '#/components/schemas/Classification' }
+    ManufacturingBomLineInput:
+      type: object
+      additionalProperties: false
+      required: [itemId, quantity, unitCostCents]
+      properties:
+        itemId: { type: string, minLength: 1, maxLength: 80 }
+        quantity: { type: number, exclusiveMinimum: 0, maximum: 1000000, description: Three decimal places maximum. }
+        uom: { type: string, minLength: 1, maxLength: 12 }
+        unitCostCents: { type: integer, format: int64, minimum: 0 }
+        isCritical: { type: boolean }
+        sequence: { type: integer, minimum: 0, maximum: 1000000 }
+    ManufacturingBom:
+      type: object
+      required: [id, code, name, productItemId, version, status, standardCostCents, classification, lines]
+      properties:
+        id: { type: string }
+        code: { type: string, nullable: true }
+        name: { type: string }
+        productItemId: { type: string }
+        version: { type: string }
+        status: { $ref: '#/components/schemas/ManufacturingBomStatus' }
+        standardCostCents: { type: integer, format: int64, minimum: 0, description: Sum of server-calculated line costs. }
+        effectiveFrom: { type: string, format: date, nullable: true }
+        effectiveTo: { type: string, format: date, nullable: true }
+        approvedByUserId: { type: string, nullable: true, description: Authenticated user ID only. }
+        approvedAt: { type: string, format: date-time, nullable: true }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        lines:
+          type: array
+          items: { $ref: '#/components/schemas/ManufacturingBomLine' }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    ManufacturingBomCreate:
+      type: object
+      additionalProperties: false
+      required: [name, productItemId, lines]
+      properties:
+        code: { type: string, minLength: 1, maxLength: 60 }
+        name: { type: string, minLength: 2, maxLength: 160, description: DLP-checked. }
+        productItemId: { type: string, minLength: 1, maxLength: 80 }
+        version: { type: string, minLength: 1, maxLength: 60 }
+        effectiveFrom: { type: string, format: date, nullable: true }
+        effectiveTo: { type: string, format: date, nullable: true }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 40
+          items: { $ref: '#/components/schemas/ManufacturingBomLineInput' }
+    ManufacturingBomUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name: { type: string, minLength: 2, maxLength: 160 }
+        effectiveFrom: { type: string, format: date, nullable: true }
+        effectiveTo: { type: string, format: date, nullable: true }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 40
+          items: { $ref: '#/components/schemas/ManufacturingBomLineInput' }
+    ManufacturingBomTransition:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { $ref: '#/components/schemas/ManufacturingBomStatus' }
+    ManufacturingBomList:
+      type: object
+      required: [boms]
+      properties:
+        boms:
+          type: array
+          items: { $ref: '#/components/schemas/ManufacturingBom' }
+    ManufacturingBomEnvelope:
+      type: object
+      required: [bom]
+      properties:
+        bom: { $ref: '#/components/schemas/ManufacturingBom' }
+    ManufacturingBomListEnvelope:
+      type: object
+      required: [boms]
+      properties:
+        boms:
+          type: array
+          items: { $ref: '#/components/schemas/ManufacturingBom' }
+    ManufacturingOrderLine:
+      type: object
+      required: [id, orderId, itemId, quantityRequired, quantityIssued, uom, sequence]
+      properties:
+        id: { type: string }
+        orderId: { type: string }
+        itemId: { type: string }
+        quantityRequired: { type: number, exclusiveMinimum: 0 }
+        quantityIssued: { type: number, minimum: 0 }
+        uom: { type: string }
+        sequence: { type: integer, minimum: 0 }
+        classification: { $ref: '#/components/schemas/Classification' }
+    ManufacturingProductionOrder:
+      type: object
+      required: [id, orderNumber, bomId, workCenterId, productItemId, quantityPlanned, status, classification, lines]
+      properties:
+        id: { type: string }
+        orderNumber: { type: string }
+        bomId: { type: string }
+        workCenterId: { type: string }
+        productItemId: { type: string }
+        quantityPlanned: { type: number, exclusiveMinimum: 0 }
+        quantityProduced: { type: number, nullable: true }
+        uom: { type: string }
+        status: { $ref: '#/components/schemas/ManufacturingOrderStatus' }
+        plannedStartDate: { type: string, format: date, nullable: true }
+        plannedEndDate: { type: string, format: date, nullable: true }
+        releasedByUserId: { type: string, nullable: true }
+        releasedAt: { type: string, format: date-time, nullable: true }
+        startedByUserId: { type: string, nullable: true }
+        startedAt: { type: string, format: date-time, nullable: true }
+        completedByUserId: { type: string, nullable: true }
+        completedAt: { type: string, format: date-time, nullable: true }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        lines:
+          type: array
+          items: { $ref: '#/components/schemas/ManufacturingOrderLine' }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    ManufacturingOrderCreate:
+      type: object
+      additionalProperties: false
+      required: [bomId, workCenterId, productItemId, quantityPlanned]
+      properties:
+        orderNumber: { type: string, minLength: 1, maxLength: 60 }
+        bomId: { type: string, minLength: 1, maxLength: 80 }
+        workCenterId: { type: string, minLength: 1, maxLength: 80 }
+        productItemId: { type: string, minLength: 1, maxLength: 80 }
+        quantityPlanned: { type: number, exclusiveMinimum: 0, maximum: 1000000, description: Three decimal places maximum. }
+        uom: { type: string, minLength: 1, maxLength: 12 }
+        plannedStartDate: { type: string, format: date, nullable: true }
+        plannedEndDate: { type: string, format: date, nullable: true }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    ManufacturingOrderUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        quantityPlanned: { type: number, exclusiveMinimum: 0, maximum: 1000000 }
+        uom: { type: string, minLength: 1, maxLength: 12 }
+        plannedStartDate: { type: string, format: date, nullable: true }
+        plannedEndDate: { type: string, format: date, nullable: true }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    ManufacturingOrderList:
+      type: object
+      required: [orders]
+      properties:
+        orders:
+          type: array
+          items: { $ref: '#/components/schemas/ManufacturingProductionOrder' }
+    ManufacturingOrderEnvelope:
+      type: object
+      required: [order]
+      properties:
+        order: { $ref: '#/components/schemas/ManufacturingProductionOrder' }
+    ManufacturingOrderListEnvelope:
+      type: object
+      required: [orders]
+      properties:
+        orders:
+          type: array
+          items: { $ref: '#/components/schemas/ManufacturingProductionOrder' }
+    ManufacturingBatchRecord:
+      type: object
+      required: [id, batchNumber, productionOrderId, bomId, productItemId, quantityProduced, status, manufacturingDate, expiryDate, openedByUserId, classification]
+      properties:
+        id: { type: string }
+        batchNumber: { type: string, description: Mandatory GMP batch number. }
+        productionOrderId: { type: string }
+        bomId: { type: string }
+        productItemId: { type: string }
+        workCenterId: { type: string, nullable: true }
+        inventoryBatchId: { type: string, nullable: true }
+        quantityProduced: { type: number, exclusiveMinimum: 0 }
+        uom: { type: string }
+        status: { $ref: '#/components/schemas/ManufacturingBatchStatus' }
+        manufacturingDate: { type: string, format: date }
+        expiryDate: { type: string, format: date }
+        deviationNotesPresent: { type: boolean, description: Encrypted notes are never returned. }
+        openedByUserId: { type: string, description: Authenticated user ID only. }
+        reviewedByUserId: { type: string, nullable: true }
+        reviewedAt: { type: string, format: date-time, nullable: true }
+        releasedByUserId: { type: string, nullable: true }
+        releasedAt: { type: string, format: date-time, nullable: true }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    ManufacturingBatchCreate:
+      type: object
+      additionalProperties: false
+      required: [batchNumber, productionOrderId, quantityProduced, manufacturingDate, expiryDate]
+      properties:
+        batchNumber: { type: string, minLength: 1, maxLength: 60, description: Mandatory GMP batch number; DLP-checked. }
+        productionOrderId: { type: string, minLength: 1, maxLength: 80 }
+        quantityProduced: { type: number, exclusiveMinimum: 0, maximum: 1000000 }
+        uom: { type: string, minLength: 1, maxLength: 12 }
+        manufacturingDate: { type: string, format: date, description: Mandatory GMP manufacturing date. }
+        expiryDate: { type: string, format: date, description: Mandatory GMP expiry date; must not precede manufacturing date. }
+        deviationNotes: { type: string, maxLength: 1000, description: Encrypted at rest; never returned. }
+        branchId: { type: string, nullable: true }
+        classification: { type: string, enum: [CONFIDENTIAL, RESTRICTED] }
+    ManufacturingBatchUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        quantityProduced: { type: number, exclusiveMinimum: 0, maximum: 1000000 }
+        manufacturingDate: { type: string, format: date }
+        expiryDate: { type: string, format: date }
+        deviationNotes: { type: string, maxLength: 1000, description: Encrypted at rest; never returned. }
+        branchId: { type: string, nullable: true }
+        classification: { type: string, enum: [CONFIDENTIAL, RESTRICTED] }
+    ManufacturingBatchReject:
+      type: object
+      additionalProperties: false
+      properties:
+        reason: { type: string, maxLength: 1000, description: DLP-checked; not returned in the DTO. }
+    ManufacturingBatchList:
+      type: object
+      required: [batches]
+      properties:
+        batches:
+          type: array
+          items: { $ref: '#/components/schemas/ManufacturingBatchRecord' }
+    ManufacturingBatchEnvelope:
+      type: object
+      required: [batch]
+      properties:
+        batch: { $ref: '#/components/schemas/ManufacturingBatchRecord' }
+    ManufacturingBatchListEnvelope:
+      type: object
+      required: [batches]
+      properties:
+        batches:
+          type: array
+          items: { $ref: '#/components/schemas/ManufacturingBatchRecord' }
+    ManufacturingBatchIssueLine:
+      type: object
+      additionalProperties: false
+      required: [orderLineId, quantity, warehouseId]
+      properties:
+        orderLineId: { type: string, minLength: 1, maxLength: 80 }
+        quantity: { type: number, exclusiveMinimum: 0, maximum: 1000000 }
+        warehouseId: { type: string, minLength: 1, maxLength: 80 }
+        batchId: { type: string, nullable: true }
+        branchId: { type: string, nullable: true }
+    ManufacturingBatchIssueRequest:
+      type: object
+      additionalProperties: false
+      required: [lines]
+      properties:
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 40
+          items: { $ref: '#/components/schemas/ManufacturingBatchIssueLine' }
+    ManufacturingBatchIssueResult:
+      type: object
+      required: [orderLineId, movementId]
+      properties:
+        orderLineId: { type: string }
+        movementId: { type: string }
+    ManufacturingBatchIssueEnvelope:
+      type: object
+      required: [lines]
+      properties:
+        lines:
+          type: array
+          items: { $ref: '#/components/schemas/ManufacturingBatchIssueResult' }
+    ManufacturingBatchReleaseRequest:
+      type: object
+      additionalProperties: false
+      required: [warehouseId]
+      properties:
+        warehouseId: { type: string, minLength: 1, maxLength: 80 }
+        unitCostCents: { type: integer, format: int64, minimum: 1, description: Positive integer cents; defaults to the BOM standard cost. }
+        branchId: { type: string, nullable: true }
+    ManufacturingBatchReleaseResult:
+      type: object
+      required: [batch, inventoryBatch, movement]
+      properties:
+        batch: { $ref: '#/components/schemas/ManufacturingBatchRecord' }
+        inventoryBatch: { $ref: '#/components/schemas/InventoryBatch' }
+        movement: { $ref: '#/components/schemas/StockMovement' }
+    ManufacturingBatchReleaseEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ManufacturingBatchReleaseResult'
+    ManufacturingQcCheck:
+      type: object
+      required: [id, batchId, checkCode, name, isMandatory, status, classification]
+      properties:
+        id: { type: string }
+        batchId: { type: string }
+        checkCode: { type: string }
+        name: { type: string }
+        isMandatory: { type: boolean }
+        status: { $ref: '#/components/schemas/ManufacturingQcStatus' }
+        observedValue: { type: string, nullable: true }
+        resultNotesPresent: { type: boolean, description: Encrypted notes are never returned. }
+        signedByUserId: { type: string, nullable: true, description: Authenticated user ID only. }
+        signedAt: { type: string, format: date-time, nullable: true }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    ManufacturingQcCheckCreate:
+      type: object
+      additionalProperties: false
+      required: [checkCode, name]
+      properties:
+        checkCode: { type: string, minLength: 1, maxLength: 60 }
+        name: { type: string, minLength: 2, maxLength: 160, description: DLP-checked. }
+        isMandatory: { type: boolean }
+        observedValue: { type: string, maxLength: 180, description: DLP-checked. }
+        resultNotes: { type: string, maxLength: 1000, description: Encrypted at rest; never returned. }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    ManufacturingQcCheckUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name: { type: string, minLength: 2, maxLength: 160 }
+        isMandatory: { type: boolean }
+        observedValue: { type: string, maxLength: 180 }
+        resultNotes: { type: string, maxLength: 1000, description: Encrypted at rest; never returned. }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+    ManufacturingQcDecision:
+      type: object
+      additionalProperties: false
+      required: [decision]
+      properties:
+        decision: { type: string, enum: [PASS, FAIL, REVIEW] }
+        resultNotes: { type: string, maxLength: 1000, description: Encrypted at rest; never returned. }
+    ManufacturingQcCheckList:
+      type: object
+      required: [qcChecks]
+      properties:
+        qcChecks:
+          type: array
+          items: { $ref: '#/components/schemas/ManufacturingQcCheck' }
+    ManufacturingQcCheckEnvelope:
+      type: object
+      required: [qcCheck]
+      properties:
+        qcCheck: { $ref: '#/components/schemas/ManufacturingQcCheck' }
+    ManufacturingQcCheckListEnvelope:
+      type: object
+      required: [qcChecks]
+      properties:
+        qcChecks:
+          type: array
+          items: { $ref: '#/components/schemas/ManufacturingQcCheck' }
     ProjectBudgetEnvelope:
       type: object
       required: [budget]
