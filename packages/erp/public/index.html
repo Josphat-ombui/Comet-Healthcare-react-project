@@ -8,7 +8,7 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand"><span class="mark">C</span> Comet Healthcare <small>ERP · Phase 12</small></div>
+    <div class="brand"><span class="mark">C</span> Comet Healthcare <small>ERP · Phase 15</small></div>
     <div class="header-actions">
       <button id="unreadBadge" class="pill unread-badge" type="button" title="Unread notifications" aria-label="Unread notifications" hidden>0</button>
       <div id="identity" class="identity"></div>
@@ -50,6 +50,7 @@
         <button id="tabProjects" class="tab" type="button">Projects</button>
         <button id="tabManufacturing" class="tab" type="button">Manufacturing</button>
         <button id="tabReporting" class="tab" type="button">Reporting</button>
+        <button id="tabDeveloper" class="tab" type="button">Developer/API</button>
         <span id="connection" class="pill connection" aria-live="polite">Connecting…</span>
       </nav>
 
@@ -1648,6 +1649,48 @@
               </table>
             </div>
             <p class="muted">A widget with no completed run reports <code>NO_RUN_YET</code>. Available summaries are fetched from the run record; no value is pushed over a socket.</p>
+          </section>
+        </div>
+      </section>
+
+      <section id="developerView" hidden>
+        <p class="finance-banner developer-banner" role="note">Public API access is read-only, scoped and rate-limited per key. Webhook payloads and developer socket frames contain opaque IDs and classification only - never secrets, key hashes, URLs, signatures, response bodies or business values. Signing secrets are shown once at creation time and are never returned by a management DTO.</p>
+        <p id="developerError" class="error" role="alert"></p>
+        <div class="finance-grid">
+          <section class="card span-2">
+            <div class="card-head"><h2>Developer contracts</h2><button id="refreshDeveloper" class="link" type="button">Refresh all</button></div>
+            <p class="muted">Static contracts are available at <code>/api/public/v1/docs</code> and <code>/api/webhooks/docs</code>. Provider callbacks are verified at <code>/api/webhooks/callbacks/:clientId/verify</code> with a timing-safe HMAC over a canonical ID-only envelope.</p>
+            <p class="muted">All records below are fetched through session-authenticated endpoints. Replays and delivery failures are surfaced as IDs and reason codes only.</p>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Public clients</h2><span id="developerClientCount" class="pill"></span></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>ID</th><th>Name</th><th>API key</th><th>Key prefix</th><th>Scopes</th><th>Status</th><th>Revoked</th></tr></thead>
+                <tbody id="developerClientRows"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Webhook subscriptions</h2><span id="developerSubscriptionCount" class="pill"></span></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>ID</th><th>Endpoint</th><th>Events</th><th>Client</th><th>Status</th><th>Secret</th><th>Rotated</th></tr></thead>
+                <tbody id="developerSubscriptionRows"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Webhook deliveries</h2><span id="developerDeliveryCount" class="pill"></span></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>ID</th><th>Event</th><th>Type</th><th>Status</th><th>Attempts</th><th>Next attempt</th><th>HTTP</th><th>Reason</th><th>Delivered</th><th></th></tr></thead>
+                <tbody id="developerDeliveryRows"></tbody>
+              </table>
+            </div>
           </section>
         </div>
       </section>

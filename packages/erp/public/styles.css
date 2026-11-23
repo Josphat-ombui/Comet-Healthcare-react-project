@@ -118,3 +118,13 @@ button.unread-badge { cursor: pointer; }
 .pill.finance-status.inspected, .pill.finance-status.matched { background: #dcfce7; color: #166534; }
 .pill.finance-status.rejected, .pill.finance-status.discrepancy, .pill.finance-status.flagged { background: #fee2e2; color: #b91c1c; }
 .pill.finance-status.received, .pill.finance-status.returned { background: #fef3c7; color: #92400e; }
+
+/* Phase 14/15 reporting and developer views */
+.finance-grid, .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 18px; }
+.form-grid .form-actions { grid-column: 1 / -1; }
+.developer-banner { border-color: #cfe0f8; border-left-color: #2563eb; background: #f0f7ff; color: #1e3a8a; }
+#developerView code { overflow-wrap: anywhere; }
+.pill.finance-status.active, .pill.finance-status.delivered, .pill.finance-status.verified { background: #dcfce7; color: #166534; }
+.pill.finance-status.pending, .pill.finance-status.retrying, .pill.finance-status.disabled, .pill.finance-status.suspended { background: #fef3c7; color: #92400e; }
+.pill.finance-status.revoked, .pill.finance-status.failed { background: #fee2e2; color: #b91c1c; }
+@media (max-width: 780px) { .finance-grid, .form-grid { grid-template-columns: 1fr; } }

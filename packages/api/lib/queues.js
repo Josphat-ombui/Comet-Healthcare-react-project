@@ -4,7 +4,7 @@
 import { config } from './config.js'
 import { db, getTenantContext } from './tenant.js'
 
-const QUEUE_NAMES = ['files.scan', 'notifications.dispatch', 'documents.generate', 'retention.sweep', 'search.index', 'finance.etims.submit', 'reporting.run']
+const QUEUE_NAMES = ['files.scan', 'notifications.dispatch', 'documents.generate', 'retention.sweep', 'search.index', 'finance.etims.submit', 'reporting.run', 'webhook.deliver']
 
 function connection() {
   const url = new URL(config.events.redisUrl || 'redis://localhost:6379')

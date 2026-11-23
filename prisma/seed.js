@@ -11,6 +11,7 @@ import { PrismaClient } from '@prisma/client'
 import '../packages/api/lib/env.js'
 import { genBookingCode } from '../packages/api/lib/util.js'
 import { encryptString } from '../packages/api/lib/crypto.js'
+import { sha256 } from '../packages/api/lib/auth.js'
 import { addDays, localIsoDay } from '../packages/api/lib/slots.js'
 import { DEFAULT_COMPANY, computeLine, computeTotals } from '../packages/api/lib/documents.js'
 import { DEFAULT_SITE_CONTENT } from '../packages/api/lib/content.js'
@@ -1519,6 +1520,90 @@ async function main() {
     },
   })
   console.log('✓ Seeded allow-listed report definition, dashboard and widget fixtures (no runs)')
+
+  // -------------------------------------------------------------- phase 15
+  // Developer fixtures are cmp_comet-only and strictly idempotent. The API key
+  // hash and signing secret are derived from obvious development markers; no
+  // real credential, card data or external endpoint is seeded. The subscription
+  // is DISABLED and the delivery is terminal so a retry cannot call a network.
+  const fixturePublicScopes = ['public:health:read', 'public:finance:read', 'public:sales:read']
+  const fixtureKeyHash = sha256('comet-fixture-public-api-key-v1-not-a-real-secret')
+  const fixtureWebhookSecret = 'comet-fixture-webhook-signing-secret-v1-not-a-real-secret'
+  const fixtureWebhookSecretHash = sha256(fixtureWebhookSecret)
+
+  const publicApiKeyFixture = await prisma.apiKey.upsert({
+    where: { keyHash: fixtureKeyHash },
+    update: {},
+    create: {
+      companyId,
+      userId: admin.id,
+      name: 'Phase 15 fixture public API key',
+      keyPrefix: 'cmt_fixture_',
+      keyHash: fixtureKeyHash,
+      scopes: fixturePublicScopes,
+      rateLimit: 60,
+    },
+  })
+
+  const publicClientFixture = await prisma.publicClient.upsert({
+    where: { companyId_apiKeyId: { companyId, apiKeyId: publicApiKeyFixture.id } },
+    update: {},
+    create: {
+      companyId,
+      apiKeyId: publicApiKeyFixture.id,
+      name: 'Phase 15 fixture public client',
+      scopes: fixturePublicScopes,
+      status: 'ACTIVE',
+      createdByUserId: admin.id,
+    },
+  })
+
+  const webhookSubscriptionFixture = await prisma.webhookSubscription.upsert({
+    where: { companyId_secretHash: { companyId, secretHash: fixtureWebhookSecretHash } },
+    update: {},
+    create: {
+      companyId,
+      clientId: publicClientFixture.id,
+      url: 'https://example.invalid/comet/webhooks/fixture',
+      eventTypes: ['InvoiceIssued', 'PaymentRecorded'],
+      secretEncrypted: encryptString(fixtureWebhookSecret),
+      secretHash: fixtureWebhookSecretHash,
+      status: 'DISABLED',
+      createdByUserId: admin.id,
+    },
+  })
+
+  await prisma.webhookDelivery.upsert({
+    where: {
+      subscriptionId_eventId: {
+        subscriptionId: webhookSubscriptionFixture.id,
+        eventId: 'evt_fixture_phase15_invoice_issued',
+      },
+    },
+    update: {},
+    create: {
+      companyId,
+      subscriptionId: webhookSubscriptionFixture.id,
+      eventId: 'evt_fixture_phase15_invoice_issued',
+      eventType: 'InvoiceIssued',
+      payload: {
+        eventId: 'evt_fixture_phase15_invoice_issued',
+        eventType: 'InvoiceIssued',
+        entityType: 'INVOICE',
+        entityId: 'inv_fixture_phase15_0001',
+        occurredAt: '2026-11-23T00:00:00.000Z',
+        correlationId: 'cor_fixture_phase15_0001',
+        classification: 'INTERNAL',
+      },
+      status: 'FAILED',
+      attempts: 1,
+      lastError: 'NETWORK_ERROR',
+      responseStatus: null,
+      nextAttemptAt: null,
+      deliveredAt: null,
+    },
+  })
+  console.log('✓ Seeded inert public client, webhook subscription and failed delivery fixtures')
 
   console.log('\nSeed complete ✔')
 }

@@ -484,6 +484,28 @@ enum DashboardWidgetType {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 15 public API and webhooks
+// ---------------------------------------------------------------------------
+
+enum PublicClientStatus {
+  ACTIVE
+  REVOKED
+}
+
+enum WebhookStatus {
+  ACTIVE
+  DISABLED
+  SUSPENDED
+}
+
+enum WebhookDeliveryStatus {
+  PENDING
+  DELIVERED
+  FAILED
+  RETRYING
+}
+
+// ---------------------------------------------------------------------------
 // Organisation
 // ---------------------------------------------------------------------------
 
@@ -621,6 +643,10 @@ model Company {
   reportRuns               ReportRun[]
   dashboards               Dashboard[]
   dashboardWidgets         DashboardWidget[]
+  // Phase 15 public API and webhooks
+  publicClients            PublicClient[]
+  webhookSubscriptions     WebhookSubscription[]
+  webhookDeliveries        WebhookDelivery[]
 }
 
 model Branch {
@@ -718,6 +744,10 @@ model Branch {
   reportRuns               ReportRun[]
   dashboards               Dashboard[]
   dashboardWidgets         DashboardWidget[]
+  // Phase 15 public API and webhooks
+  publicClients            PublicClient[]
+  webhookSubscriptions     WebhookSubscription[]
+  webhookDeliveries        WebhookDelivery[]
 
   @@unique([companyId, code])
   @@index([companyId, isActive])
@@ -916,6 +946,9 @@ model User {
   timeEntriesApproved     TimeEntry[]         @relation("TimeEntryApprovedBy")
   timeEntriesCreated      TimeEntry[]         @relation("TimeEntryCreatedBy")
   projectBudgetLinksCreated ProjectBudgetLink[] @relation("ProjectBudgetLinkCreatedBy")
+  // Phase 15 public API and webhooks
+  publicClientsCreated        PublicClient[]         @relation("PublicClientCreatedBy")
+  webhookSubscriptionsCreated WebhookSubscription[]  @relation("WebhookSubscriptionCreatedBy")
 
   @@unique([companyId, email])
   @@unique([companyId, identityProvider, externalId])
@@ -1084,6 +1117,8 @@ model ApiKey {
   revokedAt  DateTime?
   lastUsedAt DateTime?
   createdAt  DateTime  @default(now())
+
+  publicClients PublicClient[]
 
   @@index([companyId, keyPrefix])
 }
@@ -4135,4 +4170,95 @@ model DashboardWidget {
   @@unique([dashboardId, code])
   @@index([companyId, dashboardId])
   @@index([companyId, reportKey])
+}
+
+// ---------------------------------------------------------------------------
+// Phase 15 public API clients and webhook delivery ledger
+//
+// PublicClient links to the existing ApiKey rather than duplicating key
+// storage. WebhookSubscription stores only an AES-GCM envelope and a SHA-256
+// hash of its signing secret; no plaintext or hash is ever returned by a DTO.
+// WebhookDelivery.payload is constrained in application code to opaque IDs and
+// classification only, never business content.
+// ---------------------------------------------------------------------------
+
+model PublicClient {
+  id              String             @id @default(cuid())
+  companyId       String             @default("cmp_comet")
+  tenant          Company            @relation(fields: [companyId], references: [id])
+  branchId        String?
+  branch          Branch?            @relation(fields: [branchId], references: [id])
+  apiKeyId        String
+  apiKey          ApiKey             @relation(fields: [apiKeyId], references: [id])
+  name            String
+  status          PublicClientStatus @default(ACTIVE)
+  scopes          Json
+  createdByUserId String?
+  createdBy       User?              @relation("PublicClientCreatedBy", fields: [createdByUserId], references: [id])
+  revokedAt       DateTime?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  webhookSubscriptions WebhookSubscription[]
+
+  @@unique([companyId, apiKeyId])
+  @@index([companyId, status])
+  @@index([companyId, branchId])
+}
+
+model WebhookSubscription {
+  id              String             @id @default(cuid())
+  companyId       String             @default("cmp_comet")
+  tenant          Company            @relation(fields: [companyId], references: [id])
+  branchId        String?
+  branch          Branch?            @relation(fields: [branchId], references: [id])
+  clientId        String?
+  client          PublicClient?      @relation(fields: [clientId], references: [id])
+  url             String
+  eventTypes      Json
+  // AES-GCM envelope plus a lookup hash. Neither field is exposed by a DTO.
+  secretEncrypted String
+  secretHash      String
+  status          WebhookStatus      @default(ACTIVE)
+  rotatedAt       DateTime?
+  createdByUserId String?
+  createdBy       User?              @relation("WebhookSubscriptionCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  deliveries WebhookDelivery[]
+
+  @@unique([companyId, secretHash])
+  @@index([companyId, status])
+  @@index([companyId, clientId])
+  @@index([companyId, branchId])
+}
+
+model WebhookDelivery {
+  id             String                 @id @default(cuid())
+  companyId      String                 @default("cmp_comet")
+  tenant         Company                @relation(fields: [companyId], references: [id])
+  branchId       String?
+  branch         Branch?                @relation(fields: [branchId], references: [id])
+  subscriptionId String
+  subscription   WebhookSubscription    @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  eventId        String
+  eventType      String
+  // Application-validated ID-only JSON: opaque entity/event IDs plus
+  // classification. No titles, amounts, payloads, tokens or secrets.
+  payload        Json
+  status         WebhookDeliveryStatus  @default(PENDING)
+  attempts       Int                    @default(0)
+  nextAttemptAt  DateTime?
+  responseStatus Int?
+  // A normalised error code only; provider response bodies are never stored.
+  lastError      String?
+  deliveredAt    DateTime?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  @@unique([subscriptionId, eventId])
+  @@index([companyId, status, nextAttemptAt])
+  @@index([companyId, eventType])
+  @@index([companyId, branchId])
 }

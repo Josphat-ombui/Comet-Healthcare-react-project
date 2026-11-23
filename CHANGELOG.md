@@ -8,6 +8,74 @@ The format follows a phase-gate model: each enterprise phase ends with passing t
 
 ## [Unreleased]
 
+### Phase 15 — Public API and webhooks
+
+**Added**
+
+- Read-only versioned public surface at `/api/public/v1` (`1.0.0`) with static `/docs`, then
+  API-key authentication, per-key 60-second rate limiting and explicit scopes on every data route.
+  An opaque Bearer key is resolved to `SHA-256(key)` on the reused `ApiKey`; a scope must be granted
+  on both the key and its linked `PublicClient` (`public:health:read`, `public:finance:read`,
+  `public:sales:read`). The router rejects every write verb with 405.
+- Allow-listed summaries only: `/health` returns contract metadata and granted scopes;
+  `/finance/summary` accepts `income|ageing` and delegates to the authorised `getStatement` service;
+  `/sales/summary` aggregates safe integer cents and counts for `CONFIRMED` and `FULFILLED` orders in
+  the client's tenant/branch scope. No statement rows, order IDs, customers, free text, hardcoded
+  rate or fabricated total is exposed; unavailable data uses explicit `NO_DATA` metadata.
+- Tenant/branch-scoped `PublicClient`, `WebhookSubscription` and `WebhookDelivery` models with six
+  new permissions (`public.client.read/write`, `webhook.subscription.read/write`,
+  `webhook.delivery.read/retry`). Client registration links an existing `apiKeyId` or accepts a
+  caller-owned `keyHash`/`keyPrefix`; no raw key is accepted or returned. Revoking a client revokes
+  its key and emits `PublicClientRevoked`.
+- `/api/webhooks` management and callback surface: register/list/get/revoke clients;
+  create/list/get/update/rotate subscriptions; list/get/retry deliveries; verify signed provider
+  callbacks. Webhook secrets are write-only whole-field values, stored as AES-GCM envelopes plus a
+  SHA-256 lookup hash; DTOs expose only `secretConfigured` and `rotatedAt`. Delivery URLs must be
+  public HTTPS, excluding loopback/private addresses.
+- HMAC-SHA256 signing over stable sorted-key JSON with `x-comet-signature: sha256=<hex>` and
+  ID/classification-only delivery bodies. `webhook.deliver` carries only opaque IDs; the worker
+  records `PENDING`/`RETRYING`/`DELIVERED`/`FAILED`, attempts, next-attempt time, HTTP status and
+  normalised reason codes, retries with exponential backoff, and never reads or stores a provider
+  response body. Terminal failures emit a strict `WebhookDeliveryFailed` event.
+- Best-effort fan-out after successful outbox publication, with `(subscriptionId, eventId)`
+  de-duplication and developer lifecycle events excluded to prevent recursive deliveries. Callback
+  verification checks the signature before replay state, enforces timestamp freshness, and rejects
+  replays through the append-only audit ledger plus an in-memory cache.
+- Three strict developer event schemas and two company-room-only sockets (`developer:webhook`,
+  `developer:client`). ERP Developer/API tab with authenticated refetch and ID-only invalidation.
+- Migration `20261123000900_phase15_public_api` with RLS and `tenant_branch_scope` for all three new
+  tables. Idempotent, inert `cmp_comet` fixtures: one DISABLED subscription, one FAILED delivery and
+  one client linked to an obviously fake API key hash.
+- `packages/api/tests/phase15-public-api.test.js` and `phase15-webhooks.test.js` with 26 tests
+  covering scopes, per-key limits, read-only allow-listing, integer-cent summaries, canonical HMAC,
+  replay rejection, secret masking, ID-only payloads, retry/backoff status, strict events, socket
+  routing, permission separation, tenant scope, migrations, fixtures and ERP wiring.
+- OpenAPI bumped to `1.0.0` with the Public API and Webhooks tags, 15 paths, schemas and security
+  extensions; developer-portal README, root README, `.env.example` and ADR-0020 added.
+
+**Changed**
+
+- `Idempotency-Key` remains scoped to messaging sends. Provider callback replay uses signature +
+  freshness + audit ledger, and delivery de-duplication uses the unique `(subscriptionId, eventId)`
+  pair. `apiKeyAuth` documents an opaque Bearer key; `oauth2` is reserved and unused.
+- No process-wide plaintext signing secret: subscription secrets use `OBJECT_ENCRYPTION_KEY`, and
+  callback HMAC uses the linked API key's SHA-256 hash. No live filing, payment, email or external
+  provider response storage was introduced.
+
+**Verification**
+
+- `npm test` — 252 passed (26 Phase 15), 0 failed; `npm run test:smoke` — 31 passed (7 files).
+- `npm run lint` passes with 21 pre-existing non-blocking warnings and no Phase 15 warnings.
+  `npm run build` passes (`✓ built in 2.24s`, 2335 modules transformed).
+- `node --check packages/erp/public/app.js` passes; the changed Phase 15 API files and test also
+  pass `node --check`.
+- OpenAPI YAML parses as `1.0.0`: 260 paths, 343 operations, 4 `/api/public/v1` paths,
+  11 `/api/webhooks` paths, 364 schemas, 23 parameters and 1148 `$ref`s resolving with 0 missing.
+- Cross-tenant RLS probe with `comet_app`: `cmp_other` sees 0 rows in `PublicClient`,
+  `WebhookSubscription` and `WebhookDelivery`; `cmp_comet` sees 1 row in each.
+- `npm run db:deploy`, `npm run db:generate` and two consecutive `npm run db:seed` runs pass; seed
+  reports `✓ Seeded inert public client, webhook subscription and failed delivery fixtures`.
+
 ### Phase 14 — Reporting
 
 **Added**

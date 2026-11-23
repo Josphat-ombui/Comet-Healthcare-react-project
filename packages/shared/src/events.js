@@ -537,6 +537,35 @@ export const DashboardUpdatedDataSchema = ReportingEntityRefSchema.extend({
   classification: ClassificationSchema,
 }).strict()
 
+// Phase 15 developer events are strict ID/classification-only invalidation
+// signals. Client IDs, subscription IDs, delivery IDs, opaque event IDs and
+// normalised reason codes only — never URLs, secrets, key hashes, signatures,
+// response bodies, delivery payloads or account identifiers.
+const DeveloperEntityRefSchema = z.object({
+  entityType: z.enum(['PUBLIC_CLIENT', 'WEBHOOK_SUBSCRIPTION', 'WEBHOOK_DELIVERY']),
+  entityId: z.string(),
+})
+
+export const WebhookSubscriptionCreatedDataSchema = DeveloperEntityRefSchema.extend({
+  subscriptionId: z.string(),
+  clientId: z.string().nullable().optional(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const WebhookDeliveryFailedDataSchema = DeveloperEntityRefSchema.extend({
+  deliveryId: z.string(),
+  subscriptionId: z.string(),
+  eventId: z.string(),
+  reasonCode: z.enum(['NETWORK_ERROR', 'TIMEOUT', 'HTTP_ERROR', 'INVALID_URL', 'INACTIVE_SUBSCRIPTION', 'MISSING_SECRET', 'INVALID_PAYLOAD']),
+  classification: ClassificationSchema,
+}).strict()
+
+export const PublicClientRevokedDataSchema = DeveloperEntityRefSchema.extend({
+  clientId: z.string(),
+  apiKeyId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
 export const DomainEventSchemas = {
   MessageSent: MessageSentDataSchema,
   ThreadAssigned: ThreadAssignedDataSchema,
@@ -608,6 +637,9 @@ export const DomainEventSchemas = {
   ReportRunCompleted: ReportRunCompletedDataSchema,
   ReportRunFailed: ReportRunFailedDataSchema,
   DashboardUpdated: DashboardUpdatedDataSchema,
+  WebhookSubscriptionCreated: WebhookSubscriptionCreatedDataSchema,
+  WebhookDeliveryFailed: WebhookDeliveryFailedDataSchema,
+  PublicClientRevoked: PublicClientRevokedDataSchema,
 }
 
 export function parseEventEnvelope(input) {

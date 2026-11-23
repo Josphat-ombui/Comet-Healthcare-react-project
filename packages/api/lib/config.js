@@ -57,6 +57,15 @@ export const config = {
   procurement: {
     matchToleranceBps: Math.max(0, int(process.env.PROCUREMENT_MATCH_TOLERANCE_BPS, 0)),
   },
+  // Phase 15 webhooks. Signing secrets are always per-subscription and stored
+  // encrypted; there is no process-wide plaintext signing secret. The callback
+  // verifier uses the linked API key's SHA-256 hash as its HMAC key.
+  webhook: {
+    maxAttempts: Math.max(1, int(process.env.WEBHOOK_MAX_ATTEMPTS, 5)),
+    callbackTtlSeconds: Math.max(30, int(process.env.WEBHOOK_CALLBACK_TTL_SECONDS, 300)),
+    deliveryTimeoutMs: Math.max(1000, int(process.env.WEBHOOK_DELIVERY_TIMEOUT_MS, 10_000)),
+    retryBackoffMs: Math.max(100, int(process.env.WEBHOOK_RETRY_BACKOFF_MS, 2000)),
+  },
 
   password: {
     enforceBreach: process.env.PASSWORD_BREACH_ENFORCE === 'true',

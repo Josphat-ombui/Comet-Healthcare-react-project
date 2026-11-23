@@ -22,6 +22,18 @@ import {
 import { localIsoDay, addDays } from '../../api/lib/slots.js'
 import { runWithTenant } from '../../api/lib/tenant.js'
 import { executeReportRun } from '../../api/lib/reporting.js'
+import { decryptString } from '../../api/lib/crypto.js'
+import {
+  createWebhookDeliveries,
+  sanitizeWebhookPayload,
+  canonicalize,
+  signatureHeader,
+  WEBHOOK_SIGNATURE_HEADER,
+  WEBHOOK_DELIVERY_HEADER,
+  WEBHOOK_EVENT_HEADER,
+  WEBHOOK_TIMESTAMP_HEADER,
+} from '../../api/lib/webhooks.js'
+import { config } from '../../api/lib/config.js'
 
 const int = (value, fallback) => {
   const parsed = Number.parseInt(value, 10)
@@ -123,6 +135,21 @@ async function notifyFinanceUsers(prisma, { companyId, branchId, title, message,
       },
     })
   }
+}
+
+/**
+ * Fan out a committed outbox envelope to matching webhook subscriptions. The
+ * caller owns error isolation: a delivery failure must never roll back an
+ * already published outbox event.
+ */
+export async function fanoutWebhooks(client, event) {
+  return createWebhookDeliveries(client, event)
+}
+
+/** Mirrors the BullMQ exponential delay without exposing provider content. */
+export function webhookBackoffMs(attempt) {
+  const exponent = Math.max(0, Number(attempt) - 1 || 0)
+  return Math.min(config.webhook.retryBackoffMs * (2 ** exponent), 60_000)
 }
 
 export function createProcessors(prisma) {
@@ -546,6 +573,163 @@ export function createProcessors(prisma) {
     return result
   }
 
+  // -------------------------------------------------------- webhook.deliver
+  /**
+   * Record a failed delivery attempt. Retryable failures throw so BullMQ can
+   * apply its own exponential backoff; terminal failures emit one strict,
+   * ID-only developer event and do not throw.
+   */
+  async function recordWebhookFailure(delivery, job, attempt, reasonCode, responseStatus, terminal = false) {
+    const final = terminal || attempt >= config.webhook.maxAttempts
+    await prisma.webhookDelivery.update({
+      where: { id: delivery.id },
+      data: {
+        status: final ? 'FAILED' : 'RETRYING',
+        attempts: attempt,
+        responseStatus: Number.isSafeInteger(responseStatus) ? responseStatus : null,
+        lastError: reasonCode,
+        nextAttemptAt: final ? null : new Date(Date.now() + webhookBackoffMs(attempt)),
+        deliveredAt: null,
+      },
+    })
+
+    if (!final) {
+      // The worker wrapper records the JobRecord failure; the delivery ledger
+      // remains the authoritative source for RETRYING state and next attempt.
+      throw new Error(`Webhook delivery failed: ${reasonCode}`)
+    }
+
+    await emit(prisma, delivery.companyId, 'WebhookDeliveryFailed', {
+      entityType: 'WEBHOOK_DELIVERY',
+      entityId: delivery.id,
+      deliveryId: delivery.id,
+      subscriptionId: delivery.subscriptionId,
+      eventId: delivery.eventId,
+      reasonCode,
+      classification: 'INTERNAL',
+    }, {
+      aggregateType: 'WebhookDelivery',
+      aggregateId: delivery.id,
+      branchId: delivery.branchId,
+      correlationId: job.data.correlationId || null,
+    })
+    await updateJobRecord(prisma, job, 'FAILED', null, new Error(`Webhook delivery failed: ${reasonCode}`))
+    return { deliveryId: delivery.id, status: 'FAILED', reasonCode }
+  }
+
+  async function deliverWebhook(job) {
+    const { deliveryId, companyId } = job.data
+    if (!deliveryId || !companyId) throw new Error('Invalid webhook delivery job payload')
+
+    const delivery = await prisma.webhookDelivery.findFirst({
+      where: { id: deliveryId, companyId },
+    })
+    if (!delivery) {
+      await updateJobRecord(prisma, job, 'COMPLETED', { skipped: true })
+      return { skipped: true }
+    }
+    if (delivery.status === 'DELIVERED') {
+      await updateJobRecord(prisma, job, 'COMPLETED', { deliveryId, status: 'DELIVERED' })
+      return { deliveryId, status: 'DELIVERED' }
+    }
+
+    await updateJobRecord(prisma, job, 'RUNNING')
+    const attempt = (Number.isSafeInteger(delivery.attempts) ? delivery.attempts : 0) + 1
+    const payload = sanitizeWebhookPayload(delivery.payload)
+    const correlationId = job.data.correlationId || payload?.correlationId || null
+    const terminate = (reasonCode) => recordWebhookFailure(
+      delivery,
+      { ...job, data: { ...job.data, correlationId } },
+      attempt,
+      reasonCode,
+      null,
+      true
+    )
+
+    const subscription = await prisma.webhookSubscription.findFirst({
+      where: { id: delivery.subscriptionId, companyId },
+      select: { id: true, url: true, status: true, secretEncrypted: true },
+    })
+    if (!subscription || subscription.status !== 'ACTIVE') return terminate('INACTIVE_SUBSCRIPTION')
+    if (!payload) return terminate('INVALID_PAYLOAD')
+
+    let url
+    try {
+      url = new URL(subscription.url)
+    } catch {
+      return terminate('INVALID_URL')
+    }
+    if (url.protocol !== 'https:') return terminate('INVALID_URL')
+    if (!subscription.secretEncrypted) return terminate('MISSING_SECRET')
+
+    let secret
+    try {
+      secret = decryptString(subscription.secretEncrypted)
+    } catch {
+      return terminate('MISSING_SECRET')
+    }
+    if (!secret) return terminate('MISSING_SECRET')
+
+    const canonical = canonicalize(payload)
+    const headers = {
+      'content-type': 'application/json',
+      'user-agent': 'comet-webhook/1.0',
+      [WEBHOOK_SIGNATURE_HEADER]: signatureHeader(canonical, secret),
+      [WEBHOOK_DELIVERY_HEADER]: delivery.id,
+      [WEBHOOK_EVENT_HEADER]: delivery.eventId,
+      [WEBHOOK_TIMESTAMP_HEADER]: new Date().toISOString(),
+    }
+
+    // Only the HTTP status is retained. Response headers and bodies are never
+    // read into the ledger, logs, events or queue results.
+    let failure = null
+    try {
+      const response = await fetch(url.toString(), {
+        method: 'POST',
+        headers,
+        body: canonical,
+        redirect: 'manual',
+        signal: AbortSignal.timeout(config.webhook.deliveryTimeoutMs),
+      })
+      if (response.body) {
+        try {
+          await response.body.cancel()
+        } catch {
+          // Cancelling an already consumed stream is harmless.
+        }
+      }
+      if (response.ok) {
+        const deliveredAt = new Date()
+        await prisma.webhookDelivery.update({
+          where: { id: delivery.id },
+          data: {
+            status: 'DELIVERED',
+            attempts: attempt,
+            responseStatus: response.status,
+            lastError: null,
+            nextAttemptAt: null,
+            deliveredAt,
+          },
+        })
+        await updateJobRecord(prisma, job, 'COMPLETED', { deliveryId, status: 'DELIVERED' })
+        return { deliveryId, status: 'DELIVERED' }
+      }
+      failure = { reasonCode: 'HTTP_ERROR', responseStatus: response.status }
+    } catch (error) {
+      const timeout = error?.name === 'TimeoutError' || error?.name === 'AbortError'
+      failure = { reasonCode: timeout ? 'TIMEOUT' : 'NETWORK_ERROR', responseStatus: null }
+    }
+
+    return recordWebhookFailure(
+      delivery,
+      { ...job, data: { ...job.data, correlationId } },
+      attempt,
+      failure.reasonCode,
+      failure.responseStatus,
+      false
+    )
+  }
+
   return {
     'files.scan': scanFile,
     'notifications.dispatch': dispatchNotification,
@@ -554,5 +738,6 @@ export function createProcessors(prisma) {
     'retention.sweep': retentionSweep,
     'finance.etims.submit': submitEtims,
     'reporting.run': runReport,
+    'webhook.deliver': deliverWebhook,
   }
 }

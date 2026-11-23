@@ -6,7 +6,7 @@ import { PrismaClient } from '@prisma/client'
 import { createClient } from 'redis'
 import { Queue, Worker } from 'bullmq'
 import '../../api/lib/env.js'
-import { createProcessors, recordJobFailure } from './jobs.js'
+import { createProcessors, fanoutWebhooks, recordJobFailure } from './jobs.js'
 
 const int = (value, fallback) => {
   const parsed = Number.parseInt(value, 10)
@@ -22,6 +22,7 @@ const config = {
   prefix: process.env.BULLMQ_PREFIX || 'comet',
   retentionCron: process.env.RETENTION_SWEEP_CRON || '0 2 * * *',
   queuesEnabled: process.env.QUEUES_ENABLED !== 'false',
+  webhookMaxAttempts: int(process.env.WEBHOOK_MAX_ATTEMPTS, 5),
 }
 
 function redisConnection() {
@@ -66,6 +67,17 @@ async function publishBatch() {
         where: { id: event.id },
         data: { status: 'PUBLISHED', publishedAt: new Date() },
       })
+
+      // Webhook fan-out is best-effort after publication. A subscription or
+      // queue failure must never mark a successfully published event as failed.
+      try {
+        const created = await fanoutWebhooks(prisma, event.payload)
+        if (created.length) {
+          console.log(`Webhook fanout for ${event.id}: ${created.length} delivery(ies)`)
+        }
+      } catch (error) {
+        console.error(`Webhook fanout for outbox event ${event.id} failed:`, error.message)
+      }
     } catch (error) {
       const attempts = event.attempts + 1
       const delayMs = Math.min(attempts * 1000, 60_000)
@@ -92,7 +104,7 @@ async function loop() {
   setTimeout(loop, config.pollMs)
 }
 
-const QUEUE_NAMES = ['files.scan', 'notifications.dispatch', 'documents.generate', 'search.index', 'retention.sweep', 'finance.etims.submit', 'reporting.run']
+const QUEUE_NAMES = ['files.scan', 'notifications.dispatch', 'documents.generate', 'search.index', 'retention.sweep', 'finance.etims.submit', 'reporting.run', 'webhook.deliver']
 
 let queueWorkers = []
 

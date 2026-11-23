@@ -18,6 +18,8 @@
 //   /api/inventory/*   items, warehouses, balances, movements, transfers, counts (Phase 8)
 //   /api/procurement/* requisitions, orders, receipts, returns, three-way matches (Phase 9)
 //   /api/service/*     contracts, tickets, work orders, visits, part usage (Phase 10)
+//   /api/public/v1/*   scoped, rate-limited read-only public API (Phase 15)
+//   /api/webhooks/*    clients, signed subscriptions, deliveries, callbacks (Phase 15)
 //
 // Run with `npm run dev` (auto-restarts) or `npm start`.
 
@@ -55,6 +57,8 @@ import { hrRouter } from './routes/hr.routes.js'
 import { projectsRouter } from './routes/projects.routes.js'
 import { manufacturingRouter } from './routes/manufacturing.routes.js'
 import { reportingRouter } from './routes/reporting.routes.js'
+import { publicV1Router } from './routes/public-v1.routes.js'
+import { webhooksRouter } from './routes/webhooks.routes.js'
 import { storageMode } from './lib/object-storage.js'
 import { requireAuth } from './lib/auth.js'
 import { resolvePrincipal } from './lib/authorize.js'
@@ -135,6 +139,8 @@ app.use('/api/hr', hrRouter)
 app.use('/api/projects', projectsRouter)
 app.use('/api/manufacturing', manufacturingRouter)
 app.use('/api/reporting', reportingRouter)
+app.use('/api/public/v1', publicV1Router)
+app.use('/api/webhooks', webhooksRouter)
 app.use('/api/admin', requireAuth, adminRouter)
 
 // ---- production: serve the built frontend from dist/ and SPA-fallback ----

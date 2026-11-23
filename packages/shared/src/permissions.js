@@ -184,6 +184,14 @@ export const PERMISSIONS = Object.freeze({
   'reporting.run.write': 'Queue allow-listed report runs',
   'reporting.dashboard.read': 'Read reporting dashboards and widgets',
   'reporting.dashboard.write': 'Manage reporting dashboards and widgets',
+  // Phase 15. Public-client key management and webhook delivery control are
+  // separated from read-only developer inspection and from each other.
+  'public.client.read': 'Read registered public API clients',
+  'public.client.write': 'Register and revoke public API clients',
+  'webhook.subscription.read': 'Read webhook subscriptions',
+  'webhook.subscription.write': 'Create, update and rotate webhook subscriptions',
+  'webhook.delivery.read': 'Read webhook delivery attempts',
+  'webhook.delivery.retry': 'Retry failed webhook deliveries',
 })
 
 export const ROLE_PERMISSIONS = Object.freeze({
@@ -333,6 +341,12 @@ export const ROLE_PERMISSIONS = Object.freeze({
     'reporting.run.write',
     'reporting.dashboard.read',
     'reporting.dashboard.write',
+    'public.client.read',
+    'public.client.write',
+    'webhook.subscription.read',
+    'webhook.subscription.write',
+    'webhook.delivery.read',
+    'webhook.delivery.retry',
   ],
   STAFF: [
     'messaging.inbox.read',
@@ -413,6 +427,9 @@ export const ROLE_PERMISSIONS = Object.freeze({
     'reporting.definition.read',
     'reporting.run.read',
     'reporting.dashboard.read',
+    'public.client.read',
+    'webhook.subscription.read',
+    'webhook.delivery.read',
   ],
   COMPLIANCE: [
     'audit.read',
@@ -485,6 +502,9 @@ export const ROLE_PERMISSIONS = Object.freeze({
     'reporting.run.read',
     'reporting.run.write',
     'reporting.dashboard.read',
+    'public.client.read',
+    'webhook.subscription.read',
+    'webhook.delivery.read',
   ],
 })
 

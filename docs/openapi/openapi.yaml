@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Comet Healthcare Enterprise API
-  version: 0.14.0-phase.14
+  version: 1.0.0
   summary: REST and webhook contract for the Comet Healthcare enterprise platform.
   description: |
     Phase 3 adds local identity, sessions, MFA, OIDC, organisation directory and audit.
@@ -217,6 +217,29 @@ info:
     to the company room only. Clients refetch all values through authenticated endpoints.
     `Idempotency-Key` remains scoped to messaging sends only; reporting writes are not
     replay-safe. No external filing, payment, email or file export is performed.
+
+    Phase 15 completes the enterprise surface with a versioned public API under
+    `/api/public/v1` and a webhook lifecycle under `/api/webhooks`. The public API is
+    read-only and allow-listed: `GET /health`, `GET /finance/summary` and
+    `GET /sales/summary`. It authenticates with an opaque API key presented as
+    `Authorization: Bearer <key>`; the server stores only SHA-256(key), enforces three
+    explicit scopes (`public:health:read`, `public:finance:read`, `public:sales:read`)
+    on both the key and the registered client, and applies a per-key rate limit. Finance
+    summaries delegate to the authorised statement service; sales summaries aggregate
+    integer cents only. No private record IDs, titles, line items or free text are exposed.
+
+    Webhooks use `PublicClient`, `WebhookSubscription` and `WebhookDelivery` and reuse the
+    existing `ApiKey` model so no raw key is ever issued or stored by a DTO. Subscription
+    secrets are accepted only in a create/rotate request, encrypted at rest with a
+    separate SHA-256 lookup hash, and never returned in plaintext, envelope or hash form.
+    Delivery payloads are strict ID/classification objects signed with HMAC-SHA256 over
+    stable JSON (sorted keys). `webhook.deliver` uses BullMQ with exponential backoff,
+    records attempts and normalised reason codes, and never stores a provider response body.
+    Provider callbacks are verified against the linked API key hash before replay state is
+    consulted; freshness plus an append-only audit record and in-memory cache reject replays.
+    Developer lifecycle events are excluded from webhook fanout to prevent recursive delivery.
+    See ADR-0020. All webhook DTO fields, events, sockets and queue payloads remain IDs and
+    classification only; clients refetch through authenticated endpoints.
   contact:
     name: Comet Healthcare Platform Team
   license:
@@ -257,6 +280,10 @@ tags:
     description: Work centers, BOMs, production orders, GMP batch records and QC checks. Added in Phase 13.
   - name: Reporting
     description: Allow-listed report definitions, queued runs, dashboards and widgets. Added in Phase 14.
+  - name: Public API
+    description: Versioned, scoped, rate-limited read-only public API. Added in Phase 15.
+  - name: Webhooks
+    description: Public clients, signed subscriptions, delivery ledger and replay-safe callbacks. Added in Phase 15.
 x-phase-roadmap:
   phase1: Architecture and this skeleton only
   phase2: ERD, migrations, workspace split, shared contracts
@@ -272,7 +299,7 @@ x-phase-roadmap:
   phase12: Complete - /api/projects (projects, members, tasks, milestones, time entries and finance budget links)
   phase13: Complete - /api/manufacturing (work centers, BOMs, production orders, GMP batch records and QC checks)
   phase14: Complete - /api/reporting (allow-listed report definitions, queued runs, dashboards and widgets)
-  phase15: /api/public/v1 and /api/webhooks
+  phase15: Complete - /api/public/v1 (scoped read-only summaries) and /api/webhooks (clients, signed subscriptions, retries and replay-safe callbacks)
 x-realtime:
   transport: Socket.IO 4 with Redis adapter; client bundle served by the realtime service.
   authentication: |
@@ -347,6 +374,8 @@ x-realtime:
     manufacturing:qc: 'QcCheckFailed; refetch GET /api/manufacturing/batches/{id}/qc-checks.'
     reporting:run: 'ReportRunQueued/Completed/Failed; refetch GET /api/reporting/runs/{id}.'
     reporting:dashboard: 'DashboardUpdated; refetch GET /api/reporting/dashboards/{id}/summary.'
+    developer:webhook: 'WebhookSubscriptionCreated or WebhookDeliveryFailed; refetch GET /api/webhooks/subscriptions or /deliveries.'
+    developer:client: 'PublicClientRevoked; refetch GET /api/webhooks/clients/{id}.'
   eventPayload:
     eventId: string
     type: string
@@ -479,6 +508,37 @@ x-realtime:
   phase11Fallback: |
     Authenticated polling of /api/hr employees, contracts, rates, leave, attendance and payroll runs
     when sockets are unavailable. Event data is never rendered directly.
+  phase12EventMap:
+    ProjectCreated: projects:project
+    ProjectTaskCompleted: projects:task
+    MilestoneMet: projects:milestone
+    TimeEntryApproved: projects:time
+  phase13EventMap:
+    BomApproved: manufacturing:bom
+    ProductionOrderReleased: manufacturing:order
+    BatchRecordOpened: manufacturing:batch
+    QcCheckFailed: manufacturing:qc
+    BatchReleased: manufacturing:batch
+  phase14EventMap:
+    ReportRunQueued: reporting:run
+    ReportRunCompleted: reporting:run
+    ReportRunFailed: reporting:run
+    DashboardUpdated: reporting:dashboard
+  phase15EventMap:
+    WebhookSubscriptionCreated: developer:webhook
+    WebhookDeliveryFailed: developer:webhook
+    PublicClientRevoked: developer:client
+  phase15Rooms:
+    - company:{companyId} only (never user, thread, inbox or branch rooms)
+  phase15PayloadRule: |
+    Developer domain events and socket frames carry IDs and classification only. No client
+    name, masked key prefix, key hash, subscription URL, secret, signature, delivery payload,
+    provider response status/body or reason text crosses the socket boundary. Developer
+    lifecycle events are also excluded from webhook fanout so a subscription can never create
+    a delivery that emits another developer event.
+  phase15Fallback: |
+    Authenticated polling of /api/webhooks/clients, /subscriptions and /deliveries when sockets
+    are unavailable. Frame data is never rendered directly.
 x-idempotency:
   requiredFor:
     - POST /api/messaging/threads/{id}/messages
@@ -508,6 +568,12 @@ x-idempotency:
     Not required. No /api/hr endpoint consumes an Idempotency-Key. Rate verification, leave decisions,
     contract transitions and calculate/approve/post actions are not replay-safe; clients must inspect
     the returned status before retrying.
+  phase15: |
+    Not required. No /api/public/v1 or /api/webhooks endpoint consumes an Idempotency-Key. The public
+    API is read-only; webhook management writes are not replay-safe. Provider callback replay is
+    handled separately by HMAC verification plus freshness, an append-only audit record and an
+    in-memory replay cache. Webhook delivery de-duplication uses the unique
+    (subscriptionId, eventId) pair, not an Idempotency-Key header.
 x-finance:
   money: All finance API monetary fields are integer cents (`*Cents`); reports use the same unit. The eTIMS payload is a separate external-style representation using decimal strings and is not a finance money field.
   rates: |
@@ -759,6 +825,78 @@ x-hr:
     - hr:rate
     - hr:payroll
   idempotency: Idempotency-Key is scoped to messaging sends only; HR writes are not replay-safe.
+x-public-api:
+  version: '1.0.0'
+  basePath: /api/public/v1
+  readOnly: true
+  authentication: 'Authorization: Bearer <opaque-api-key>; the server stores SHA-256(key) only'
+  scopeRule: A scope must be present on both the ApiKey and the linked PublicClient to be granted.
+  scopes:
+    - public:health:read
+    - public:finance:read
+    - public:sales:read
+  endpoints:
+    - { method: GET, path: /docs, scope: null, description: Static contract; no tenant data. }
+    - { method: GET, path: /health, scope: public:health:read, description: Service health and contract version. }
+    - { method: GET, path: /finance/summary, scope: public:finance:read, description: Allow-listed income or ageing totals. }
+    - { method: GET, path: /sales/summary, scope: public:sales:read, description: Confirmed-order counts and integer-cent totals. }
+  rateLimit:
+    identity: ApiKey.id (not source IP)
+    windowSeconds: 60
+    limitSource: ApiKey.rateLimit (default 60)
+    headers: [X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After]
+  dataRules:
+    - No writes; unknown methods on the public router return 405.
+    - No private record IDs, titles, line items, free text or tenant identifiers in responses.
+    - All monetary values are safe integer cents; no statutory rate is calculated here.
+    - Finance summaries delegate to the authorised statement service; unavailable data uses explicit reason metadata.
+    - The static /docs endpoint never includes a business identifier.
+x-webhooks:
+  basePath: /api/webhooks
+  permissions:
+    - public.client.read
+    - public.client.write
+    - webhook.subscription.read
+    - webhook.subscription.write
+    - webhook.delivery.read
+    - webhook.delivery.retry
+  signing:
+    algorithm: HMAC-SHA256
+    canonical: stable JSON with object keys sorted at every level
+    header: x-comet-signature
+    format: 'sha256=<64 lowercase hex characters>'
+    deliveryHeaders:
+      x-comet-signature: HMAC of the canonical ID-only payload
+      x-comet-delivery-id: opaque delivery ID
+      x-comet-event-id: opaque domain event ID
+      x-comet-timestamp: delivery timestamp
+    secretPolicy: Per-subscription secret; encrypted at rest and never returned by a DTO.
+  callback:
+    path: /callbacks/{clientId}/verify
+    hmacKey: SHA-256 hex digest of the linked API key, known to the provider
+    body: Strict ID-only envelope with eventId, eventType, entityType, entityId, occurredAt and timestamp
+    freshnessSeconds: 300
+    replayProtection: Append-only audit ledger plus an in-memory freshness cache
+    order: HMAC verified before freshness/replay so unsigned requests cannot probe replay state
+  retry:
+    queue: webhook.deliver
+    maxAttempts: 5
+    baseBackoffMs: 2000
+    backoff: exponential with a 60-second cap
+    statuses: [PENDING, RETRYING, DELIVERED, FAILED]
+    payload: Opaque delivery ID, company ID, branch ID and correlation ID only
+    responseHandling: Only the HTTP status code is retained; response bodies and headers are never read, stored, logged or emitted.
+  deliveryEventTypes:
+    - InvoiceIssued
+    - PaymentRecorded
+    - SalesOrderConfirmed
+    - DeliveryNoteIssued
+    - ReportRunCompleted
+    - DashboardUpdated
+    - BatchReleased
+  excludedFanoutEvents: [WebhookSubscriptionCreated, WebhookDeliveryFailed, PublicClientRevoked]
+  socketEvents: [developer:webhook, developer:client]
+  secretSafety: No DTO, event, socket, audit, queue payload or callback response contains a plaintext secret, key hash, encrypted envelope, signature or raw provider response body. Write requests accept `keyHash`/`keyPrefix` or a per-subscription `secret` as whole-field identifiers only.
 paths:
   /api/health/live:
     get:
@@ -8777,6 +8915,457 @@ paths:
         '401': { description: Missing or invalid bearer token. }
         '403': { description: Missing `reporting.dashboard.write`. }
         '404': { description: Tenant-scoped widget not found. }
+  /api/public/v1/docs:
+    get:
+      tags: [Public API]
+      summary: Public API developer contract
+      description: Static contract only. Contains no tenant data, business identifier, key or key hash.
+      operationId: getPublicApiDocs
+      security: []
+      responses:
+        '200':
+          description: Versioned public API contract.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicApiDocsEnvelope' }
+  /api/public/v1/health:
+    get:
+      tags: [Public API]
+      summary: Public API health and granted scopes
+      operationId: getPublicApiHealth
+      security:
+        - apiKeyAuth: []
+      x-scope: public:health:read
+      responses:
+        '200':
+          description: Service is healthy; granted scopes are listed for the authenticated key.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/RateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/RateLimitRemaining'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicHealthEnvelope' }
+        '401': { description: Missing, unknown, expired or revoked API key. }
+        '403': { description: No public scopes granted, or `public:health:read` missing. }
+        '429': { description: Per-key rate limit exceeded; Retry-After is returned. }
+  /api/public/v1/finance/summary:
+    get:
+      tags: [Public API]
+      summary: Allow-listed finance summary
+      description: Delegates to the authorised statement service. Rows, line items and document numbers are never returned.
+      operationId: getPublicFinanceSummary
+      security:
+        - apiKeyAuth: []
+      x-scope: public:finance:read
+      parameters:
+        - name: kind
+          in: query
+          required: false
+          description: Allow-listed statement kind. Defaults to `income`.
+          schema: { $ref: '#/components/schemas/PublicFinanceSummaryKind' }
+        - name: from
+          in: query
+          required: false
+          description: Inclusive start date for `income`; must not be after `to`.
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          required: false
+          description: Inclusive end date for `income`, or fallback `asOf` date for `ageing`.
+          schema: { type: string, format: date }
+        - name: asOf
+          in: query
+          required: false
+          description: As-of date for `ageing` summaries.
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Available summary, or explicit unavailable metadata. Never contains rows.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/RateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/RateLimitRemaining'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicFinanceSummaryEnvelope' }
+        '400': { description: Invalid or reversed date range. }
+        '401': { description: Missing, unknown, expired or revoked API key. }
+        '403': { description: '`public:finance:read` missing from key or client.' }
+        '429': { description: Per-key rate limit exceeded. }
+  /api/public/v1/sales/summary:
+    get:
+      tags: [Public API]
+      summary: Confirmed and fulfilled sales summary
+      description: Aggregates integer cents and record counts for CONFIRMED and FULFILLED orders inside the client's tenant/branch scope; no order IDs or customer data are returned.
+      operationId: getPublicSalesSummary
+      security:
+        - apiKeyAuth: []
+      x-scope: public:sales:read
+      parameters:
+        - name: from
+          in: query
+          required: false
+          description: Inclusive order-date start; must not be after `to`.
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          required: false
+          description: Inclusive order-date end.
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Available summary, or explicit unavailable metadata.
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/RateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/RateLimitRemaining'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicSalesSummaryEnvelope' }
+        '400': { description: Invalid or reversed date range. }
+        '401': { description: Missing, unknown, expired or revoked API key. }
+        '403': { description: '`public:sales:read` missing from key or client.' }
+        '429': { description: Per-key rate limit exceeded. }
+  /api/webhooks/docs:
+    get:
+      tags: [Webhooks]
+      summary: Webhook developer contract
+      description: Static signing, callback, retry and permission contract. Contains no tenant data or secret.
+      operationId: getWebhookDocs
+      security: []
+      responses:
+        '200':
+          description: Static webhook contract.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookDocsEnvelope' }
+  /api/webhooks/callbacks/{clientId}/verify:
+    post:
+      tags: [Webhooks]
+      summary: Verify a replay-safe provider callback
+      description: |
+        The caller signs the canonical strict callback body with the HMAC key equal to the
+        linked API key's SHA-256 hex digest. The signature is checked before freshness and
+        replay state, so unsigned requests cannot probe the audit ledger. A second identical
+        callback inside the freshness window returns 409. The response contains only an opaque
+        event ID and a truncated replay identifier; no signature or secret is returned.
+      operationId: verifyWebhookCallback
+      security: []
+      parameters:
+        - name: clientId
+          in: path
+          required: true
+          schema: { type: string, maxLength: 80 }
+        - name: x-comet-signature
+          in: header
+          required: true
+          description: 'Format: sha256=<64 lowercase hex characters>.'
+          schema: { type: string, pattern: '^sha256=[a-f0-9]{64}$' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WebhookCallbackRequest' }
+      responses:
+        '200':
+          description: Callback accepted and recorded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookCallbackEnvelope' }
+        '400': { description: Invalid strict body or stale callback timestamp. }
+        '401': { description: Invalid signature, revoked key or inactive client. }
+        '409': { description: Replay detected. }
+  /api/webhooks/clients:
+    get:
+      tags: [Webhooks]
+      summary: List public API clients
+      operationId: listPublicClients
+      x-permission: public.client.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/PublicClientStatus' }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Tenant-scoped clients with masked key prefixes only.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicClientListEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `public.client.read`. }
+    post:
+      tags: [Webhooks]
+      summary: Register a public API client
+      description: Links an existing ApiKey by ID, or registers the SHA-256 hash and prefix of a key the caller already owns. No raw key is accepted or returned.
+      operationId: registerPublicClient
+      x-permission: public.client.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PublicClientCreate' }
+      responses:
+        '201':
+          description: Registered client; key prefix is masked and no hash is returned.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicClientEnvelope' }
+        '400': { description: Invalid scopes, hash/prefix pair, branch or DLP rejection. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `public.client.write`. }
+        '404': { description: Linked API key not found. }
+        '409': { description: API key already linked or hash already registered. }
+  /api/webhooks/clients/{id}:
+    get:
+      tags: [Webhooks]
+      summary: Get a public API client
+      operationId: getPublicClient
+      x-permission: public.client.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/WebhookResourceId'
+      responses:
+        '200':
+          description: Tenant-scoped client.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicClientEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `public.client.read`. }
+        '404': { description: Tenant-scoped client not found. }
+  /api/webhooks/clients/{id}/revoke:
+    post:
+      tags: [Webhooks]
+      summary: Revoke a public API client and its linked key
+      operationId: revokePublicClient
+      x-permission: public.client.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/WebhookResourceId'
+      responses:
+        '200':
+          description: Revoked client. Emits the strict ID-only `PublicClientRevoked` event.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicClientEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `public.client.write`. }
+        '404': { description: Tenant-scoped client not found. }
+  /api/webhooks/subscriptions:
+    get:
+      tags: [Webhooks]
+      summary: List webhook subscriptions
+      operationId: listWebhookSubscriptions
+      x-permission: webhook.subscription.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/WebhookSubscriptionStatus' }
+        - name: clientId
+          in: query
+          required: false
+          schema: { type: string, maxLength: 80 }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Tenant-scoped subscriptions; secrets are represented only by `secretConfigured`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookSubscriptionListEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `webhook.subscription.read`. }
+    post:
+      tags: [Webhooks]
+      summary: Create a webhook subscription
+      description: The secret is accepted only in this write request, encrypted at rest, and never returned.
+      operationId: createWebhookSubscription
+      x-permission: webhook.subscription.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WebhookSubscriptionCreate' }
+      responses:
+        '201':
+          description: 'Created subscription with `secretConfigured: true` and no secret value.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookSubscriptionEnvelope' }
+        '400': { description: Invalid public HTTPS URL, event types or secret format. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `webhook.subscription.write`. }
+        '409': { description: Secret is already in use. }
+  /api/webhooks/subscriptions/{id}:
+    get:
+      tags: [Webhooks]
+      summary: Get a webhook subscription
+      operationId: getWebhookSubscription
+      x-permission: webhook.subscription.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/WebhookResourceId'
+      responses:
+        '200':
+          description: Tenant-scoped subscription.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookSubscriptionEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `webhook.subscription.read`. }
+        '404': { description: Tenant-scoped subscription not found. }
+    patch:
+      tags: [Webhooks]
+      summary: Update a webhook subscription status
+      operationId: updateWebhookSubscription
+      x-permission: webhook.subscription.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/WebhookResourceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WebhookSubscriptionUpdate' }
+      responses:
+        '200':
+          description: Updated subscription.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookSubscriptionEnvelope' }
+        '400': { description: Invalid status. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `webhook.subscription.write`. }
+        '404': { description: Tenant-scoped subscription not found. }
+  /api/webhooks/subscriptions/{id}/rotate:
+    post:
+      tags: [Webhooks]
+      summary: Rotate a webhook subscription secret
+      description: Accepts the new secret only in this write request. The response contains a rotation timestamp, never the secret, hash or encrypted envelope.
+      operationId: rotateWebhookSubscriptionSecret
+      x-permission: webhook.subscription.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/WebhookResourceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WebhookSubscriptionRotate' }
+      responses:
+        '200':
+          description: Rotated subscription.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookSubscriptionEnvelope' }
+        '400': { description: Invalid secret format. }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `webhook.subscription.write`. }
+        '404': { description: Tenant-scoped subscription not found. }
+        '409': { description: Secret unchanged or already in use. }
+  /api/webhooks/deliveries:
+    get:
+      tags: [Webhooks]
+      summary: List webhook deliveries
+      operationId: listWebhookDeliveries
+      x-permission: webhook.delivery.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: subscriptionId
+          in: query
+          required: false
+          schema: { type: string, maxLength: 80 }
+        - name: status
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/WebhookDeliveryStatus' }
+        - name: eventType
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/WebhookEventType' }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Tenant-scoped delivery ledger with ID-only payloads and no response bodies.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookDeliveryListEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `webhook.delivery.read`. }
+  /api/webhooks/deliveries/{id}:
+    get:
+      tags: [Webhooks]
+      summary: Get a webhook delivery
+      operationId: getWebhookDelivery
+      x-permission: webhook.delivery.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/WebhookResourceId'
+      responses:
+        '200':
+          description: Tenant-scoped delivery.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookDeliveryEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `webhook.delivery.read`. }
+        '404': { description: Tenant-scoped delivery not found. }
+  /api/webhooks/deliveries/{id}/retry:
+    post:
+      tags: [Webhooks]
+      summary: Retry a failed or retrying webhook delivery
+      operationId: retryWebhookDelivery
+      x-permission: webhook.delivery.retry
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/WebhookResourceId'
+      responses:
+        '200':
+          description: Delivery reset to PENDING and re-queued with an opaque job ID.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookDeliveryEnvelope' }
+        '401': { description: Missing or invalid bearer token. }
+        '403': { description: Missing `webhook.delivery.retry`. }
+        '404': { description: Tenant-scoped delivery not found. }
+        '409': { description: Delivery already delivered or subscription is not active. }
 components:
   securitySchemes:
     bearerAuth:
@@ -8790,18 +9379,23 @@ components:
       name: comet_refresh
       description: HttpOnly, Secure, SameSite=Strict refresh session cookie.
     apiKeyAuth:
-      type: apiKey
-      in: header
-      name: X-API-Key
-      description: Scoped public API key with per-key rate limits.
+      type: http
+      scheme: bearer
+      bearerFormat: opaque-api-key
+      description: |
+        Opaque public API key sent as `Authorization: Bearer <key>`. The server stores only
+        SHA-256(key) and enforces explicit scopes on both the key and the registered client.
+        The same key hash is the HMAC secret for provider callbacks. No raw key appears in any DTO.
     oauth2:
       type: oauth2
+      description: Reserved for future client-credentials issuance; Phase 15 uses opaque API keys only.
       flows:
         clientCredentials:
           tokenUrl: https://api.example.invalid/oauth/token
           scopes:
-            public:read: Read permitted public resources.
-            public:write: Write permitted public resources.
+            public:health:read: Read public health status.
+            public:finance:read: Read allow-listed finance summaries.
+            public:sales:read: Read allow-listed sales summaries.
   headers:
     CorrelationId:
       description: Stable identifier propagated through logs, events, and jobs.
@@ -8817,6 +9411,21 @@ components:
         type: string
         maxLength: 200
       required: true
+    RateLimitLimit:
+      description: Per-API-key request budget for the current 60-second window.
+      schema: { type: integer, minimum: 1 }
+      example: 60
+    RateLimitRemaining:
+      description: Requests remaining for this API key in the current 60-second window.
+      schema: { type: integer, minimum: 0 }
+      example: 59
+    RetryAfter:
+      description: Seconds until the per-key rate-limit window resets.
+      schema: { type: integer, minimum: 1 }
+      example: 60
+    WebhookSignature:
+      description: 'HMAC-SHA256 of the canonical ID-only payload or callback body: sha256=<64 lowercase hex characters>.'
+      schema: { type: string, pattern: '^sha256=[a-f0-9]{64}$' }
   parameters:
     UserId:
       name: id
@@ -8937,6 +9546,12 @@ components:
       name: reportKey
       in: query
       schema: { $ref: '#/components/schemas/ReportKey' }
+    WebhookResourceId:
+      name: id
+      in: path
+      required: true
+      description: Opaque Phase 15 client, subscription or delivery ID scoped to the authenticated tenant.
+      schema: { type: string, minLength: 1, maxLength: 80 }
   schemas:
     Inbox:
       type: object
@@ -12766,5 +13381,352 @@ components:
       required: [summary]
       properties:
         summary: { $ref: '#/components/schemas/ReportingDashboardSummary' }
+    PublicScope:
+      type: string
+      enum:
+        - public:health:read
+        - public:finance:read
+        - public:sales:read
+      description: Explicit scope that must be granted on both the API key and the registered public client.
+    PublicFinanceSummaryKind:
+      type: string
+      enum: [income, ageing]
+      default: income
+      description: Allow-listed statement kind. No other collector or query name is accepted.
+    PublicApiEndpoint:
+      type: object
+      required: [method, path, summary]
+      properties:
+        method: { type: string, enum: [GET] }
+        path: { type: string }
+        summary: { type: string }
+        scope: { $ref: '#/components/schemas/PublicScope', nullable: true }
+    PublicApiContract:
+      type: object
+      required: [version, basePath, readOnly, authentication, scopes, endpoints]
+      properties:
+        version: { type: string, const: '1.0.0' }
+        basePath: { type: string, const: /api/public/v1 }
+        readOnly: { type: boolean, const: true }
+        authentication: { type: string }
+        scopes:
+          type: array
+          items: { $ref: '#/components/schemas/PublicScope' }
+        endpoints:
+          type: array
+          items: { $ref: '#/components/schemas/PublicApiEndpoint' }
+        notes:
+          type: array
+          items: { type: string }
+    PublicApiDocsEnvelope:
+      type: object
+      required: [docs]
+      properties:
+        docs: { $ref: '#/components/schemas/PublicApiContract' }
+    PublicHealth:
+      type: object
+      required: [status, service, version, time, scopes]
+      properties:
+        status: { type: string, const: ok }
+        service: { type: string, const: comet-public-api }
+        version: { type: string, const: '1.0.0' }
+        time: { type: string, format: date-time }
+        scopes:
+          type: array
+          items: { $ref: '#/components/schemas/PublicScope' }
+    PublicHealthEnvelope:
+      type: object
+      required: [health]
+      properties:
+        health: { $ref: '#/components/schemas/PublicHealth' }
+    PublicSummaryPeriod:
+      type: object
+      required: [reportKey, dataAvailable]
+      properties:
+        reportKey: { type: string }
+        dataAvailable: { type: boolean }
+        reason: { type: string, nullable: true }
+        period:
+          type: object
+          additionalProperties: false
+          properties:
+            from: { type: string, format: date, nullable: true }
+            to: { type: string, format: date, nullable: true }
+            asOf: { type: string, format: date, nullable: true }
+        counts:
+          type: object
+          additionalProperties: false
+          properties:
+            records: { type: integer, minimum: 0 }
+            invoices: { type: integer, minimum: 0 }
+        totalsCents:
+          type: object
+          additionalProperties: { type: integer }
+          description: Only fields ending in Cents with safe integer values are emitted; no rows or line items.
+        totalsAvailable: { type: boolean }
+    PublicFinanceSummaryEnvelope:
+      type: object
+      required: [summary]
+      properties:
+        summary: { $ref: '#/components/schemas/PublicSummaryPeriod' }
+    PublicSalesSummaryEnvelope:
+      type: object
+      required: [summary]
+      properties:
+        summary: { $ref: '#/components/schemas/PublicSummaryPeriod' }
+    WebhookEventType:
+      type: string
+      enum:
+        - InvoiceIssued
+        - PaymentRecorded
+        - SalesOrderConfirmed
+        - DeliveryNoteIssued
+        - ReportRunCompleted
+        - DashboardUpdated
+        - BatchReleased
+      description: Allow-listed domain events eligible for webhook fanout. Developer lifecycle events are excluded.
+    WebhookEntityType:
+      type: string
+      enum:
+        - INVOICE
+        - PAYMENT
+        - SALES_ORDER
+        - DELIVERY_NOTE
+        - REPORT_RUN
+        - DASHBOARD
+        - BATCH_RECORD
+        - WEBHOOK_DELIVERY
+        - PUBLIC_CLIENT
+        - WEBHOOK_SUBSCRIPTION
+    WebhookSubscriptionStatus:
+      type: string
+      enum: [ACTIVE, DISABLED, SUSPENDED]
+    WebhookDeliveryStatus:
+      type: string
+      enum: [PENDING, RETRYING, DELIVERED, FAILED]
+    WebhookReasonCode:
+      type: string
+      enum:
+        - NETWORK_ERROR
+        - TIMEOUT
+        - HTTP_ERROR
+        - INVALID_URL
+        - INACTIVE_SUBSCRIPTION
+        - MISSING_SECRET
+        - INVALID_PAYLOAD
+      description: Normalised failure classification; no provider error text is stored.
+    PublicClientStatus:
+      type: string
+      enum: [ACTIVE, REVOKED]
+    PublicClient:
+      type: object
+      required: [id, name, apiKeyId, keyPrefix, scopes, status, branchId, revokedAt, createdAt]
+      properties:
+        id: { type: string, maxLength: 80 }
+        name: { type: string }
+        apiKeyId: { type: string }
+        keyPrefix: { type: string, description: Masked display prefix only; never a raw key, hash or envelope. }
+        scopes:
+          type: array
+          items: { $ref: '#/components/schemas/PublicScope' }
+        status: { $ref: '#/components/schemas/PublicClientStatus' }
+        branchId: { type: string, nullable: true }
+        revokedAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+    PublicClientCreate:
+      type: object
+      additionalProperties: false
+      required: [name, scopes]
+      description: Either link an existing API key by ID or supply the SHA-256 hash and prefix of a key the caller owns. A raw key is never accepted.
+      properties:
+        name: { type: string, minLength: 2, maxLength: 120, description: DLP-checked. }
+        apiKeyId: { type: string, minLength: 1, maxLength: 80 }
+        keyHash: { type: string, pattern: '^[a-fA-F0-9]{64}$', description: Write-only SHA-256 hex digest; never returned by a DTO. }
+        keyPrefix: { type: string, minLength: 6, maxLength: 40, pattern: '^[A-Za-z0-9_-]+$', description: Write-only display prefix; returned only in masked form. }
+        scopes:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/PublicScope' }
+        branchId: { type: string, maxLength: 80, nullable: true }
+      oneOf:
+        - required: [apiKeyId]
+        - required: [keyHash, keyPrefix]
+    PublicClientEnvelope:
+      type: object
+      required: [client]
+      properties:
+        client: { $ref: '#/components/schemas/PublicClient' }
+    PublicClientListEnvelope:
+      type: object
+      required: [clients]
+      properties:
+        clients:
+          type: array
+          items: { $ref: '#/components/schemas/PublicClient' }
+    WebhookSubscription:
+      type: object
+      required: [id, url, eventTypes, status, clientId, branchId, secretConfigured, rotatedAt, createdAt]
+      properties:
+        id: { type: string, maxLength: 80 }
+        url: { type: string, format: uri, description: Public HTTPS endpoint. No credentials or fragments are accepted. }
+        eventTypes:
+          type: array
+          items: { $ref: '#/components/schemas/WebhookEventType' }
+        status: { $ref: '#/components/schemas/WebhookSubscriptionStatus' }
+        clientId: { type: string, maxLength: 80, nullable: true }
+        branchId: { type: string, maxLength: 80, nullable: true }
+        secretConfigured: { type: boolean, description: Presence flag only; never the secret, hash or encrypted envelope. }
+        rotatedAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+    WebhookSubscriptionCreate:
+      type: object
+      additionalProperties: false
+      required: [url, eventTypes, secret]
+      properties:
+        url: { type: string, format: uri, description: Public HTTPS URL; localhost, private and link-local addresses are rejected. }
+        eventTypes:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/WebhookEventType' }
+        secret:
+          type: string
+          writeOnly: true
+          minLength: 32
+          maxLength: 128
+          pattern: '^[A-Za-z0-9_-]+$'
+          description: Write-only per-subscription signing secret. Encrypted at rest; never returned.
+        clientId: { type: string, maxLength: 80, nullable: true }
+        branchId: { type: string, maxLength: 80, nullable: true }
+    WebhookSubscriptionRotate:
+      type: object
+      additionalProperties: false
+      required: [secret]
+      properties:
+        secret:
+          type: string
+          writeOnly: true
+          minLength: 32
+          maxLength: 128
+          pattern: '^[A-Za-z0-9_-]+$'
+          description: Write-only replacement secret; must differ from the current secret.
+    WebhookSubscriptionUpdate:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { $ref: '#/components/schemas/WebhookSubscriptionStatus' }
+    WebhookSubscriptionEnvelope:
+      type: object
+      required: [subscription]
+      properties:
+        subscription: { $ref: '#/components/schemas/WebhookSubscription' }
+    WebhookSubscriptionListEnvelope:
+      type: object
+      required: [subscriptions]
+      properties:
+        subscriptions:
+          type: array
+          items: { $ref: '#/components/schemas/WebhookSubscription' }
+    WebhookDeliveryPayload:
+      type: object
+      additionalProperties: false
+      required: [eventId, eventType, entityType, entityId, occurredAt, classification]
+      properties:
+        eventId: { type: string, minLength: 1, maxLength: 80 }
+        eventType: { $ref: '#/components/schemas/WebhookEventType' }
+        entityType: { $ref: '#/components/schemas/WebhookEntityType' }
+        entityId: { type: string, minLength: 1, maxLength: 80 }
+        occurredAt: { type: string, format: date-time }
+        correlationId: { type: string, maxLength: 80, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+      description: Strict ID/classification object. No business content, secret, signature or provider response body.
+    WebhookDelivery:
+      type: object
+      required: [id, subscriptionId, eventId, eventType, payload, status, attempts, nextAttemptAt, responseStatus, lastError, deliveredAt, createdAt]
+      properties:
+        id: { type: string, maxLength: 80 }
+        subscriptionId: { type: string, maxLength: 80 }
+        eventId: { type: string, maxLength: 80 }
+        eventType: { $ref: '#/components/schemas/WebhookEventType' }
+        payload: { $ref: '#/components/schemas/WebhookDeliveryPayload', nullable: true }
+        status: { $ref: '#/components/schemas/WebhookDeliveryStatus' }
+        attempts: { type: integer, minimum: 0 }
+        nextAttemptAt: { type: string, format: date-time, nullable: true }
+        responseStatus: { type: integer, minimum: 100, maximum: 599, nullable: true, description: HTTP status code only; never headers or body. }
+        lastError: { $ref: '#/components/schemas/WebhookReasonCode', nullable: true }
+        deliveredAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+    WebhookDeliveryEnvelope:
+      type: object
+      required: [delivery]
+      properties:
+        delivery: { $ref: '#/components/schemas/WebhookDelivery' }
+    WebhookDeliveryListEnvelope:
+      type: object
+      required: [deliveries]
+      properties:
+        deliveries:
+          type: array
+          items: { $ref: '#/components/schemas/WebhookDelivery' }
+    WebhookCallbackRequest:
+      type: object
+      additionalProperties: false
+      required: [eventId, eventType, entityType, entityId, occurredAt, timestamp]
+      properties:
+        eventId: { type: string, minLength: 1, maxLength: 80 }
+        eventType: { $ref: '#/components/schemas/WebhookEventType' }
+        entityType: { $ref: '#/components/schemas/WebhookEntityType' }
+        entityId: { type: string, minLength: 1, maxLength: 80 }
+        occurredAt: { type: string, format: date-time }
+        timestamp: { type: string, format: date-time, description: Provider signing time checked for freshness. }
+    WebhookCallbackVerification:
+      type: object
+      required: [accepted, eventId, verificationId]
+      properties:
+        accepted: { type: boolean, const: true }
+        eventId: { type: string }
+        verificationId: { type: string, description: Truncated replay identifier; not a signature or secret. }
+    WebhookCallbackEnvelope:
+      type: object
+      required: [result]
+      properties:
+        result: { $ref: '#/components/schemas/WebhookCallbackVerification' }
+    WebhookDocsEndpoint:
+      type: object
+      required: [method, path]
+      properties:
+        method: { type: string }
+        path: { type: string }
+        permission: { type: string, nullable: true }
+    WebhookDocsContract:
+      type: object
+      required: [basePath, signing, callback, retry, eventTypes, endpoints]
+      properties:
+        basePath: { type: string, const: /api/webhooks }
+        signing:
+          type: object
+          additionalProperties: true
+          description: Algorithm, canonical form, header and secret policy. Contains no secret value.
+        callback:
+          type: object
+          additionalProperties: true
+          description: Callback path, HMAC key description, freshness window and replay policy.
+        retry:
+          type: object
+          additionalProperties: true
+          description: Queue name, attempts, backoff and ID-only payload description.
+        eventTypes:
+          type: array
+          items: { $ref: '#/components/schemas/WebhookEventType' }
+        endpoints:
+          type: array
+          items: { $ref: '#/components/schemas/WebhookDocsEndpoint' }
+    WebhookDocsEnvelope:
+      type: object
+      required: [docs]
+      properties:
+        docs: { $ref: '#/components/schemas/WebhookDocsContract' }
 security:
   - bearerAuth: []

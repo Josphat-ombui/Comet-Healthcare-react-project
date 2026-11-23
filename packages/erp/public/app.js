@@ -1,7 +1,8 @@
 // ERP shell: identity, directory, messaging, platform views (notifications,
 // files, workflow, search, documents), Phase 6 finance, Phase 7 sales,
-// Phase 8 inventory, Phase 9 procurement, Phase 10 service, Phase 11 HR and
-// Phase 12 projects and Phase 13 manufacturing. Uses the same JSON API as the
+// Phase 8 inventory, Phase 9 procurement, Phase 10 service, Phase 11 HR,
+// Phase 12 projects, Phase 13 manufacturing, Phase 14 reporting and
+// Phase 15 public API developer views. Uses the same JSON API as the
 // storefront; no external dependencies. The Socket.IO client is served by the
 // realtime service itself, and the inbox falls back to authenticated polling
 // when sockets are unavailable.
@@ -11,7 +12,7 @@ const API_ORIGIN = API.replace(/\/api\/?$/, '')
 const REALTIME = window.ERP_REALTIME_URL || 'http://localhost:4001'
 const POLL_MS = 6000
 const QUEUE_KEY = 'comet_erp_message_queue'
-const VIEWS = ['inbox', 'directory', 'notifications', 'files', 'workflow', 'search', 'documents', 'finance', 'sales', 'inventory', 'procurement', 'service', 'hr', 'projects', 'manufacturing', 'reporting']
+const VIEWS = ['inbox', 'directory', 'notifications', 'files', 'workflow', 'search', 'documents', 'finance', 'sales', 'inventory', 'procurement', 'service', 'hr', 'projects', 'manufacturing', 'reporting', 'developer']
 const FINANCE_EVENTS = [
   'finance:account', 'finance:journal', 'finance:invoice', 'finance:payment',
   'finance:budget', 'finance:rate', 'finance:etims', 'finance:etims-failed',
@@ -56,6 +57,10 @@ const MANUFACTURING_EVENTS = [
 // Reporting socket frames carry IDs/classification only. Reports, summaries and
 // dashboard values are always refetched through the authenticated API.
 const REPORTING_EVENTS = ['reporting:run', 'reporting:dashboard']
+// Developer socket frames carry IDs/classification only. Client names, key
+// prefixes/hashes, subscription URLs, secrets, signatures and provider status
+// are always refetched through the session-authenticated management API.
+const DEVELOPER_EVENTS = ['developer:webhook', 'developer:client']
 const $ = (id) => document.getElementById(id)
 
 let token = sessionStorage.getItem('comet_erp_token') || ''
@@ -144,6 +149,9 @@ const state = {
   reportingRuns: [],
   reportingDashboards: [],
   reportingSummary: null,
+  developerClients: [],
+  developerSubscriptions: [],
+  developerDeliveries: [],
 }
 let financeRefreshTimer = null
 let salesRefreshTimer = null
@@ -154,6 +162,7 @@ let hrRefreshTimer = null
 let projectsRefreshTimer = null
 let manufacturingRefreshTimer = null
 let reportingRefreshTimer = null
+let developerRefreshTimer = null
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -298,6 +307,9 @@ function showDashboard(profile) {
     state.inventoryTransfers = []
     state.inventoryCounts = []
     state.inventoryAlerts = []
+    state.developerClients = []
+    state.developerSubscriptions = []
+    state.developerDeliveries = []
     state.projects = []
     state.projectMilestones = []
     state.projectTasks = []
@@ -3934,6 +3946,8 @@ function connectRealtime() {
     for (const event of PROJECT_EVENTS) socket.on(event, onProjectEvent)
     for (const event of MANUFACTURING_EVENTS) socket.on(event, onManufacturingEvent)
     for (const event of REPORTING_EVENTS) socket.on(event, onReportingEvent)
+    // Phase 15 developer events are ID/classification-only company-room signals.
+    for (const event of DEVELOPER_EVENTS) socket.on(event, onDeveloperEvent)
   })
 }
 
@@ -4346,6 +4360,98 @@ $('reportingRunForm').onsubmit = async (event) => {
   }
 }
 
+// ------------------------------------------------------- phase 15 developer
+
+function developerPill(value) {
+  const text = String(value ?? '—')
+  const key = text.toLowerCase().replace(/[^a-z]/g, '')
+  return `<span class="pill finance-status ${escapeHtml(key)}">${escapeHtml(text)}</span>`
+}
+
+function renderDeveloper() {
+  $('developerClientCount').textContent = `${state.developerClients.length} client(s)`
+  $('developerClientRows').innerHTML = state.developerClients.map((row) => `
+    <tr><td><code>${shortId(row.id)}</code></td>
+      <td>${escapeHtml(row.name)}</td>
+      <td><code>${shortId(row.apiKeyId)}</code></td>
+      <td>${escapeHtml(row.keyPrefix)}</td>
+      <td>${escapeHtml((Array.isArray(row.scopes) ? row.scopes : []).join(', ') || '—')}</td>
+      <td>${developerPill(row.status)}</td>
+      <td>${formatDate(row.revokedAt)}</td></tr>`
+  ).join('') || '<tr><td colspan="7" class="muted">No public clients yet.</td></tr>'
+
+  $('developerSubscriptionCount').textContent = `${state.developerSubscriptions.length} subscription(s)`
+  $('developerSubscriptionRows').innerHTML = state.developerSubscriptions.map((row) => `
+    <tr><td><code>${shortId(row.id)}</code></td>
+      <td>${escapeHtml(row.url)}</td>
+      <td>${escapeHtml((Array.isArray(row.eventTypes) ? row.eventTypes : []).join(', ') || '—')}</td>
+      <td><code>${shortId(row.clientId)}</code></td>
+      <td>${developerPill(row.status)}</td>
+      <td>${row.secretConfigured ? 'Configured' : 'Missing'}</td>
+      <td>${formatDate(row.rotatedAt)}</td></tr>`
+  ).join('') || '<tr><td colspan="7" class="muted">No webhook subscriptions yet.</td></tr>'
+
+  $('developerDeliveryCount').textContent = `${state.developerDeliveries.length} delivery(ies)`
+  $('developerDeliveryRows').innerHTML = state.developerDeliveries.map((row) => {
+    const status = Number.isSafeInteger(row.responseStatus) ? row.responseStatus : '—'
+    const retry = row.status === 'DELIVERED'
+      ? ''
+      : `<button class="link" type="button" data-retry-delivery="${escapeHtml(row.id)}">Retry</button>`
+    return `<tr><td><code>${shortId(row.id)}</code></td>
+      <td><code>${shortId(row.eventId)}</code></td>
+      <td>${escapeHtml(row.eventType)}</td>
+      <td>${developerPill(row.status)}</td>
+      <td>${Number.isSafeInteger(row.attempts) ? row.attempts : 0}</td>
+      <td>${formatDate(row.nextAttemptAt)}</td>
+      <td>${status}</td>
+      <td>${escapeHtml(row.lastError || '—')}</td>
+      <td>${formatDate(row.deliveredAt)}</td>
+      <td class="actions-cell">${retry}</td></tr>`
+  }).join('') || '<tr><td colspan="10" class="muted">No webhook deliveries yet.</td></tr>'
+}
+
+async function loadDeveloper() {
+  const results = await Promise.allSettled([
+    request('/webhooks/clients'),
+    request('/webhooks/subscriptions'),
+    request('/webhooks/deliveries'),
+  ])
+  const failure = results.find((result) => result.status === 'rejected')
+  setError('developerError', failure ? failure.reason?.message || 'Developer data could not be loaded' : '')
+  state.developerClients = results[0].status === 'fulfilled' ? listFrom(results[0].value, 'clients') : []
+  state.developerSubscriptions = results[1].status === 'fulfilled' ? listFrom(results[1].value, 'subscriptions') : []
+  state.developerDeliveries = results[2].status === 'fulfilled' ? listFrom(results[2].value, 'deliveries') : []
+  renderDeveloper()
+}
+
+function onDeveloperEvent() {
+  // Developer frames carry IDs/classification only. Never treat a frame as
+  // developer content - reload every value through the authenticated API.
+  if (state.view !== 'developer') return
+  if (developerRefreshTimer) clearTimeout(developerRefreshTimer)
+  developerRefreshTimer = setTimeout(() => {
+    developerRefreshTimer = null
+    loadDeveloper()
+  }, 250)
+}
+
+$('refreshDeveloper').onclick = () => loadDeveloper()
+$('developerDeliveryRows').onclick = async (event) => {
+  const button = event.target.closest('button[data-retry-delivery]')
+  if (!button) return
+  button.disabled = true
+  try {
+    await request(`/webhooks/deliveries/${encodeURIComponent(button.dataset.retryDelivery)}/retry`, {
+      method: 'POST',
+      body: '{}',
+    })
+    await loadDeveloper()
+  } catch (error) {
+    setError('developerError', error.message || 'Webhook retry failed')
+    button.disabled = false
+  }
+}
+
 window.addEventListener('online', () => {
   if (token) flushQueue().then(refreshInbox)
 })
@@ -4379,6 +4485,7 @@ function showView(view) {
   else if (view === 'projects') loadProjects()
   else if (view === 'manufacturing') loadManufacturing()
   else if (view === 'reporting') loadReporting()
+  else if (view === 'developer') loadDeveloper()
 }
 
 $('tabInbox').onclick = () => showView('inbox')
@@ -4397,6 +4504,7 @@ $('tabHr').onclick = () => showView('hr')
 $('tabProjects').onclick = () => showView('projects')
 $('tabManufacturing').onclick = () => showView('manufacturing')
 $('tabReporting').onclick = () => showView('reporting')
+$('tabDeveloper').onclick = () => showView('developer')
 
 // ------------------------------------------------------------------- boot
 

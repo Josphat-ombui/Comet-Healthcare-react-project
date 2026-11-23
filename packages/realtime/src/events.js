@@ -105,6 +105,16 @@ const REPORTING_EVENT_TYPES = new Set([
   'DashboardUpdated',
 ])
 
+// Phase 15 developer events are ID/classification-only invalidation signals —
+// company room only, never branch, user, thread or inbox rooms. No client name,
+// key prefix/hash, subscription URL, secret, delivery payload, provider status
+// or signature is ever pushed over a socket.
+const DEVELOPER_EVENT_TYPES = new Set([
+  'WebhookSubscriptionCreated',
+  'WebhookDeliveryFailed',
+  'PublicClientRevoked',
+])
+
 function eventRooms(event) {
   const prefix = `company:${event.companyId}`
   const data = event.data || {}
@@ -184,6 +194,9 @@ function eventRooms(event) {
 
   // ---------------------------------------------------------- phase 14 reporting
   if (REPORTING_EVENT_TYPES.has(event.type)) return unique([prefix])
+
+  // ---------------------------------------------------------- phase 15 developer
+  if (DEVELOPER_EVENT_TYPES.has(event.type)) return unique([prefix])
   return []
 }
 
@@ -252,6 +265,9 @@ function socketEventFor(type) {
     ReportRunCompleted: 'reporting:run',
     ReportRunFailed: 'reporting:run',
     DashboardUpdated: 'reporting:dashboard',
+    WebhookSubscriptionCreated: 'developer:webhook',
+    WebhookDeliveryFailed: 'developer:webhook',
+    PublicClientRevoked: 'developer:client',
   }[type] || null
 }
 

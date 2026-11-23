@@ -2014,3 +2014,173 @@ export const REPORTING_MONEY_FIELDS = [
   'netCents', 'balanceCents', 'totalValueCents', 'grossCents',
   'deductionsCents', 'employerCostCents',
 ]
+
+// ---------------------------------------------------------------- phase 15 public API and webhooks
+//
+// Public API clients never receive a raw key or hash from a DTO: an operator
+// links an existing ApiKey or supplies its SHA-256 hash/prefix. Webhook secrets
+// are accepted only as whole-field identifiers so they can be encrypted at
+// rest; no response ever contains the plaintext, the envelope or the hash.
+// Every payload and callback is strictly allow-listed and ID-only.
+
+export const PUBLIC_SCOPES = Object.freeze([
+  'public:health:read',
+  'public:finance:read',
+  'public:sales:read',
+])
+
+export const PUBLIC_FINANCE_SUMMARIES = Object.freeze(['income', 'ageing'])
+
+export const WEBHOOK_EVENT_TYPES = Object.freeze([
+  'InvoiceIssued',
+  'PaymentRecorded',
+  'SalesOrderConfirmed',
+  'DeliveryNoteIssued',
+  'ReportRunCompleted',
+  'DashboardUpdated',
+  'BatchReleased',
+])
+
+export const WEBHOOK_SUBSCRIPTION_STATUSES = Object.freeze(['ACTIVE', 'DISABLED', 'SUSPENDED'])
+export const WEBHOOK_DELIVERY_STATUSES = Object.freeze(['PENDING', 'RETRYING', 'DELIVERED', 'FAILED'])
+export const WEBHOOK_REASON_CODES = Object.freeze([
+  'NETWORK_ERROR', 'TIMEOUT', 'HTTP_ERROR', 'INVALID_URL', 'INACTIVE_SUBSCRIPTION', 'MISSING_SECRET', 'INVALID_PAYLOAD',
+])
+export const PUBLIC_MONEY_FIELDS = Object.freeze([
+  'subtotalCents', 'taxCents', 'totalCents', 'debitCents', 'creditCents', 'balanceCents',
+])
+
+const phase15Id = z.string().trim().min(1).max(80)
+const phase15Date = z.string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Use a date in YYYY-MM-DD format')
+  .refine(isValidIsoDate, 'Choose a valid date')
+const phase15DateTime = z.iso.datetime()
+const phase15Limit = z.coerce.number().int().min(1).max(200).default(50)
+const phase15Secret = z.string().trim().min(32, 'Webhook secrets must be at least 32 characters')
+  .max(128)
+  .regex(/^[A-Za-z0-9_-]+$/, 'Use only letters, numbers, _ or - in a webhook secret')
+const publicScopeSchema = z.enum(PUBLIC_SCOPES)
+const webhookEventTypeSchema = z.enum(WEBHOOK_EVENT_TYPES)
+
+function isPublicHttpsUrl(value) {
+  let url
+  try {
+    url = new URL(value)
+  } catch {
+    return false
+  }
+  if (url.protocol !== 'https:' || url.username || url.password) return false
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  if (host === 'localhost' || host.endsWith('.localhost') || host === '::1') return false
+  const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (ipv4) {
+    const [a, b] = ipv4.slice(1).map(Number)
+    if (a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31)
+      || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127)) return false
+  }
+  if (host.startsWith('fc') || host.startsWith('fd') || host.startsWith('fe80')) return false
+  return true
+}
+
+const webhookUrlSchema = z.string().trim().url('Enter a valid HTTPS URL')
+  .refine(isPublicHttpsUrl, 'Use a public HTTPS URL that is not a private address')
+
+const uniqueList = (values) => new Set(values).size === values.length
+
+export const publicClientCreateSchema = z.object({
+  name: dlpSafeText(120).min(2),
+  // Either link an existing ApiKey or supply the hash/prefix of a secret the
+  // caller already owns. The raw key is never accepted or returned by an API.
+  apiKeyId: phase15Id.optional(),
+  keyHash: z.string().trim().regex(/^[a-f0-9]{64}$/i, 'keyHash must be a SHA-256 hex digest').optional(),
+  keyPrefix: z.string().trim().min(6).max(40).regex(/^[A-Za-z0-9_-]+$/).optional(),
+  scopes: z.array(publicScopeSchema).min(1).max(PUBLIC_SCOPES.length)
+    .refine(uniqueList, 'Scopes must be unique'),
+  branchId: phase15Id.nullable().optional(),
+}).strict().superRefine((value, ctx) => {
+  const linked = Boolean(value.apiKeyId)
+  const supplied = Boolean(value.keyHash && value.keyPrefix)
+  if (linked === supplied) {
+    ctx.addIssue({ code: 'custom', path: ['apiKeyId'], message: 'Link an apiKeyId or supply both keyHash and keyPrefix' })
+  }
+  if (value.keyHash && !value.keyPrefix) {
+    ctx.addIssue({ code: 'custom', path: ['keyPrefix'], message: 'keyPrefix is required with keyHash' })
+  }
+  if (value.keyPrefix && !value.keyHash) {
+    ctx.addIssue({ code: 'custom', path: ['keyHash'], message: 'keyHash is required with keyPrefix' })
+  }
+})
+
+export const publicClientListQuerySchema = z.object({
+  status: z.enum(['ACTIVE', 'REVOKED']).optional(),
+  limit: phase15Limit,
+}).strict()
+
+export const publicClientActionSchema = z.object({}).strict()
+
+export const webhookSubscriptionCreateSchema = z.object({
+  url: webhookUrlSchema,
+  eventTypes: z.array(webhookEventTypeSchema).min(1).max(WEBHOOK_EVENT_TYPES.length)
+    .refine(uniqueList, 'Event types must be unique'),
+  secret: phase15Secret,
+  clientId: phase15Id.nullable().optional(),
+  branchId: phase15Id.nullable().optional(),
+}).strict()
+
+export const webhookSubscriptionRotateSchema = z.object({ secret: phase15Secret }).strict()
+
+export const webhookSubscriptionUpdateSchema = z.object({
+  status: z.enum(WEBHOOK_SUBSCRIPTION_STATUSES),
+}).strict()
+
+export const webhookSubscriptionQuerySchema = z.object({
+  status: z.enum(WEBHOOK_SUBSCRIPTION_STATUSES).optional(),
+  clientId: phase15Id.optional(),
+  limit: phase15Limit,
+}).strict()
+
+export const webhookDeliveryQuerySchema = z.object({
+  subscriptionId: phase15Id.optional(),
+  status: z.enum(WEBHOOK_DELIVERY_STATUSES).optional(),
+  eventType: webhookEventTypeSchema.optional(),
+  limit: phase15Limit,
+}).strict()
+
+export const webhookActionSchema = z.object({}).strict()
+
+export const webhookDeliveryPayloadSchema = z.object({
+  eventId: phase15Id,
+  eventType: webhookEventTypeSchema,
+  entityType: z.enum([
+    'INVOICE', 'PAYMENT', 'SALES_ORDER', 'DELIVERY_NOTE', 'REPORT_RUN',
+    'DASHBOARD', 'BATCH_RECORD', 'WEBHOOK_DELIVERY', 'PUBLIC_CLIENT', 'WEBHOOK_SUBSCRIPTION',
+  ]),
+  entityId: phase15Id,
+  occurredAt: phase15DateTime,
+  correlationId: phase15Id.nullable().optional(),
+  classification: z.enum(['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED']),
+}).strict()
+
+export const webhookCallbackSchema = z.object({
+  eventId: phase15Id,
+  eventType: webhookEventTypeSchema,
+  entityType: z.enum([
+    'INVOICE', 'PAYMENT', 'SALES_ORDER', 'DELIVERY_NOTE', 'REPORT_RUN',
+    'DASHBOARD', 'BATCH_RECORD', 'WEBHOOK_DELIVERY', 'PUBLIC_CLIENT', 'WEBHOOK_SUBSCRIPTION',
+  ]),
+  entityId: phase15Id,
+  occurredAt: phase15DateTime,
+  timestamp: phase15DateTime,
+}).strict()
+
+export const publicApiFinanceQuerySchema = z.object({
+  kind: z.enum(PUBLIC_FINANCE_SUMMARIES).default('income'),
+  from: phase15Date.optional(),
+  to: phase15Date.optional(),
+  asOf: phase15Date.optional(),
+}).strict().refine((value) => !value.from || !value.to || value.from <= value.to, 'from must not be after to')
+
+export const publicApiSalesQuerySchema = z.object({
+  from: phase15Date.optional(),
+  to: phase15Date.optional(),
+}).strict().refine((value) => !value.from || !value.to || value.from <= value.to, 'from must not be after to')
