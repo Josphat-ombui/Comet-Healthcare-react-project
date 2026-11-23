@@ -1,12 +1,13 @@
 # OpenAPI Contract
 
-Comet Healthcare Enterprise Platform — Phase 8 contract complete (`0.8.0-phase.8`)
+Comet Healthcare Enterprise Platform — Phase 9 contract complete (`0.9.0-phase.9`)
 
 This directory holds the versioned REST and webhook contracts. Phase 1 created the skeleton;
 Phase 3 added identity/organisation/audit, Phase 4 added messaging and realtime, Phase 5
 completed the shared-services surface (files, workflow, notifications, search, documents),
 Phase 6 added the tenant/branch-scoped finance surface under `/api/finance`, Phase 7 added
-the sales lifecycle under `/api/sales`, and Phase 8 adds inventory under `/api/inventory`.
+the sales lifecycle under `/api/sales`, Phase 8 added inventory under `/api/inventory`, and
+Phase 9 adds procurement under `/api/procurement`.
 
 ## Files
 
@@ -33,6 +34,34 @@ the sales lifecycle under `/api/sales`, and Phase 8 adds inventory under `/api/i
 - Response envelopes follow the implementation: named collections such as `files`,
   `definitions`, `instances`, `tasks`, `notifications` and `preferences` are used rather than a
   generic `items` key. `GET /api/search` and `GET /api/documents` use `items` as before.
+
+## Phase 9 scope
+
+- `Procurement` tag paths (18 paths / 23 operations): `/api/procurement/requisitions`
+  (create/list/get), `/requisitions/{id}` submit/approve/convert, `/orders`
+  (create/list/get), `/orders/{id}` approve/send, `/receipts` (create/list/get),
+  `/receipts/{id}/inspect`, `/returns` (create/list/get), `/returns/{id}/approve`,
+  `/matches` (create/list/get) and `/matches/{id}/approve`.
+- All Phase 3–8 paths and schemas remain intact. Every procurement operation declares
+  `security: [{ bearerAuth: [] }]` and an `x-permission` from the `procurement.*` set. Strict
+  request schemas reject client-supplied `companyId`, statuses and calculated value columns;
+  free text is DLP-checked and fails closed.
+- Money fields are integer cents (`*Cents`), quantities are positive floats rounded once to
+  three decimals, and dates are strict `YYYY-MM-DD`. A requisition converts to a draft order.
+  Goods receipts post stock through the Phase 8 inventory ledger and update ordered/received
+  quantities on the order; partial and full receipts are supported. Approved supplier returns
+  issue stock back through inventory. See ADR-0014.
+- `PROCUREMENT_MATCH_TOLERANCE_BPS` is a business tolerance used only to decide MATCHED vs
+  DISCREPANCY from cent-exact receipt and invoice variances. It is not a statutory rate and no
+  tax percentage is hardcoded. Matching never posts finance journals, payments or invoice
+  mutations; `financeInvoiceId` is an amount-comparison reference only.
+- Phase 9 socket events are `procurement:requisition`, `procurement:order`,
+  `procurement:receipt`, `procurement:return` and `procurement:match`. Domain events and socket
+  frames carry IDs/classification only and are routed to the company room only — never user,
+  thread, inbox or branch rooms. Clients refetch through `/api/procurement`; see `x-realtime`
+  and `x-procurement`.
+- `Idempotency-Key` remains scoped to `POST /api/messaging/threads/{id}/messages` only; no
+  `/api/procurement` endpoint consumes it.
 
 ## Phase 8 scope
 
@@ -132,6 +161,9 @@ the sales lifecycle under `/api/sales`, and Phase 8 adds inventory under `/api/i
     room. Adding document numbers, amounts, customer names or free text is a contract violation.
 12. Phase 8 inventory frames are ID/classification-only invalidation signals routed to the company
     room. Adding quantities, costs, values, batch numbers, item names or notes is a contract violation.
+13. Phase 9 procurement frames are ID/classification-only invalidation signals routed to the company
+    room. Adding document numbers, quantities, amounts, variances, statuses, supplier names or notes
+    is a contract violation.
 
 ## Security schemes
 
@@ -152,9 +184,10 @@ the sales lifecycle under `/api/sales`, and Phase 8 adds inventory under `/api/i
    ```
 
    An OpenAPI-aware linter (for example `npx @redocly/cli lint docs/openapi/openapi.yaml`) is
-   optional when network access to the generator is available. At the Phase 8 gate the parsed
-   document has version `0.8.0-phase.8`, 130 paths (22 under `/api/inventory`) and 114 schemas.
-4. Confirm all `$ref` targets resolve and that no Phase 3/4/5/6/7 path was removed. A local check:
+   optional when network access to the generator is available. At the Phase 9 gate the parsed
+   document has version `0.9.0-phase.9`, 148 paths (18 under `/api/procurement`) and 145 schemas.
+   At the Phase 8 gate it had version `0.8.0-phase.8`, 130 paths and 114 schemas.
+4. Confirm all `$ref` targets resolve and that no Phase 3/4/5/6/7/8 path was removed. A local check:
 
    ```bash
    python - <<'PY'
@@ -181,7 +214,9 @@ the sales lifecycle under `/api/sales`, and Phase 8 adds inventory under `/api/i
    eTIMS queue-only behaviour; Phase 7 sales tests cover conversion, status guards, DLP,
     verified-rate enforcement and company-room ID-only events; Phase 8 inventory tests cover
     weighted-average cents, balance movements, transfer/count guards, quarantine, reorder alerts,
-    DLP and company-room ID-only events (383 refs resolved at the gate).
+    DLP and company-room ID-only events; Phase 9 procurement tests cover conversion, partial/full
+    receipts, cent-exact tolerance matching, supplier returns, quarantine guards, DLP, strict
+    ID-only events and tenant scope. At the Phase 9 gate 491 refs resolve.
 
 ## Phase gate requirement
 

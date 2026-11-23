@@ -8,6 +8,58 @@ The format follows a phase-gate model: each enterprise phase ends with passing t
 
 ## [Unreleased]
 
+### Phase 9 — Procurement
+
+**Added**
+
+- Tenant/branch-scoped procurement domain with strict Zod contracts and integer-cent arithmetic:
+  purchase requisitions, purchase orders, goods receipt notes, supplier returns and three-way
+  matches in `packages/api/lib/procurement.js`. Requisitions convert to draft orders; approved
+  orders can be received partially or fully with ordered/received quantities updated on the order.
+- `/api/procurement` endpoints for requisition/order/receipt/return/match lists and creates plus
+  submit/approve/convert, approve/send, inspect, approve-return and approve-match actions. New
+  `procurement.*` permissions are enforced with bearer auth on every operation; client-supplied
+  `companyId`, statuses and calculated columns are rejected.
+- Goods receipts post stock through the Phase 8 inventory ledger and reject quarantined batches or
+  inactive items. Supplier returns stay DRAFT until approval, which issues stock back through
+  inventory. Three-way matching computes cent-exact receipt and invoice variances and uses
+  `PROCUREMENT_MATCH_TOLERANCE_BPS` only as a business tolerance. No finance journal, payment or
+  invoice mutation occurs.
+- Migration `20261123000300_phase9_procurement` with nine new RLS-protected tables and idempotent
+  `tenant_branch_scope` policies, generated via the shadow-DB method. Idempotent `cmp_comet`-only
+  procurement fixtures are seeded against the existing supplier, inventory items and warehouses.
+- ERP Procurement tab with requisitions, orders, receipts, returns and matches, simple forms and
+  row actions. Socket frames only invalidate the open view; content is always refetched through
+  the authenticated API.
+- Strict shared Procurement event schemas and company-room-only sockets: `procurement:requisition`,
+  `procurement:order`, `procurement:receipt`, `procurement:return` and `procurement:match`. Domain
+  events and socket frames carry IDs/classification only. OpenAPI `0.9.0-phase.9`, ADR-0014,
+  README and OpenAPI README updates.
+- `packages/api/tests/phase9-procurement.test.js` covering conversion, partial/full receipts,
+  cent-exact tolerance matching, supplier return lifecycle, quarantine/inactive-item rejection,
+  DLP, strict ID-only events and tenant scope.
+
+**Changed**
+
+- `PROCUREMENT_MATCH_TOLERANCE_BPS` defaults to `0`. It is a business control for discrepancy
+  decisions, not a statutory rate; no tax percentage is hardcoded or copied into procurement rows.
+- `Idempotency-Key` remains scoped to messaging sends; procurement writes are not replay-safe.
+
+**Verification**
+
+- `npm test` — 137 passed (16 Phase 9), 0 failed; `npm run test:smoke` — 31 passed (7 files).
+- `npm run lint` passes with 21 non-blocking warnings, all in pre-existing web/API files; no Phase 9
+  warnings. `npm run build` passes (`✓ built in 7.58s`, 2335 modules transformed).
+- `node --check packages/erp/public/app.js` passes with no output. OpenAPI YAML parses and all
+  refs resolve: version `0.9.0-phase.9`, 148 paths (18 Procurement paths / 23 operations),
+  145 schemas, 491 refs.
+- `npm run db:deploy`, `npm run db:generate` and two consecutive `npm run db:seed` runs pass.
+  Final cross-tenant RLS probe with `comet_app`: `cmp_other` sees 0 rows in all nine Procurement
+  tables; `cmp_comet` sees one seeded row in eight tables and zero `ThreeWayMatch` rows. All nine
+  tables have the `tenant_branch_scope` policy.
+
+---
+
 ### Phase 8 — Inventory
 
 **Added**

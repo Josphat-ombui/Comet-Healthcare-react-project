@@ -318,6 +318,48 @@ export const ReorderLevelBreachedDataSchema = InventoryEntityRefSchema.extend({
   classification: ClassificationSchema,
 }).strict()
 
+// Phase 9 procurement events are strict ID/classification-only invalidation
+// signals. Document numbers, quantities, amounts, variances, statuses, supplier
+// names and notes stay in the authenticated /api/procurement responses.
+const ProcurementEntityRefSchema = z.object({
+  entityType: z.enum([
+    'PURCHASE_REQUISITION', 'PURCHASE_ORDER', 'GOODS_RECEIPT',
+    'SUPPLIER_RETURN', 'THREE_WAY_MATCH',
+  ]),
+  entityId: z.string(),
+})
+
+export const PurchaseRequisitionApprovedDataSchema = ProcurementEntityRefSchema.extend({
+  requisitionId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const PurchaseOrderApprovedDataSchema = ProcurementEntityRefSchema.extend({
+  orderId: z.string(),
+  requisitionId: z.string().optional(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const GoodsReceiptReceivedDataSchema = ProcurementEntityRefSchema.extend({
+  receiptId: z.string(),
+  orderId: z.string(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const SupplierReturnApprovedDataSchema = ProcurementEntityRefSchema.extend({
+  returnId: z.string(),
+  receiptId: z.string().optional(),
+  orderId: z.string().optional(),
+  classification: ClassificationSchema,
+}).strict()
+
+export const ThreeWayMatchFlaggedDataSchema = ProcurementEntityRefSchema.extend({
+  matchId: z.string(),
+  orderId: z.string(),
+  receiptId: z.string().optional(),
+  classification: ClassificationSchema,
+}).strict()
+
 export const DomainEventSchemas = {
   MessageSent: MessageSentDataSchema,
   ThreadAssigned: ThreadAssignedDataSchema,
@@ -360,6 +402,11 @@ export const DomainEventSchemas = {
   StockTransferApproved: StockTransferApprovedDataSchema,
   StockCountApproved: StockCountApprovedDataSchema,
   ReorderLevelBreached: ReorderLevelBreachedDataSchema,
+  PurchaseRequisitionApproved: PurchaseRequisitionApprovedDataSchema,
+  PurchaseOrderApproved: PurchaseOrderApprovedDataSchema,
+  GoodsReceiptReceived: GoodsReceiptReceivedDataSchema,
+  SupplierReturnApproved: SupplierReturnApprovedDataSchema,
+  ThreeWayMatchFlagged: ThreeWayMatchFlaggedDataSchema,
 }
 
 export function parseEventEnvelope(input) {

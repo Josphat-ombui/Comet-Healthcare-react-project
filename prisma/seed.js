@@ -1076,6 +1076,109 @@ async function main() {
   })
   console.log('✓ Seeded inventory items, warehouses, batches, balances, movements, transfer and count fixtures')
 
+  // ---------------------------------------------------------------- phase 9
+  // Procurement fixtures stay DRAFT and post no stock: approvals, receipts and
+  // stock movements remain service-owned. All rows are cmp_comet-only and use
+  // company-scoped document numbers so repeated seeds update rather than duplicate.
+  const requisitionFixture = await prisma.purchaseRequisition.upsert({
+    where: { companyId_number: { companyId, number: 'REQ-2026-F001' } },
+    update: {},
+    create: {
+      companyId, number: 'REQ-2026-F001', status: 'DRAFT',
+      requisitionDate: '2026-03-01', requiredDate: '2026-03-20',
+      supplierId: supplierParty.id, currency: 'KES', totalCents: 125_000,
+      notes: 'Procurement phase 9 fixture — submit and approve to exercise conversion.',
+      classification: 'INTERNAL', createdById: admin.id,
+      lines: {
+        create: [{
+          companyId, itemId: apiItem.id, warehouseId: rawWarehouse.id,
+          description: 'Metformin HCl API purchase requisition line',
+          qty: 100, unitCostCents: 1250, totalCents: 125_000, position: 0,
+          classification: 'INTERNAL', createdById: admin.id,
+        }],
+      },
+    },
+  })
+
+  const orderFixture = await prisma.purchaseOrder.upsert({
+    where: { companyId_number: { companyId, number: 'PO-2026-F001' } },
+    update: {},
+    create: {
+      companyId, number: 'PO-2026-F001', status: 'DRAFT',
+      requisitionId: requisitionFixture.id, supplierId: supplierParty.id,
+      orderDate: '2026-03-02', expectedDate: '2026-03-22',
+      currency: 'KES', totalCents: 125_000,
+      notes: 'Procurement phase 9 fixture — approve and send before receiving.',
+      classification: 'INTERNAL', createdById: admin.id,
+      lines: {
+        create: [{
+          companyId, itemId: apiItem.id, warehouseId: rawWarehouse.id,
+          description: 'Metformin HCl API purchase order line',
+          qty: 100, unitCostCents: 1250, totalCents: 125_000, position: 0,
+          classification: 'INTERNAL', createdById: admin.id,
+        }],
+      },
+    },
+  })
+
+  const orderLineFixture = await prisma.purchaseOrderLine.findFirst({
+    where: { companyId, orderId: orderFixture.id },
+    select: { id: true },
+    orderBy: [{ position: 'asc' }],
+  })
+  if (orderLineFixture) {
+    const receiptFixture = await prisma.goodsReceipt.upsert({
+      where: { companyId_number: { companyId, number: 'GRN-2026-F001' } },
+      update: {},
+      create: {
+        companyId, number: 'GRN-2026-F001', status: 'DRAFT',
+        orderId: orderFixture.id, supplierId: supplierParty.id,
+        receiptDate: '2026-03-05', currency: 'KES', totalCents: 12_500,
+        notes: 'Procurement phase 9 fixture — receive to post stock through inventory.',
+        classification: 'INTERNAL', createdById: admin.id,
+        lines: {
+          create: [{
+            companyId, orderLineId: orderLineFixture.id, itemId: apiItem.id,
+            warehouseId: rawWarehouse.id, batchId: releasedBatch.id,
+            description: 'Metformin HCl API receipt line',
+            qty: 10, unitCostCents: 1250, totalCents: 12_500, position: 0,
+            classification: 'INTERNAL', createdById: admin.id,
+          }],
+        },
+      },
+    })
+
+    const receiptLineFixture = await prisma.goodsReceiptLine.findFirst({
+      where: { companyId, receiptId: receiptFixture.id },
+      select: { id: true },
+      orderBy: [{ position: 'asc' }],
+    })
+    if (receiptLineFixture) {
+      await prisma.supplierReturn.upsert({
+        where: { companyId_number: { companyId, number: 'RET-2026-F001' } },
+        update: {},
+        create: {
+          companyId, number: 'RET-2026-F001', status: 'DRAFT',
+          orderId: orderFixture.id, receiptId: receiptFixture.id,
+          supplierId: supplierParty.id, returnDate: '2026-03-08',
+          reason: 'Procurement phase 9 fixture — quality sample.',
+          currency: 'KES', totalCents: 2_500,
+          classification: 'INTERNAL', createdById: admin.id,
+          lines: {
+            create: [{
+              companyId, receiptLineId: receiptLineFixture.id, itemId: apiItem.id,
+              warehouseId: rawWarehouse.id, batchId: releasedBatch.id,
+              description: 'Metformin HCl API supplier return line',
+              qty: 2, unitCostCents: 1250, totalCents: 2_500, position: 0,
+              classification: 'INTERNAL', createdById: admin.id,
+            }],
+          },
+        },
+      })
+    }
+  }
+  console.log('✓ Seeded draft purchase requisition, order, goods receipt and supplier return fixtures')
+
   console.log('\nSeed complete ✔')
 }
 

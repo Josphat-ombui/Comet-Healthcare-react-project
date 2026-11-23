@@ -51,6 +51,12 @@ export const config = {
     etimsPayloadVersion: process.env.ETIMS_PAYLOAD_VERSION || '1.0',
     etimsProvider: process.env.ETIMS_PROVIDER || 'internal-queue',
   },
+  // Phase 9 procurement. This is a BUSINESS matching tolerance in basis points
+  // (100 bps = 1%), used only to decide MATCHED vs DISCREPANCY. It is NOT a
+  // statutory, tax or exchange-rate value and must never be used to compute tax.
+  procurement: {
+    matchToleranceBps: Math.max(0, int(process.env.PROCUREMENT_MATCH_TOLERANCE_BPS, 0)),
+  },
 
   password: {
     enforceBreach: process.env.PASSWORD_BREACH_ENFORCE === 'true',

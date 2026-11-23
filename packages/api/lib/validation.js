@@ -1019,3 +1019,157 @@ export const inventoryAlertQuerySchema = z.object({
 
 export const INVENTORY_CLASSIFICATIONS = ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED']
 export const INVENTORY_MONEY_FIELDS = ['standardCostCents', 'unitCostCents', 'totalValueCents']
+
+// ------------------------------------------------------------ phase 9 procurement
+//
+// Procurement keeps money in integer cents, dates as strict YYYY-MM-DD strings
+// and quantities as positive floats. Write schemas are strict so a client cannot
+// smuggle companyId, status, computed totals or a match tolerance into a
+// tenant-scoped write. Free text is DLP-checked and fails closed. The only
+// tolerance used anywhere is config.procurement.matchToleranceBps on the server;
+// it is a business threshold, never a tax/statutory rate.
+
+const procurementId = z.string().trim().min(1).max(80)
+const procurementDate = z.string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Use a date in YYYY-MM-DD format')
+  .refine(isValidIsoDate, 'Choose a valid date')
+const procurementMoney = z.number().int().positive()
+const procurementQty = z.number().finite().positive('Quantity must be greater than zero').max(1_000_000)
+const procurementLimit = z.coerce.number().int().min(1).max(200).default(50)
+const procurementNotes = dlpSafeText(2000).optional().or(z.literal(''))
+const procurementLineBase = z.object({
+  itemId: procurementId,
+  warehouseId: procurementId.nullable().optional(),
+  description: dlpSafeText(240),
+  qty: procurementQty,
+  unitCostCents: procurementMoney,
+}).strict()
+const procurementLineList = z.array(procurementLineBase).min(1).max(60)
+const optionalProcurementLineList = z.array(procurementLineBase).max(60).default([])
+
+export const procurementRequisitionCreateSchema = z.object({
+  supplierId: procurementId.nullable().optional(),
+  requisitionDate: procurementDate,
+  requiredDate: procurementDate.nullable().optional(),
+  currency: z.string().trim().min(1).max(8).default('KES'),
+  lines: procurementLineList,
+  notes: procurementNotes,
+  branchId: procurementId.nullable().optional(),
+  classification: classificationSchema.default('INTERNAL'),
+}).strict()
+
+export const procurementOrderCreateSchema = z.object({
+  supplierId: procurementId.optional(),
+  requisitionId: procurementId.optional(),
+  orderDate: procurementDate,
+  expectedDate: procurementDate.nullable().optional(),
+  currency: z.string().trim().min(1).max(8).default('KES'),
+  financeInvoiceId: procurementId.nullable().optional(),
+  lines: optionalProcurementLineList,
+  notes: procurementNotes,
+  branchId: procurementId.nullable().optional(),
+  classification: classificationSchema.default('INTERNAL'),
+}).strict().superRefine((value, ctx) => {
+  if (!value.requisitionId && !value.supplierId) {
+    ctx.addIssue({ code: 'custom', path: ['supplierId'], message: 'supplierId is required without a requisitionId' })
+  }
+  if (!value.requisitionId && value.lines.length === 0) {
+    ctx.addIssue({ code: 'custom', path: ['lines'], message: 'At least one line is required without a requisitionId' })
+  }
+})
+
+export const procurementReceiptCreateSchema = z.object({
+  orderId: procurementId,
+  receiptDate: procurementDate,
+  financeInvoiceId: procurementId.nullable().optional(),
+  lines: z.array(z.object({
+    orderLineId: procurementId,
+    qty: procurementQty,
+    unitCostCents: procurementMoney.optional(),
+    warehouseId: procurementId.nullable().optional(),
+    batchId: procurementId.nullable().optional(),
+  }).strict()).min(1).max(60),
+  notes: procurementNotes,
+  branchId: procurementId.nullable().optional(),
+  classification: classificationSchema.default('INTERNAL'),
+}).strict()
+
+export const procurementReturnCreateSchema = z.object({
+  orderId: procurementId,
+  receiptId: procurementId.nullable().optional(),
+  supplierId: procurementId.optional(),
+  returnDate: procurementDate,
+  reason: dlpSafeText(1000).optional().or(z.literal('')),
+  currency: z.string().trim().min(1).max(8).default('KES'),
+  lines: z.array(procurementLineBase.extend({
+    receiptLineId: procurementId.nullable().optional(),
+    batchId: procurementId.nullable().optional(),
+  }).strict()).min(1).max(60),
+  branchId: procurementId.nullable().optional(),
+  classification: classificationSchema.default('INTERNAL'),
+}).strict()
+
+export const procurementMatchCreateSchema = z.object({
+  orderId: procurementId,
+  receiptId: procurementId.nullable().optional(),
+  financeInvoiceId: procurementId.nullable().optional(),
+  notes: procurementNotes,
+  branchId: procurementId.nullable().optional(),
+  classification: classificationSchema.default('INTERNAL'),
+}).strict()
+
+const procurementStatusQuery = (values) => z.enum(values).optional()
+export const procurementRequisitionQuerySchema = z.object({
+  status: procurementStatusQuery(['DRAFT', 'SUBMITTED', 'APPROVED', 'REJECTED', 'CONVERTED', 'CANCELLED']),
+  supplierId: procurementId.optional(),
+  from: procurementDate.optional(),
+  to: procurementDate.optional(),
+  limit: procurementLimit,
+}).strict()
+export const procurementOrderQuerySchema = z.object({
+  status: procurementStatusQuery(['DRAFT', 'APPROVED', 'SENT', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CANCELLED']),
+  supplierId: procurementId.optional(),
+  requisitionId: procurementId.optional(),
+  from: procurementDate.optional(),
+  to: procurementDate.optional(),
+  limit: procurementLimit,
+}).strict()
+export const procurementReceiptQuerySchema = z.object({
+  status: procurementStatusQuery(['DRAFT', 'RECEIVED', 'INSPECTED', 'REJECTED', 'CANCELLED']),
+  orderId: procurementId.optional(),
+  from: procurementDate.optional(),
+  to: procurementDate.optional(),
+  limit: procurementLimit,
+}).strict()
+export const procurementReturnQuerySchema = z.object({
+  status: procurementStatusQuery(['DRAFT', 'APPROVED', 'SENT', 'RECEIVED', 'CANCELLED']),
+  orderId: procurementId.optional(),
+  receiptId: procurementId.optional(),
+  from: procurementDate.optional(),
+  to: procurementDate.optional(),
+  limit: procurementLimit,
+}).strict()
+export const procurementMatchQuerySchema = z.object({
+  status: procurementStatusQuery(['PENDING', 'MATCHED', 'DISCREPANCY', 'APPROVED']),
+  orderId: procurementId.optional(),
+  limit: procurementLimit,
+}).strict()
+
+export const procurementConvertSchema = z.object({
+  supplierId: procurementId,
+  orderDate: procurementDate.optional(),
+  notes: procurementNotes,
+}).strict()
+
+export const procurementReceiptInspectSchema = z.object({
+  decision: z.enum(['ACCEPT', 'REJECT']),
+  reason: dlpSafeText(1000).optional().or(z.literal('')),
+}).strict()
+
+export const procurementActionSchema = z.object({}).strict()
+
+export const PROCUREMENT_CLASSIFICATIONS = ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED']
+export const PROCUREMENT_MONEY_FIELDS = [
+  'unitCostCents', 'totalCents', 'subtotalCents', 'poTotalCents', 'receiptTotalCents',
+  'invoiceTotalCents', 'priceVarianceCents', 'invoiceVarianceCents',
+]

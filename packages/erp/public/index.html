@@ -44,6 +44,7 @@
         <button id="tabFinance" class="tab" type="button">Finance</button>
         <button id="tabSales" class="tab" type="button">Sales</button>
         <button id="tabInventory" class="tab" type="button">Inventory</button>
+        <button id="tabProcurement" class="tab" type="button">Procurement</button>
         <span id="connection" class="pill connection" aria-live="polite">Connecting…</span>
       </nav>
 
@@ -840,6 +841,150 @@
                 <tbody id="inventoryAlertRows"></tbody>
               </table>
             </div>
+          </section>
+        </div>
+      </section>
+
+      <section id="procurementView" hidden>
+        <p class="procurement-banner" role="note">Procurement keeps money in integer cents. Match tolerance is a business setting in basis points, never a statutory or tax rate. Socket frames carry IDs/classification only — every value below is refetched through the authenticated API.</p>
+        <p id="procurementError" class="error" role="alert"></p>
+        <p id="procurementActionStatus" class="muted" aria-live="polite"></p>
+        <div class="grid">
+          <section class="card span-2">
+            <div class="card-head"><h2>Purchase requisitions</h2><button id="refreshProcurement" class="link" type="button">Refresh</button></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Required</th><th>Status</th><th>Classification</th><th>Actions</th></tr></thead>
+                <tbody id="procurementRequisitionRows"></tbody>
+              </table>
+            </div>
+            <form id="procurementRequisitionForm">
+              <div class="field-row finance-field-row">
+                <label>Required date<input id="procReqDate" type="date" required /></label>
+                <label>Item<select id="procReqItem" required></select></label>
+                <label>Warehouse (optional)<select id="procReqWarehouse"><option value="">Default / company-wide</option></select></label>
+              </div>
+              <div class="field-row finance-field-row">
+                <label>Quantity<input id="procReqQty" type="number" min="0.001" step="0.001" value="1" required /></label>
+                <label>Unit cost (cents)<input id="procReqUnitCostCents" type="number" min="1" step="1" value="1000" required /></label>
+                <label>Classification
+                  <select id="procReqClassification">
+                    <option value="INTERNAL">Internal</option><option value="PUBLIC">Public</option>
+                    <option value="CONFIDENTIAL">Confidential</option><option value="RESTRICTED">Restricted</option>
+                  </select>
+                </label>
+              </div>
+              <label>Notes<textarea id="procReqNotes" rows="2" maxlength="500" placeholder="Optional business justification"></textarea></label>
+              <div class="form-actions"><button type="submit">Create requisition</button><span id="procReqStatus" class="muted" aria-live="polite"></span></div>
+            </form>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Purchase orders</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Order date</th><th>Supplier</th><th>Status</th><th>Actions</th></tr></thead>
+                <tbody id="procurementOrderRows"></tbody>
+              </table>
+            </div>
+            <form id="procurementOrderForm">
+              <div class="field-row finance-field-row">
+                <label>Supplier<select id="procOrderSupplier" required></select></label>
+                <label>Order date<input id="procOrderDate" type="date" required /></label>
+                <label>Item<select id="procOrderItem" required></select></label>
+              </div>
+              <div class="field-row finance-field-row">
+                <label>Warehouse (optional)<select id="procOrderWarehouse"><option value="">Default / company-wide</option></select></label>
+                <label>Quantity<input id="procOrderQty" type="number" min="0.001" step="0.001" value="1" required /></label>
+                <label>Unit cost (cents)<input id="procOrderUnitCostCents" type="number" min="1" step="1" value="1000" required /></label>
+                <label>Classification
+                  <select id="procOrderClassification">
+                    <option value="INTERNAL">Internal</option><option value="PUBLIC">Public</option>
+                    <option value="CONFIDENTIAL">Confidential</option><option value="RESTRICTED">Restricted</option>
+                  </select>
+                </label>
+              </div>
+              <label>Notes<textarea id="procOrderNotes" rows="2" maxlength="500"></textarea></label>
+              <div class="form-actions"><button type="submit">Create order</button><span id="procOrderStatus" class="muted" aria-live="polite"></span></div>
+            </form>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Goods receipt notes</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Receipt date</th><th>Order</th><th>Status</th><th>Actions</th></tr></thead>
+                <tbody id="procurementReceiptRows"></tbody>
+              </table>
+            </div>
+            <form id="procurementReceiptForm">
+              <div class="field-row finance-field-row">
+                <label>Purchase order<select id="procGrnOrder" required></select></label>
+                <label>Receipt date<input id="procGrnDate" type="date" required /></label>
+                <label>Item<select id="procGrnItem" required></select></label>
+              </div>
+              <div class="field-row finance-field-row">
+                <label>Warehouse (optional)<select id="procGrnWarehouse"><option value="">Order default</option></select></label>
+                <label>Batch (optional)<select id="procGrnBatch"><option value="">Unbatched / auto</option></select></label>
+                <label>Quantity received<input id="procGrnQty" type="number" min="0.001" step="0.001" value="1" required /></label>
+                <label>Unit cost (cents)<input id="procGrnUnitCostCents" type="number" min="0" step="1" value="1000" required /></label>
+              </div>
+              <label>Notes<textarea id="procGrnNotes" rows="2" maxlength="500"></textarea></label>
+              <div class="form-actions"><button type="submit">Receive goods</button><span id="procGrnStatus" class="muted" aria-live="polite"></span></div>
+            </form>
+            <p class="muted">Receiving posts stock through the inventory ledger and updates ordered/received quantities on the order. Only released batches may be consumed.</p>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Supplier returns</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Return date</th><th>Receipt</th><th>Status</th><th>Actions</th></tr></thead>
+                <tbody id="procurementReturnRows"></tbody>
+              </table>
+            </div>
+            <form id="procurementReturnForm">
+              <div class="field-row finance-field-row">
+                <label>Goods receipt<select id="procReturnReceipt" required></select></label>
+                <label>Return date<input id="procReturnDate" type="date" required /></label>
+                <label>Item<select id="procReturnItem" required></select></label>
+              </div>
+              <div class="field-row finance-field-row">
+                <label>Warehouse (optional)<select id="procReturnWarehouse"><option value="">Receipt default</option></select></label>
+                <label>Batch (optional)<select id="procReturnBatch"><option value="">Unbatched / auto</option></select></label>
+                <label>Quantity<input id="procReturnQty" type="number" min="0.001" step="0.001" value="1" required /></label>
+              </div>
+              <label>Reason<textarea id="procReturnReason" rows="2" maxlength="1000" placeholder="Quality or specification issue"></textarea></label>
+              <div class="form-actions"><button type="submit">Create return</button><span id="procReturnStatus" class="muted" aria-live="polite"></span></div>
+            </form>
+          </section>
+
+          <section class="card span-2">
+            <div class="card-head"><h2>Three-way matches</h2></div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Number</th><th>Order</th><th>Receipt</th><th>Invoice</th><th>Status</th><th>Variance (cents)</th><th>Actions</th></tr></thead>
+                <tbody id="procurementMatchRows"></tbody>
+              </table>
+            </div>
+            <form id="procurementMatchForm">
+              <div class="field-row finance-field-row">
+                <label>Purchase order<select id="procMatchOrder" required></select></label>
+                <label>Goods receipt<select id="procMatchReceipt" required></select></label>
+                <label>Purchase invoice (optional)<select id="procMatchInvoice"><option value="">No invoice linked</option></select></label>
+              </div>
+              <div class="field-row finance-field-row">
+                <label>Classification
+                  <select id="procMatchClassification">
+                    <option value="INTERNAL">Internal</option><option value="PUBLIC">Public</option>
+                    <option value="CONFIDENTIAL">Confidential</option><option value="RESTRICTED">Restricted</option>
+                  </select>
+                </label>
+              </div>
+              <label>Notes<textarea id="procMatchNotes" rows="2" maxlength="500"></textarea></label>
+              <div class="form-actions"><button type="submit">Run match</button><span id="procMatchStatus" class="muted" aria-live="polite"></span></div>
+            </form>
+            <p class="muted">A match compares order price, received quantity and (when linked) the finance invoice amount in whole cents. Tolerance is configured, not calculated from any tax rate.</p>
           </section>
         </div>
       </section>

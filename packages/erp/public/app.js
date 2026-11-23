@@ -1,15 +1,16 @@
 // ERP shell: identity, directory, messaging, platform views (notifications,
-// files, workflow, search, documents), Phase 6 finance, Phase 7 sales and
-// Phase 8 inventory. Uses the same JSON API as the storefront; no external
-// dependencies. The Socket.IO client is served by the realtime service itself,
-// and the inbox falls back to authenticated polling when sockets are unavailable.
+// files, workflow, search, documents), Phase 6 finance, Phase 7 sales,
+// Phase 8 inventory and Phase 9 procurement. Uses the same JSON API as the
+// storefront; no external dependencies. The Socket.IO client is served by the
+// realtime service itself, and the inbox falls back to authenticated polling
+// when sockets are unavailable.
 
 const API = window.ERP_API_URL || 'http://localhost:4000/api'
 const API_ORIGIN = API.replace(/\/api\/?$/, '')
 const REALTIME = window.ERP_REALTIME_URL || 'http://localhost:4001'
 const POLL_MS = 6000
 const QUEUE_KEY = 'comet_erp_message_queue'
-const VIEWS = ['inbox', 'directory', 'notifications', 'files', 'workflow', 'search', 'documents', 'finance', 'sales', 'inventory']
+const VIEWS = ['inbox', 'directory', 'notifications', 'files', 'workflow', 'search', 'documents', 'finance', 'sales', 'inventory', 'procurement']
 const FINANCE_EVENTS = [
   'finance:account', 'finance:journal', 'finance:invoice', 'finance:payment',
   'finance:budget', 'finance:rate', 'finance:etims', 'finance:etims-failed',
@@ -23,6 +24,12 @@ const SALES_EVENTS = [
 // signals: amounts, quantities and records always come from the authenticated API.
 const INVENTORY_EVENTS = [
   'inventory:item', 'inventory:stock', 'inventory:transfer', 'inventory:count', 'inventory:alert',
+]
+// Procurement socket frames carry IDs/classification only. They are pure
+// invalidation signals: documents and amounts always come from the API.
+const PROCUREMENT_EVENTS = [
+  'procurement:requisition', 'procurement:order', 'procurement:receipt',
+  'procurement:return', 'procurement:match',
 ]
 const $ = (id) => document.getElementById(id)
 
@@ -73,10 +80,16 @@ const state = {
   inventoryTransfers: [],
   inventoryCounts: [],
   inventoryAlerts: [],
+  procurementRequisitions: [],
+  procurementOrders: [],
+  procurementReceipts: [],
+  procurementReturns: [],
+  procurementMatches: [],
 }
 let financeRefreshTimer = null
 let salesRefreshTimer = null
 let inventoryRefreshTimer = null
+let procurementRefreshTimer = null
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -1258,6 +1271,8 @@ function financeStatus(status) {
     'unverified', 'verified', 'superseded', 'draft', 'posted', 'reversed',
     'pending', 'queued', 'submitted', 'failed', 'issued', 'partiallypaid',
     'paid', 'overdue', 'cancelled', 'completed', 'approved', 'closed',
+    'submitted', 'sent', 'received', 'inspected', 'rejected', 'returned',
+    'flagged', 'matched', 'discrepancy', 'partiallyreceived', 'void',
   ]
   const className = known.includes(key) ? key : ''
   return `<span class="pill finance-status ${className}">${escapeHtml(value)}</span>`
@@ -2293,6 +2308,368 @@ $('inventoryCountForm').onsubmit = async (event) => {
   if (ok) $('inventoryCountForm').reset()
 }
 
+// -------------------------------------------------------------- procurement
+
+function procurementToday() {
+  return new Date().toISOString().slice(0, 10)
+}
+
+function procurementNotes(id) {
+  const value = $(id)?.value?.trim()
+  return value ? value : undefined
+}
+
+function procurementOptionalId(id) {
+  const value = $(id)?.value
+  return value ? value : undefined
+}
+
+function procurementMutation(path, body, statusId, message) {
+  setError('procurementError', '')
+  if ($(statusId)) $(statusId).textContent = 'Working…'
+  return request(path, { method: 'POST', body: JSON.stringify(body) })
+    .then(async () => {
+      if ($(statusId)) $(statusId).textContent = message
+      await loadProcurement()
+      return true
+    })
+    .catch((error) => {
+      if ($(statusId)) $(statusId).textContent = ''
+      setError('procurementError', error.status === 409 ? `Transition blocked: ${error.message}` : error.message)
+      return false
+    })
+}
+
+function procurementActionLabel(action) {
+  return {
+    'submit-requisition': 'Submit',
+    'approve-requisition': 'Approve',
+    'convert-requisition': 'Convert to PO',
+    'approve-order': 'Approve',
+    'send-order': 'Send',
+    'inspect-receipt': 'Inspect',
+    'reject-receipt': 'Reject',
+    'approve-return': 'Approve',
+    'approve-match': 'Approve',
+  }[action] || action
+}
+
+function procurementAction(action, id) {
+  return `<button class="link" type="button" data-procurement-action="${action}" data-procurement-id="${escapeHtml(id)}">${procurementActionLabel(action)}</button>`
+}
+
+function procurementCode(id, rows, prefix) {
+  const row = rows.find((entry) => entry.id === id)
+  return row ? `<code>${escapeHtml(row.number || (prefix ? `${prefix}-${String(id).slice(0, 8)}` : String(id).slice(0, 8)))}</code>` : '—'
+}
+
+function refreshProcurementBatchSelects(itemSelectId, batchSelectId) {
+  const itemId = $(itemSelectId)?.value
+  const options = state.inventoryBatches
+    .filter((batch) => !itemId || batch.itemId === itemId)
+    .map((batch) => ({ value: batch.id, label: `${batch.batchNumber} — ${batch.status}` }))
+  fillFinanceSelect($(batchSelectId), options, 'Unbatched / auto')
+}
+
+function procurementDocumentLine(rows, parentId, itemId) {
+  const parent = rows.find((row) => row.id === parentId)
+  return (parent?.lines || []).find((line) => line.itemId === itemId) || null
+}
+
+function procurementItemOptions() {
+  return state.inventoryItems.map((item) => ({ value: item.id, label: `${item.code} — ${item.name}` }))
+}
+
+function procurementWarehouseOptions() {
+  return state.inventoryWarehouses.map((warehouse) => ({
+    value: warehouse.id,
+    label: `${warehouse.code} — ${warehouse.name}`,
+  }))
+}
+
+function renderProcurement() {
+  const orders = state.procurementOrders
+  const receipts = state.procurementReceipts
+
+  renderFinanceRows('procurementRequisitionRows', state.procurementRequisitions, [
+    (row) => `<code>${escapeHtml(row.number)}</code>`,
+    (row) => escapeHtml(row.requisitionDate),
+    (row) => financeStatus(row.status),
+    (row) => escapeHtml(row.classification),
+    (row) => [
+      row.status === 'DRAFT' ? procurementAction('submit-requisition', row.id) : '',
+      row.status === 'SUBMITTED' ? procurementAction('approve-requisition', row.id) : '',
+      row.status === 'APPROVED' ? procurementAction('convert-requisition', row.id) : '',
+    ].join(' '),
+  ], 'No purchase requisitions for this tenant.')
+
+  renderFinanceRows('procurementOrderRows', orders, [
+    (row) => `<code>${escapeHtml(row.number)}</code>`,
+    (row) => escapeHtml(row.orderDate),
+    (row) => {
+      const supplier = state.financeParties.find((party) => party.id === row.supplierId)
+      return escapeHtml(supplier?.name || String(row.supplierId).slice(0, 8))
+    },
+    (row) => financeStatus(row.status),
+    (row) => [
+      row.status === 'DRAFT' ? procurementAction('approve-order', row.id) : '',
+      row.status === 'APPROVED' ? procurementAction('send-order', row.id) : '',
+    ].join(' '),
+  ], 'No purchase orders for this tenant.')
+
+  renderFinanceRows('procurementReceiptRows', receipts, [
+    (row) => `<code>${escapeHtml(row.number)}</code>`,
+    (row) => escapeHtml(row.receiptDate),
+    (row) => procurementCode(row.orderId, orders, 'PO'),
+    (row) => financeStatus(row.status),
+    (row) => [
+      row.status === 'RECEIVED' ? procurementAction('inspect-receipt', row.id) : '',
+      row.status === 'RECEIVED' ? procurementAction('reject-receipt', row.id) : '',
+    ].join(' '),
+  ], 'No goods receipt notes for this tenant.')
+
+  renderFinanceRows('procurementReturnRows', state.procurementReturns, [
+    (row) => `<code>${escapeHtml(row.number)}</code>`,
+    (row) => escapeHtml(row.returnDate),
+    (row) => procurementCode(row.receiptId, receipts, 'GRN'),
+    (row) => financeStatus(row.status),
+    (row) => (row.status === 'DRAFT' ? procurementAction('approve-return', row.id) : ''),
+  ], 'No supplier returns for this tenant.')
+
+  renderFinanceRows('procurementMatchRows', state.procurementMatches, [
+    (row) => `<code>${escapeHtml(row.number)}</code>`,
+    (row) => procurementCode(row.orderId, orders, 'PO'),
+    (row) => procurementCode(row.receiptId, receipts, 'GRN'),
+    (row) => procurementCode(row.financeInvoiceId, state.financeInvoices, 'INV'),
+    (row) => financeStatus(row.status),
+    (row) => escapeHtml(row.priceVarianceCents),
+    (row) => (['MATCHED', 'DISCREPANCY'].includes(row.status) ? procurementAction('approve-match', row.id) : ''),
+  ], 'No three-way matches for this tenant.')
+
+  const itemOptions = procurementItemOptions()
+  const warehouseOptions = procurementWarehouseOptions()
+  const supplierOptions = state.financeParties
+    .filter((party) => party.type === 'SUPPLIER')
+    .map((party) => ({ value: party.id, label: `${party.name} (${party.type})` }))
+  const orderOptions = orders.map((row) => ({ value: row.id, label: `${row.number} — ${row.status}` }))
+  const receiptOptions = receipts.map((row) => ({ value: row.id, label: `${row.number} — ${row.status}` }))
+  const invoiceOptions = state.financeInvoices
+    .filter((invoice) => !invoice.direction || invoice.direction === 'PURCHASE')
+    .map((invoice) => ({ value: invoice.id, label: `${invoice.number} — ${invoice.totalCents} cents` }))
+
+  for (const id of ['procReqItem', 'procOrderItem', 'procGrnItem', 'procReturnItem']) {
+    fillFinanceSelect($(id), itemOptions, 'Select an item')
+  }
+  for (const id of ['procReqWarehouse', 'procOrderWarehouse', 'procGrnWarehouse', 'procReturnWarehouse']) {
+    fillFinanceSelect($(id), warehouseOptions, 'Default / company-wide')
+  }
+  fillFinanceSelect($('procOrderSupplier'), supplierOptions, 'Select a supplier')
+  for (const id of ['procGrnOrder', 'procMatchOrder']) fillFinanceSelect($(id), orderOptions, 'Select a purchase order')
+  fillFinanceSelect($('procMatchReceipt'), receiptOptions, 'Select a goods receipt')
+  fillFinanceSelect($('procReturnReceipt'), receiptOptions, 'Select a goods receipt')
+  fillFinanceSelect($('procMatchInvoice'), invoiceOptions, 'No invoice linked')
+  refreshProcurementBatchSelects('procGrnItem', 'procGrnBatch')
+  refreshProcurementBatchSelects('procReturnItem', 'procReturnBatch')
+
+  const today = procurementToday()
+  for (const field of ['procReqDate', 'procOrderDate', 'procGrnDate', 'procReturnDate']) {
+    if ($(field) && !$(field).value) $(field).value = today
+  }
+
+  $('procurementView').querySelectorAll('[data-procurement-action]').forEach((button) => {
+    button.onclick = () => runProcurementAction(button.dataset.procurementAction, button.dataset.procurementId)
+  })
+}
+
+async function loadProcurement() {
+  if (!token) return
+  setError('procurementError', '')
+  const results = await Promise.allSettled([
+    request('/procurement/requisitions?limit=200'),
+    request('/procurement/orders?limit=200'),
+    request('/procurement/receipts?limit=200'),
+    request('/procurement/returns?limit=200'),
+    request('/procurement/matches?limit=200'),
+    request('/finance/parties?type=SUPPLIER&limit=200'),
+    request('/finance/invoices?direction=PURCHASE&limit=200'),
+    request('/inventory/items?limit=200'),
+    request('/inventory/warehouses?limit=200'),
+    request('/inventory/batches?limit=200'),
+  ])
+  const failures = []
+  const assign = (result, label, setter, key) => {
+    if (result.status === 'fulfilled') setter(financeList(result.value, key))
+    else failures.push(`${label}: ${result.reason?.message || 'unavailable'}`)
+  }
+  assign(results[0], 'Requisitions', (value) => { state.procurementRequisitions = value }, 'requisitions')
+  assign(results[1], 'Orders', (value) => { state.procurementOrders = value }, 'orders')
+  assign(results[2], 'Receipts', (value) => { state.procurementReceipts = value }, 'receipts')
+  assign(results[3], 'Returns', (value) => { state.procurementReturns = value }, 'returns')
+  assign(results[4], 'Matches', (value) => { state.procurementMatches = value }, 'matches')
+  assign(results[5], 'Suppliers', (value) => { state.financeParties = value }, 'parties')
+  assign(results[6], 'Invoices', (value) => { state.financeInvoices = value }, 'invoices')
+  assign(results[7], 'Items', (value) => { state.inventoryItems = value }, 'items')
+  assign(results[8], 'Warehouses', (value) => { state.inventoryWarehouses = value }, 'warehouses')
+  assign(results[9], 'Batches', (value) => { state.inventoryBatches = value }, 'batches')
+  renderProcurement()
+  if (failures.length) setError('procurementError', failures.join(' · '))
+}
+
+async function runProcurementAction(action, id) {
+  if (!id) return false
+  const pathFor = (suffix) => `/procurement/${suffix}/${encodeURIComponent(id)}`
+  const paths = {
+    'submit-requisition': `${pathFor('requisitions')}/submit`,
+    'approve-requisition': `${pathFor('requisitions')}/approve`,
+    'approve-order': `${pathFor('orders')}/approve`,
+    'send-order': `${pathFor('orders')}/send`,
+    'approve-return': `${pathFor('returns')}/approve`,
+    'approve-match': `${pathFor('matches')}/approve`,
+  }
+  if (action === 'convert-requisition') {
+    const supplierId = $('procOrderSupplier').value
+    if (!supplierId) {
+      setError('procurementError', 'Select a supplier before converting a requisition')
+      return false
+    }
+    return procurementMutation(`${pathFor('requisitions')}/convert`, { supplierId },
+      'procurementActionStatus', 'Purchase order created')
+  }
+  if (action === 'inspect-receipt' || action === 'reject-receipt') {
+    const decision = action === 'reject-receipt' ? 'REJECT' : 'ACCEPT'
+    return procurementMutation(`${pathFor('receipts')}/inspect`, { decision },
+      'procurementActionStatus', `Goods receipt ${decision === 'REJECT' ? 'rejected' : 'inspected'}`)
+  }
+  const path = paths[action]
+  if (!path) return false
+  return procurementMutation(path, {}, 'procurementActionStatus', `${procurementActionLabel(action)} completed`)
+}
+
+function onProcurementEvent() {
+  // Procurement frames carry IDs/classification only. Never treat a frame as
+  // document content — reload through the authenticated API instead.
+  if (state.view !== 'procurement') return
+  if (procurementRefreshTimer) clearTimeout(procurementRefreshTimer)
+  procurementRefreshTimer = setTimeout(() => {
+    procurementRefreshTimer = null
+    loadProcurement()
+  }, 250)
+}
+
+$('refreshProcurement').onclick = () => loadProcurement()
+$('procGrnItem').onchange = () => refreshProcurementBatchSelects('procGrnItem', 'procGrnBatch')
+$('procReturnItem').onchange = () => refreshProcurementBatchSelects('procReturnItem', 'procReturnBatch')
+
+$('procurementRequisitionForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const itemId = $('procReqItem').value
+  const item = state.inventoryItems.find((entry) => entry.id === itemId)
+  const body = {
+    requisitionDate: $('procReqDate').value,
+    classification: $('procReqClassification').value,
+    lines: [{
+      itemId,
+      description: item ? `${item.code} — ${item.name}` : 'Purchase requisition line',
+      qty: Number($('procReqQty').value),
+      unitCostCents: Number($('procReqUnitCostCents').value),
+      ...(procurementOptionalId('procReqWarehouse') ? { warehouseId: procurementOptionalId('procReqWarehouse') } : {}),
+    }],
+  }
+  const notes = procurementNotes('procReqNotes')
+  if (notes) body.notes = notes
+  await procurementMutation('/procurement/requisitions', body, 'procReqStatus', 'Requisition created as DRAFT')
+}
+
+$('procurementOrderForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const itemId = $('procOrderItem').value
+  const item = state.inventoryItems.find((entry) => entry.id === itemId)
+  const body = {
+    supplierId: $('procOrderSupplier').value,
+    orderDate: $('procOrderDate').value,
+    classification: $('procOrderClassification').value,
+    lines: [{
+      itemId,
+      description: item ? `${item.code} — ${item.name}` : 'Purchase order line',
+      qty: Number($('procOrderQty').value),
+      unitCostCents: Number($('procOrderUnitCostCents').value),
+      ...(procurementOptionalId('procOrderWarehouse') ? { warehouseId: procurementOptionalId('procOrderWarehouse') } : {}),
+    }],
+  }
+  const notes = procurementNotes('procOrderNotes')
+  if (notes) body.notes = notes
+  await procurementMutation('/procurement/orders', body, 'procOrderStatus', 'Purchase order created as DRAFT')
+}
+
+$('procurementReceiptForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const itemId = $('procGrnItem').value
+  const orderLine = procurementDocumentLine(state.procurementOrders, $('procGrnOrder').value, itemId)
+  if (!orderLine) {
+    setError('procurementError', 'Select an item that exists on the chosen purchase order')
+    $('procGrnStatus').textContent = ''
+    return
+  }
+  const body = {
+    orderId: $('procGrnOrder').value,
+    receiptDate: $('procGrnDate').value,
+    lines: [{
+      orderLineId: orderLine.id,
+      qty: Number($('procGrnQty').value),
+      unitCostCents: Number($('procGrnUnitCostCents').value),
+      ...(procurementOptionalId('procGrnWarehouse') ? { warehouseId: procurementOptionalId('procGrnWarehouse') } : {}),
+      ...(procurementOptionalId('procGrnBatch') ? { batchId: procurementOptionalId('procGrnBatch') } : {}),
+    }],
+  }
+  const notes = procurementNotes('procGrnNotes')
+  if (notes) body.notes = notes
+  await procurementMutation('/procurement/receipts', body, 'procGrnStatus', 'Goods received and stock posted')
+}
+
+$('procurementReturnForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const receiptId = $('procReturnReceipt').value
+  const receipt = state.procurementReceipts.find((row) => row.id === receiptId)
+  const itemId = $('procReturnItem').value
+  const receiptLine = procurementDocumentLine(state.procurementReceipts, receiptId, itemId)
+  if (!receipt || !receiptLine) {
+    setError('procurementError', 'Select an item that exists on the chosen goods receipt')
+    $('procReturnStatus').textContent = ''
+    return
+  }
+  const body = {
+    orderId: receipt.orderId,
+    receiptId,
+    returnDate: $('procReturnDate').value,
+    lines: [{
+      receiptLineId: receiptLine.id,
+      itemId,
+      description: receiptLine.description || 'Supplier return line',
+      qty: Number($('procReturnQty').value),
+      unitCostCents: Number(receiptLine.unitCostCents || 0),
+      ...(procurementOptionalId('procReturnWarehouse') ? { warehouseId: procurementOptionalId('procReturnWarehouse') } : {}),
+      ...(procurementOptionalId('procReturnBatch') ? { batchId: procurementOptionalId('procReturnBatch') } : {}),
+    }],
+  }
+  const reason = procurementNotes('procReturnReason')
+  if (reason) body.reason = reason
+  await procurementMutation('/procurement/returns', body, 'procReturnStatus', 'Supplier return created as DRAFT')
+}
+
+$('procurementMatchForm').onsubmit = async (event) => {
+  event.preventDefault()
+  const body = {
+    orderId: $('procMatchOrder').value,
+    receiptId: $('procMatchReceipt').value,
+    classification: $('procMatchClassification').value,
+  }
+  const invoiceId = procurementOptionalId('procMatchInvoice')
+  if (invoiceId) body.financeInvoiceId = invoiceId
+  const notes = procurementNotes('procMatchNotes')
+  if (notes) body.notes = notes
+  await procurementMutation('/procurement/matches', body, 'procMatchStatus', 'Three-way match completed')
+}
+
 // ---------------------------------------------------------------- realtime
 
 function loadSocketClient() {
@@ -2405,6 +2782,8 @@ function connectRealtime() {
     for (const event of SALES_EVENTS) socket.on(event, onSalesEvent)
     // Phase 8 inventory events are ID/classification-only company-room signals.
     for (const event of INVENTORY_EVENTS) socket.on(event, onInventoryEvent)
+    // Phase 9 procurement events are ID/classification-only company-room signals.
+    for (const event of PROCUREMENT_EVENTS) socket.on(event, onProcurementEvent)
   })
 }
 
@@ -2435,6 +2814,7 @@ function showView(view) {
   else if (view === 'finance') loadFinance()
   else if (view === 'sales') loadSales()
   else if (view === 'inventory') loadInventory()
+  else if (view === 'procurement') loadProcurement()
 }
 
 $('tabInbox').onclick = () => showView('inbox')
@@ -2447,6 +2827,7 @@ $('tabDocuments').onclick = () => showView('documents')
 $('tabFinance').onclick = () => showView('finance')
 $('tabSales').onclick = () => showView('sales')
 $('tabInventory').onclick = () => showView('inventory')
+$('tabProcurement').onclick = () => showView('procurement')
 
 // ------------------------------------------------------------------- boot
 

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Comet Healthcare Enterprise API
-  version: 0.8.0-phase.8
+  version: 0.9.0-phase.9
   summary: REST and webhook contract for the Comet Healthcare enterprise platform.
   description: |
     Phase 3 adds local identity, sessions, MFA, OIDC, organisation directory and audit.
@@ -82,6 +82,25 @@ info:
     are routed to the company room only. Clients refetch all values through the authenticated
     API. `Idempotency-Key` remains scoped to messaging sends only.
 
+    Phase 9 adds procurement under `/api/procurement`: purchase requisitions, purchase orders,
+    goods receipt notes, supplier returns and three-way matching. Requisitions convert to draft
+    orders; approved orders can be received partially or fully, with ordered/received quantities
+    updated on the order and stock posted through the Phase 8 inventory ledger. Supplier returns
+    issue stock back only after approval. All monetary fields are integer cents, all dates are
+    strict `YYYY-MM-DD`, and all free text is DLP-checked and fails closed.
+
+    `PROCUREMENT_MATCH_TOLERANCE_BPS` is a configurable business tolerance in basis points used
+    only to decide MATCHED vs DISCREPANCY. It is never a statutory, VAT or tax rate, and no tax
+    percentage is hardcoded. Matching does not create finance journals, post payments or alter
+    invoices; an optional `financeInvoiceId` is only a reference for amount comparison.
+
+    Phase 9 permissions: `procurement.requisition.read/write/approve`,
+    `procurement.order.read/write/approve/send`, `procurement.receipt.read/write/inspect`,
+    `procurement.return.read/write/approve` and `procurement.match.read/approve`. Phase 9 domain
+    events and sockets carry IDs and classification only and are routed to the company room only.
+    Clients refetch all values through the authenticated API. `Idempotency-Key` remains scoped to
+    messaging sends only; procurement writes are not replay-safe.
+
     Phase 6 permissions: `finance.account.read/write`, `finance.journal.read/write/post`,
     `finance.party.read/write`, `finance.invoice.read/write/issue`,
     `finance.payment.read/write`, `finance.budget.read/write`,
@@ -116,6 +135,8 @@ tags:
     description: Quotes, orders, delivery notes, returns and finance invoice creation. Added in Phase 7.
   - name: Inventory
     description: Items, warehouses, batches, stock balances, movements, transfers, counts and reorder alerts. Added in Phase 8.
+  - name: Procurement
+    description: Requisitions, purchase orders, goods receipts, supplier returns and three-way matching. Added in Phase 9.
 x-phase-roadmap:
   phase1: Architecture and this skeleton only
   phase2: ERD, migrations, workspace split, shared contracts
@@ -125,7 +146,7 @@ x-phase-roadmap:
   phase6: Complete - /api/finance (accounts, parties, statutory rates, journals, invoices, payments, budgets, statements, ready-only eTIMS queue)
   phase7: Complete - /api/sales (quotes, orders, delivery notes, returns, invoice creation from confirmed orders)
   phase8: Complete - /api/inventory (items, warehouses, batches, balances, movements, transfers, counts, reorder alerts)
-  phase9: /api/procurement
+  phase9: Complete - /api/procurement (requisitions, orders, goods receipts, supplier returns, three-way matches)
   phase10: /api/service
   phase11: /api/hr
   phase12: /api/projects
@@ -183,6 +204,11 @@ x-realtime:
     inventory:transfer: 'StockTransfer approved; refetch GET /api/inventory/transfers.'
     inventory:count: 'StockCount approved; refetch GET /api/inventory/counts and balances.'
     inventory:alert: 'ReorderLevelBreached; refetch GET /api/inventory/alerts.'
+    procurement:requisition: 'PurchaseRequisitionApproved; refetch GET /api/procurement/requisitions.'
+    procurement:order: 'PurchaseOrderApproved; refetch GET /api/procurement/orders.'
+    procurement:receipt: 'GoodsReceiptReceived; refetch GET /api/procurement/receipts.'
+    procurement:return: 'SupplierReturnApproved; refetch GET /api/procurement/returns.'
+    procurement:match: 'ThreeWayMatchFlagged; refetch GET /api/procurement/matches.'
   eventPayload:
     eventId: string
     type: string
@@ -268,6 +294,21 @@ x-realtime:
   phase8Fallback: |
     Authenticated polling of /api/inventory items, warehouses, batches, balances, movements,
     transfers, counts and alerts when sockets are unavailable. Event data is never rendered directly.
+  phase9EventMap:
+    PurchaseRequisitionApproved: procurement:requisition
+    PurchaseOrderApproved: procurement:order
+    GoodsReceiptReceived: procurement:receipt
+    SupplierReturnApproved: procurement:return
+    ThreeWayMatchFlagged: procurement:match
+  phase9Rooms:
+    - company:{companyId} only (never user, thread, inbox or branch rooms)
+  phase9PayloadRule: |
+    Procurement domain events and socket frames carry IDs and classification only. No document
+    number, quantity, amount, variance, status text, supplier name or note is placed on an event;
+    clients always refetch through the authenticated /api/procurement endpoints.
+  phase9Fallback: |
+    Authenticated polling of /api/procurement requisitions, orders, receipts, returns and matches
+    when sockets are unavailable. Event data is never rendered directly.
 x-idempotency:
   requiredFor:
     - POST /api/messaging/threads/{id}/messages
@@ -285,6 +326,10 @@ x-idempotency:
     Not required. No /api/inventory endpoint consumes an Idempotency-Key. Receipts, issues,
     adjustments, transfers and count approvals are not replay-safe; clients must inspect the
     returned status and balance before retrying.
+  phase9: |
+    Not required. No /api/procurement endpoint consumes an Idempotency-Key. Conversions, receipt
+    posts, return approvals and match decisions are not replay-safe; clients must inspect the
+    returned document status before retrying.
 x-finance:
   money: All finance API monetary fields are integer cents (`*Cents`); reports use the same unit. The eTIMS payload is a separate external-style representation using decimal strings and is not a finance money field.
   rates: |
@@ -402,6 +447,48 @@ x-inventory:
     - inventory:count
     - inventory:alert
   idempotency: Idempotency-Key is scoped to messaging sends only; inventory writes are not replay-safe.
+x-procurement:
+  money: All procurement monetary fields are integer cents (`*Cents`). Quantities are positive floats persisted to three decimals.
+  dates: All document dates are strict ISO `YYYY-MM-DD` strings.
+  tenantScope: companyId comes from the bearer token; strict schemas reject a client-supplied companyId, status or calculated column. Branch scope allows organisation-wide (null branch) rows.
+  dlp: Free text is inspected with the shared DLP patterns and fails closed with 422 and finding types only.
+  events: IDs and classification only; company-room sockets are invalidation signals.
+  matching: |
+    Expected receipt value is receipt quantity multiplied by the ordered unit cost. Variances are
+    integer cents: receipt variance is actual receipt total minus expected, and invoice variance
+    is linked invoice total minus expected. A status of MATCHED means every absolute variance is
+    within PROCUREMENT_MATCH_TOLERANCE_BPS of expected value; otherwise the match is DISCREPANCY.
+    This tolerance is a business control, not a statutory or tax rate. No finance journal, payment
+    or invoice mutation occurs. See ADR-0014.
+  transitions:
+    requisition: 'DRAFT -> SUBMITTED -> APPROVED -> CONVERTED'
+    order: 'DRAFT -> APPROVED -> SENT; SENT -> PARTIALLY_RECEIVED/RECEIVED'
+    receipt: 'DRAFT -> RECEIVED -> INSPECTED/REJECTED'
+    return: 'DRAFT -> APPROVED/REJECTED'
+    match: 'MATCHED/DISCREPANCY -> APPROVED/REJECTED'
+  permissions:
+    - procurement.requisition.read
+    - procurement.requisition.write
+    - procurement.requisition.approve
+    - procurement.order.read
+    - procurement.order.write
+    - procurement.order.approve
+    - procurement.order.send
+    - procurement.receipt.read
+    - procurement.receipt.write
+    - procurement.receipt.inspect
+    - procurement.return.read
+    - procurement.return.write
+    - procurement.return.approve
+    - procurement.match.read
+    - procurement.match.approve
+  socketEvents:
+    - procurement:requisition
+    - procurement:order
+    - procurement:receipt
+    - procurement:return
+    - procurement:match
+  idempotency: Idempotency-Key is scoped to messaging sends only; procurement writes are not replay-safe.
 paths:
   /api/health/live:
     get:
@@ -4224,6 +4311,483 @@ paths:
                 required: [count]
                 properties:
                   count: { $ref: '#/components/schemas/StockCount' }
+  /api/procurement/requisitions:
+    get:
+      tags: [Procurement]
+      summary: List purchase requisitions
+      operationId: listPurchaseRequisitions
+      x-permission: procurement.requisition.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Requisitions scoped to the caller's tenant and branch.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProcurementRequisitionList' }
+    post:
+      tags: [Procurement]
+      summary: Create a purchase requisition
+      operationId: createPurchaseRequisition
+      x-permission: procurement.requisition.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProcurementRequisitionCreate' }
+      responses:
+        '201':
+          description: Draft requisition created.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [requisition]
+                properties:
+                  requisition: { $ref: '#/components/schemas/ProcurementRequisition' }
+        '422': { description: Validation or DLP rejection. }
+  /api/procurement/requisitions/{id}:
+    get:
+      tags: [Procurement]
+      summary: Get one purchase requisition
+      operationId: getPurchaseRequisition
+      x-permission: procurement.requisition.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProcurementDocumentId'
+      responses:
+        '200':
+          description: Requisition scoped to the caller's tenant and branch.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [requisition]
+                properties:
+                  requisition: { $ref: '#/components/schemas/ProcurementRequisition' }
+  /api/procurement/requisitions/{id}/submit:
+    post:
+      tags: [Procurement]
+      summary: Submit a draft requisition for approval
+      operationId: submitPurchaseRequisition
+      x-permission: procurement.requisition.write
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProcurementDocumentId'
+      responses:
+        '200':
+          description: Submitted requisition.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [requisition]
+                properties:
+                  requisition: { $ref: '#/components/schemas/ProcurementRequisition' }
+        '409': { description: Requisition is not in DRAFT. }
+  /api/procurement/requisitions/{id}/approve:
+    post:
+      tags: [Procurement]
+      summary: Approve a submitted requisition
+      operationId: approvePurchaseRequisition
+      x-permission: procurement.requisition.approve
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProcurementDocumentId'
+      responses:
+        '200':
+          description: Approved requisition.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [requisition]
+                properties:
+                  requisition: { $ref: '#/components/schemas/ProcurementRequisition' }
+        '409': { description: Requisition is not in SUBMITTED. }
+  /api/procurement/requisitions/{id}/convert:
+    post:
+      tags: [Procurement]
+      summary: Convert an approved requisition into a draft purchase order
+      operationId: convertPurchaseRequisition
+      x-permission: procurement.requisition.approve
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProcurementDocumentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProcurementRequisitionConvert' }
+      responses:
+        '201':
+          description: Draft purchase order created from the requisition.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [order, requisition]
+                properties:
+                  order: { $ref: '#/components/schemas/ProcurementOrder' }
+                  requisition: { $ref: '#/components/schemas/ProcurementRequisition' }
+        '409': { description: Requisition is not APPROVED or was already converted. }
+  /api/procurement/orders:
+    get:
+      tags: [Procurement]
+      summary: List purchase orders
+      operationId: listPurchaseOrders
+      x-permission: procurement.order.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Purchase orders scoped to the caller's tenant and branch.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProcurementOrderList' }
+    post:
+      tags: [Procurement]
+      summary: Create a purchase order
+      operationId: createPurchaseOrder
+      x-permission: procurement.order.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProcurementOrderCreate' }
+      responses:
+        '201':
+          description: Draft purchase order created.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [order]
+                properties:
+                  order: { $ref: '#/components/schemas/ProcurementOrder' }
+        '422': { description: Validation or DLP rejection. }
+  /api/procurement/orders/{id}:
+    get:
+      tags: [Procurement]
+      summary: Get one purchase order
+      operationId: getPurchaseOrder
+      x-permission: procurement.order.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProcurementDocumentId'
+      responses:
+        '200':
+          description: Order scoped to the caller's tenant and branch.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [order]
+                properties:
+                  order: { $ref: '#/components/schemas/ProcurementOrder' }
+  /api/procurement/orders/{id}/approve:
+    post:
+      tags: [Procurement]
+      summary: Approve a draft purchase order
+      operationId: approvePurchaseOrder
+      x-permission: procurement.order.approve
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProcurementDocumentId'
+      responses:
+        '200':
+          description: Approved purchase order.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [order]
+                properties:
+                  order: { $ref: '#/components/schemas/ProcurementOrder' }
+        '409': { description: Order is not in DRAFT. }
+  /api/procurement/orders/{id}/send:
+    post:
+      tags: [Procurement]
+      summary: Mark an approved purchase order as sent to the supplier
+      operationId: sendPurchaseOrder
+      x-permission: procurement.order.send
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProcurementDocumentId'
+      responses:
+        '200':
+          description: Sent purchase order.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [order]
+                properties:
+                  order: { $ref: '#/components/schemas/ProcurementOrder' }
+        '409': { description: Order is not in APPROVED. }
+  /api/procurement/receipts:
+    get:
+      tags: [Procurement]
+      summary: List goods receipt notes
+      operationId: listGoodsReceipts
+      x-permission: procurement.receipt.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Goods receipts scoped to the caller's tenant and branch.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProcurementReceiptList' }
+    post:
+      tags: [Procurement]
+      summary: Receive goods against an approved order and post stock
+      operationId: createGoodsReceipt
+      x-permission: procurement.receipt.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProcurementReceiptCreate' }
+      responses:
+        '201':
+          description: Received goods with stock posted and order quantities updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [receipt, order]
+                properties:
+                  receipt: { $ref: '#/components/schemas/ProcurementReceipt' }
+                  order: { $ref: '#/components/schemas/ProcurementOrder' }
+        '409': { description: Order not sent, over-receipt, quarantined batch or inactive item. }
+        '422': { description: Validation or DLP rejection. }
+  /api/procurement/receipts/{id}:
+    get:
+      tags: [Procurement]
+      summary: Get one goods receipt note
+      operationId: getGoodsReceipt
+      x-permission: procurement.receipt.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProcurementDocumentId'
+      responses:
+        '200':
+          description: Receipt scoped to the caller's tenant and branch.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [receipt]
+                properties:
+                  receipt: { $ref: '#/components/schemas/ProcurementReceipt' }
+  /api/procurement/receipts/{id}/inspect:
+    post:
+      tags: [Procurement]
+      summary: Inspect or reject a received goods note
+      operationId: inspectGoodsReceipt
+      x-permission: procurement.receipt.inspect
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProcurementDocumentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProcurementReceiptInspect' }
+      responses:
+        '200':
+          description: Inspected or rejected goods receipt.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [receipt]
+                properties:
+                  receipt: { $ref: '#/components/schemas/ProcurementReceipt' }
+        '409': { description: Receipt is not in RECEIVED. }
+  /api/procurement/returns:
+    get:
+      tags: [Procurement]
+      summary: List supplier returns
+      operationId: listSupplierReturns
+      x-permission: procurement.return.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Supplier returns scoped to the caller's tenant and branch.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProcurementReturnList' }
+    post:
+      tags: [Procurement]
+      summary: Create a draft supplier return
+      operationId: createSupplierReturn
+      x-permission: procurement.return.write
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProcurementReturnCreate' }
+      responses:
+        '201':
+          description: Draft supplier return created; no stock has moved yet.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [returnDocument]
+                properties:
+                  returnDocument: { $ref: '#/components/schemas/ProcurementReturn' }
+        '422': { description: Validation or DLP rejection. }
+  /api/procurement/returns/{id}:
+    get:
+      tags: [Procurement]
+      summary: Get one supplier return
+      operationId: getSupplierReturn
+      x-permission: procurement.return.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProcurementDocumentId'
+      responses:
+        '200':
+          description: Return scoped to the caller's tenant and branch.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [returnDocument]
+                properties:
+                  returnDocument: { $ref: '#/components/schemas/ProcurementReturn' }
+  /api/procurement/returns/{id}/approve:
+    post:
+      tags: [Procurement]
+      summary: Approve a supplier return and issue stock back
+      operationId: approveSupplierReturn
+      x-permission: procurement.return.approve
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProcurementDocumentId'
+      responses:
+        '200':
+          description: Approved return with stock issued back through inventory.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [returnDocument]
+                properties:
+                  returnDocument: { $ref: '#/components/schemas/ProcurementReturn' }
+        '409': { description: Return is not DRAFT, stock is insufficient or batch is not released. }
+  /api/procurement/matches:
+    get:
+      tags: [Procurement]
+      summary: List three-way matches
+      operationId: listThreeWayMatches
+      x-permission: procurement.match.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Matches scoped to the caller's tenant and branch.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProcurementMatchList' }
+    post:
+      tags: [Procurement]
+      summary: Run a three-way match
+      operationId: createThreeWayMatch
+      x-permission: procurement.match.approve
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProcurementMatchCreate' }
+      responses:
+        '201':
+          description: Match with cent-exact variances and MATCHED/DISCREPANCY status.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [match]
+                properties:
+                  match: { $ref: '#/components/schemas/ProcurementMatch' }
+        '409': { description: Order/receipt/invoice mismatch or unsupported document state. }
+        '422': { description: Validation or DLP rejection. }
+  /api/procurement/matches/{id}:
+    get:
+      tags: [Procurement]
+      summary: Get one three-way match
+      operationId: getThreeWayMatch
+      x-permission: procurement.match.read
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProcurementDocumentId'
+      responses:
+        '200':
+          description: Match scoped to the caller's tenant and branch.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [match]
+                properties:
+                  match: { $ref: '#/components/schemas/ProcurementMatch' }
+  /api/procurement/matches/{id}/approve:
+    post:
+      tags: [Procurement]
+      summary: Approve a three-way match decision
+      operationId: approveThreeWayMatch
+      x-permission: procurement.match.approve
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProcurementDocumentId'
+      responses:
+        '200':
+          description: Approved match decision; no finance posting occurs.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [match]
+                properties:
+                  match: { $ref: '#/components/schemas/ProcurementMatch' }
+        '409': { description: Match is not open or is already decided. }
 components:
   securitySchemes:
     bearerAuth:
@@ -4291,6 +4855,12 @@ components:
       in: path
       required: true
       description: Opaque inventory document ID scoped to the caller's tenant and branch.
+      schema: { type: string }
+    ProcurementDocumentId:
+      name: id
+      in: path
+      required: true
+      description: Opaque procurement document ID scoped to the caller's tenant and branch.
       schema: { type: string }
   schemas:
     Inbox:
@@ -5889,5 +6459,338 @@ components:
         alerts:
           type: array
           items: { $ref: '#/components/schemas/ReorderAlert' }
+
+    # Phase 9 procurement -------------------------------------------------
+    PurchaseRequisitionStatus:
+      type: string
+      enum: [DRAFT, SUBMITTED, APPROVED, REJECTED, CONVERTED, CANCELLED]
+    PurchaseOrderStatus:
+      type: string
+      enum: [DRAFT, APPROVED, SENT, PARTIALLY_RECEIVED, RECEIVED, CANCELLED]
+    GoodsReceiptStatus:
+      type: string
+      enum: [DRAFT, RECEIVED, INSPECTED, REJECTED, CANCELLED]
+    SupplierReturnStatus:
+      type: string
+      enum: [DRAFT, APPROVED, SENT, RECEIVED, REJECTED, CANCELLED]
+    MatchStatus:
+      type: string
+      enum: [PENDING, MATCHED, DISCREPANCY, APPROVED, REJECTED]
+    ProcurementDate:
+      type: string
+      format: date
+      pattern: '^\d{4}-\d{2}-\d{2}$'
+    ProcurementQuantity:
+      type: number
+      format: double
+      minimum: 0.001
+      maximum: 1000000
+      multipleOf: 0.001
+    ProcurementCents:
+      type: integer
+      format: int64
+      minimum: 0
+    ProcurementLineDto:
+      type: object
+      required: [itemId, qty, unitCostCents, totalCents, position, classification]
+      properties:
+        id: { type: string, nullable: true }
+        itemId: { type: string }
+        itemCode: { type: string, nullable: true }
+        warehouseId: { type: string, nullable: true }
+        warehouseCode: { type: string, nullable: true }
+        batchId: { type: string, nullable: true }
+        description: { type: string, nullable: true }
+        qty: { $ref: '#/components/schemas/ProcurementQuantity' }
+        unitCostCents: { $ref: '#/components/schemas/ProcurementCents' }
+        totalCents: { $ref: '#/components/schemas/ProcurementCents' }
+        receivedQty: { $ref: '#/components/schemas/ProcurementQuantity', nullable: true }
+        orderLineId: { type: string, nullable: true }
+        receiptLineId: { type: string, nullable: true }
+        position: { type: integer, minimum: 0 }
+        classification: { $ref: '#/components/schemas/Classification' }
+    ProcurementRequisition:
+      type: object
+      required: [id, number, requisitionDate, status, currency, totalCents, classification, lines, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        number: { type: string }
+        requisitionDate: { $ref: '#/components/schemas/ProcurementDate' }
+        requiredDate: { $ref: '#/components/schemas/ProcurementDate', nullable: true }
+        status: { $ref: '#/components/schemas/PurchaseRequisitionStatus' }
+        supplierId: { type: string, nullable: true }
+        currency: { type: string }
+        totalCents: { $ref: '#/components/schemas/ProcurementCents' }
+        notes: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        lines:
+          type: array
+          items: { $ref: '#/components/schemas/ProcurementLineDto' }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    ProcurementRequisitionList:
+      type: object
+      required: [requisitions]
+      properties:
+        requisitions:
+          type: array
+          items: { $ref: '#/components/schemas/ProcurementRequisition' }
+    ProcurementOrder:
+      type: object
+      required: [id, number, orderDate, status, supplierId, currency, totalCents, classification, lines, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        number: { type: string }
+        orderDate: { $ref: '#/components/schemas/ProcurementDate' }
+        expectedDate: { $ref: '#/components/schemas/ProcurementDate', nullable: true }
+        status: { $ref: '#/components/schemas/PurchaseOrderStatus' }
+        supplierId: { type: string }
+        requisitionId: { type: string, nullable: true }
+        financeInvoiceId: { type: string, nullable: true }
+        currency: { type: string }
+        notes: { type: string, nullable: true }
+        totalCents: { $ref: '#/components/schemas/ProcurementCents' }
+        classification: { $ref: '#/components/schemas/Classification' }
+        lines:
+          type: array
+          items: { $ref: '#/components/schemas/ProcurementLineDto' }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    ProcurementOrderList:
+      type: object
+      required: [orders]
+      properties:
+        orders:
+          type: array
+          items: { $ref: '#/components/schemas/ProcurementOrder' }
+    ProcurementReceipt:
+      type: object
+      required: [id, number, receiptDate, status, orderId, supplierId, currency, totalCents, classification, lines, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        number: { type: string }
+        receiptDate: { $ref: '#/components/schemas/ProcurementDate' }
+        status: { $ref: '#/components/schemas/GoodsReceiptStatus' }
+        orderId: { type: string }
+        supplierId: { type: string }
+        financeInvoiceId: { type: string, nullable: true }
+        currency: { type: string }
+        notes: { type: string, nullable: true }
+        totalCents: { $ref: '#/components/schemas/ProcurementCents' }
+        classification: { $ref: '#/components/schemas/Classification' }
+        lines:
+          type: array
+          items: { $ref: '#/components/schemas/ProcurementLineDto' }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    ProcurementReceiptList:
+      type: object
+      required: [receipts]
+      properties:
+        receipts:
+          type: array
+          items: { $ref: '#/components/schemas/ProcurementReceipt' }
+    ProcurementReturn:
+      type: object
+      required: [id, number, returnDate, status, orderId, supplierId, currency, totalCents, classification, lines, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        number: { type: string }
+        returnDate: { $ref: '#/components/schemas/ProcurementDate' }
+        status: { $ref: '#/components/schemas/SupplierReturnStatus' }
+        orderId: { type: string }
+        receiptId: { type: string, nullable: true }
+        supplierId: { type: string }
+        reason: { type: string, nullable: true }
+        currency: { type: string }
+        totalCents: { $ref: '#/components/schemas/ProcurementCents' }
+        classification: { $ref: '#/components/schemas/Classification' }
+        lines:
+          type: array
+          items: { $ref: '#/components/schemas/ProcurementLineDto' }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    ProcurementReturnList:
+      type: object
+      required: [returns]
+      properties:
+        returns:
+          type: array
+          items: { $ref: '#/components/schemas/ProcurementReturn' }
+    ProcurementMatch:
+      type: object
+      required: [id, number, status, orderId, supplierId, poTotalCents, receiptTotalCents, priceVarianceCents, quantityVarianceQty, toleranceBps, classification, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        number: { type: string }
+        status: { $ref: '#/components/schemas/MatchStatus' }
+        orderId: { type: string }
+        receiptId: { type: string, nullable: true }
+        supplierId: { type: string }
+        financeInvoiceId: { type: string, nullable: true }
+        poTotalCents: { $ref: '#/components/schemas/ProcurementCents' }
+        receiptTotalCents: { $ref: '#/components/schemas/ProcurementCents' }
+        invoiceTotalCents: { $ref: '#/components/schemas/ProcurementCents', nullable: true }
+        priceVarianceCents:
+          type: integer
+          format: int64
+          description: Cent-exact receipt actual minus expected; may be negative.
+        invoiceVarianceCents:
+          type: integer
+          format: int64
+          nullable: true
+          description: Cent-exact invoice total minus expected; may be negative.
+        quantityVarianceQty: { type: number, format: double, multipleOf: 0.001 }
+        toleranceBps:
+          type: integer
+          minimum: 0
+          description: Business matching tolerance in basis points; never a statutory or tax rate.
+        notes: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification' }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    ProcurementMatchList:
+      type: object
+      required: [matches]
+      properties:
+        matches:
+          type: array
+          items: { $ref: '#/components/schemas/ProcurementMatch' }
+    ProcurementLineCreate:
+      type: object
+      additionalProperties: false
+      required: [itemId, description, qty, unitCostCents]
+      properties:
+        itemId: { type: string, minLength: 1, maxLength: 80 }
+        warehouseId: { type: string, nullable: true }
+        description: { type: string, minLength: 1, maxLength: 240, description: DLP-checked. }
+        qty: { $ref: '#/components/schemas/ProcurementQuantity' }
+        unitCostCents: { type: integer, minimum: 1 }
+    ProcurementRequisitionLineCreate:
+      allOf:
+        - $ref: '#/components/schemas/ProcurementLineCreate'
+    ProcurementRequisitionCreate:
+      type: object
+      additionalProperties: false
+      required: [requisitionDate, lines]
+      properties:
+        supplierId: { type: string, minLength: 1, maxLength: 80, nullable: true }
+        requisitionDate: { $ref: '#/components/schemas/ProcurementDate' }
+        requiredDate: { $ref: '#/components/schemas/ProcurementDate', nullable: true }
+        currency: { type: string, minLength: 1, maxLength: 8, default: KES }
+        notes: { type: string, maxLength: 2000, nullable: true, description: DLP-checked. }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification', default: INTERNAL }
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 60
+          items: { $ref: '#/components/schemas/ProcurementRequisitionLineCreate' }
+    ProcurementRequisitionConvert:
+      type: object
+      additionalProperties: false
+      required: [supplierId]
+      properties:
+        supplierId: { type: string, minLength: 1, maxLength: 80 }
+        orderDate: { $ref: '#/components/schemas/ProcurementDate' }
+        notes: { type: string, maxLength: 2000, nullable: true, description: DLP-checked. }
+    ProcurementOrderLineCreate:
+      allOf:
+        - $ref: '#/components/schemas/ProcurementLineCreate'
+    ProcurementOrderCreate:
+      type: object
+      additionalProperties: false
+      required: [orderDate, lines]
+      description: supplierId is required unless requisitionId is supplied; then lines are projected from the requisition.
+      properties:
+        supplierId: { type: string, minLength: 1, maxLength: 80 }
+        requisitionId: { type: string, minLength: 1, maxLength: 80 }
+        orderDate: { $ref: '#/components/schemas/ProcurementDate' }
+        expectedDate: { $ref: '#/components/schemas/ProcurementDate', nullable: true }
+        currency: { type: string, minLength: 1, maxLength: 8, default: KES }
+        financeInvoiceId: { type: string, nullable: true }
+        notes: { type: string, maxLength: 2000, nullable: true, description: DLP-checked. }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification', default: INTERNAL }
+        lines:
+          type: array
+          minItems: 0
+          maxItems: 60
+          items: { $ref: '#/components/schemas/ProcurementOrderLineCreate' }
+    ProcurementReceiptLineCreate:
+      type: object
+      additionalProperties: false
+      required: [orderLineId, qty]
+      properties:
+        orderLineId: { type: string, minLength: 1, maxLength: 80 }
+        qty: { $ref: '#/components/schemas/ProcurementQuantity' }
+        unitCostCents: { type: integer, minimum: 1, nullable: true, description: Defaults to the ordered unit cost when omitted. }
+        warehouseId: { type: string, nullable: true }
+        batchId: { type: string, nullable: true, description: Only RELEASED batches may be consumed. }
+    ProcurementReceiptCreate:
+      type: object
+      additionalProperties: false
+      required: [orderId, receiptDate, lines]
+      properties:
+        orderId: { type: string, minLength: 1, maxLength: 80 }
+        receiptDate: { $ref: '#/components/schemas/ProcurementDate' }
+        financeInvoiceId: { type: string, nullable: true }
+        notes: { type: string, maxLength: 2000, nullable: true, description: DLP-checked. }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification', default: INTERNAL }
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 60
+          items: { $ref: '#/components/schemas/ProcurementReceiptLineCreate' }
+    ProcurementReceiptInspect:
+      type: object
+      additionalProperties: false
+      required: [decision]
+      properties:
+        decision: { type: string, enum: [ACCEPT, REJECT] }
+        reason: { type: string, maxLength: 1000, nullable: true, description: DLP-checked. }
+    ProcurementReturnLineCreate:
+      type: object
+      additionalProperties: false
+      required: [itemId, description, qty, unitCostCents]
+      properties:
+        itemId: { type: string, minLength: 1, maxLength: 80 }
+        warehouseId: { type: string, nullable: true }
+        batchId: { type: string, nullable: true }
+        receiptLineId: { type: string, nullable: true }
+        description: { type: string, minLength: 1, maxLength: 240, description: DLP-checked. }
+        qty: { $ref: '#/components/schemas/ProcurementQuantity' }
+        unitCostCents: { type: integer, minimum: 1 }
+    ProcurementReturnCreate:
+      type: object
+      additionalProperties: false
+      required: [orderId, returnDate, lines]
+      properties:
+        orderId: { type: string, minLength: 1, maxLength: 80 }
+        receiptId: { type: string, minLength: 1, maxLength: 80, nullable: true }
+        supplierId: { type: string, minLength: 1, maxLength: 80 }
+        returnDate: { $ref: '#/components/schemas/ProcurementDate' }
+        reason: { type: string, maxLength: 1000, nullable: true, description: DLP-checked. }
+        currency: { type: string, minLength: 1, maxLength: 8, default: KES }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification', default: INTERNAL }
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 60
+          items: { $ref: '#/components/schemas/ProcurementReturnLineCreate' }
+    ProcurementMatchCreate:
+      type: object
+      additionalProperties: false
+      required: [orderId]
+      description: The server applies PROCUREMENT_MATCH_TOLERANCE_BPS; clients cannot supply a tolerance or tax rate.
+      properties:
+        orderId: { type: string, minLength: 1, maxLength: 80 }
+        receiptId: { type: string, minLength: 1, maxLength: 80, nullable: true }
+        financeInvoiceId: { type: string, nullable: true }
+        notes: { type: string, maxLength: 2000, nullable: true, description: DLP-checked. }
+        branchId: { type: string, nullable: true }
+        classification: { $ref: '#/components/schemas/Classification', default: INTERNAL }
 security:
   - bearerAuth: []

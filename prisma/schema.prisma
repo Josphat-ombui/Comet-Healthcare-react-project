@@ -516,6 +516,16 @@ model Company {
   stockTransferLines       StockTransferLine[]
   stockCounts              StockCount[]
   stockCountLines          StockCountLine[]
+  // Phase 9 procurement
+  purchaseRequisitions     PurchaseRequisition[]
+  purchaseRequisitionLines PurchaseRequisitionLine[]
+  purchaseOrders           PurchaseOrder[]
+  purchaseOrderLines       PurchaseOrderLine[]
+  goodsReceipts            GoodsReceipt[]
+  goodsReceiptLines        GoodsReceiptLine[]
+  supplierReturns          SupplierReturn[]
+  supplierReturnLines      SupplierReturnLine[]
+  threeWayMatches          ThreeWayMatch[]
 }
 
 model Branch {
@@ -567,6 +577,16 @@ model Branch {
   stockTransferLines       StockTransferLine[]
   stockCounts              StockCount[]
   stockCountLines          StockCountLine[]
+  // Phase 9 procurement
+  purchaseRequisitions     PurchaseRequisition[]
+  purchaseRequisitionLines PurchaseRequisitionLine[]
+  purchaseOrders           PurchaseOrder[]
+  purchaseOrderLines       PurchaseOrderLine[]
+  goodsReceipts            GoodsReceipt[]
+  goodsReceiptLines        GoodsReceiptLine[]
+  supplierReturns          SupplierReturn[]
+  supplierReturnLines      SupplierReturnLine[]
+  threeWayMatches          ThreeWayMatch[]
 
   @@unique([companyId, code])
   @@index([companyId, isActive])
@@ -715,6 +735,20 @@ model User {
   stockCountsCreated      StockCount[]              @relation("StockCountCreatedBy")
   stockCountsApproved     StockCount[]              @relation("StockCountApprovedBy")
   stockCountLinesCreated  StockCountLine[]          @relation("StockCountLineCreatedBy")
+  // Phase 9 procurement
+  purchaseRequisitionsCreated     PurchaseRequisition[]     @relation("PurchaseRequisitionCreatedBy")
+  purchaseRequisitionsApproved    PurchaseRequisition[]     @relation("PurchaseRequisitionApprovedBy")
+  purchaseRequisitionLinesCreated PurchaseRequisitionLine[] @relation("PurchaseRequisitionLineCreatedBy")
+  purchaseOrdersCreated           PurchaseOrder[]           @relation("PurchaseOrderCreatedBy")
+  purchaseOrdersApproved          PurchaseOrder[]           @relation("PurchaseOrderApprovedBy")
+  purchaseOrderLinesCreated       PurchaseOrderLine[]       @relation("PurchaseOrderLineCreatedBy")
+  goodsReceiptsCreated            GoodsReceipt[]            @relation("GoodsReceiptCreatedBy")
+  goodsReceiptLinesCreated        GoodsReceiptLine[]        @relation("GoodsReceiptLineCreatedBy")
+  supplierReturnsCreated          SupplierReturn[]          @relation("SupplierReturnCreatedBy")
+  supplierReturnsApproved         SupplierReturn[]          @relation("SupplierReturnApprovedBy")
+  supplierReturnLinesCreated      SupplierReturnLine[]      @relation("SupplierReturnLineCreatedBy")
+  threeWayMatchesCreated          ThreeWayMatch[]           @relation("ThreeWayMatchCreatedBy")
+  threeWayMatchesApproved         ThreeWayMatch[]           @relation("ThreeWayMatchApprovedBy")
 
   @@unique([companyId, email])
   @@unique([companyId, identityProvider, externalId])
@@ -1643,6 +1677,12 @@ model FinanceParty {
   salesOrders   SalesOrder[]
   deliveryNotes DeliveryNote[]
   salesReturns  SalesReturn[]
+  // Phase 9 procurement: suppliers are FinanceParty rows of type SUPPLIER.
+  purchaseRequisitions PurchaseRequisition[] @relation("PurchaseRequisitionSupplier")
+  purchaseOrders       PurchaseOrder[]       @relation("PurchaseOrderSupplier")
+  goodsReceipts        GoodsReceipt[]        @relation("GoodsReceiptSupplier")
+  supplierReturns      SupplierReturn[]      @relation("SupplierReturnSupplier")
+  threeWayMatches      ThreeWayMatch[]       @relation("ThreeWayMatchSupplier")
 
   @@index([companyId, type])
   @@index([companyId, name])
@@ -1767,6 +1807,10 @@ model FinanceInvoice {
   lines            FinanceInvoiceLine[]
   allocations      FinancePaymentAllocation[]
   etimsSubmissions EtimsSubmission[]
+  // Phase 9: scalar links only; no finance journal/payment is created by procurement.
+  purchaseOrders  PurchaseOrder[]  @relation("PurchaseOrderInvoice")
+  goodsReceipts   GoodsReceipt[]   @relation("GoodsReceiptInvoice")
+  threeWayMatches ThreeWayMatch[]  @relation("ThreeWayMatchInvoice")
 
   @@unique([companyId, number])
   @@index([companyId, direction, status])
@@ -2164,6 +2208,11 @@ model InventoryItem {
   movements       StockMovement[]
   transferLines   StockTransferLine[]
   countLines      StockCountLine[]
+  // Phase 9 procurement
+  purchaseRequisitionLines PurchaseRequisitionLine[] @relation("PurchaseRequisitionLineItem")
+  purchaseOrderLines       PurchaseOrderLine[]       @relation("PurchaseOrderLineItem")
+  goodsReceiptLines        GoodsReceiptLine[]        @relation("GoodsReceiptLineItem")
+  supplierReturnLines      SupplierReturnLine[]      @relation("SupplierReturnLineItem")
 
   @@unique([companyId, code])
   @@index([companyId, type, isActive])
@@ -2190,6 +2239,11 @@ model Warehouse {
   transfersFrom  StockTransfer[]    @relation("StockTransferSource")
   transfersTo    StockTransfer[]    @relation("StockTransferDestination")
   counts         StockCount[]
+  // Phase 9 procurement
+  purchaseRequisitionLines PurchaseRequisitionLine[] @relation("PurchaseRequisitionLineWarehouse")
+  purchaseOrderLines       PurchaseOrderLine[]       @relation("PurchaseOrderLineWarehouse")
+  goodsReceiptLines        GoodsReceiptLine[]        @relation("GoodsReceiptLineWarehouse")
+  supplierReturnLines      SupplierReturnLine[]      @relation("SupplierReturnLineWarehouse")
 
   @@unique([companyId, code])
   @@index([companyId, isActive])
@@ -2218,6 +2272,9 @@ model InventoryBatch {
   movements       StockMovement[]
   transferLines   StockTransferLine[]
   countLines      StockCountLine[]
+  // Phase 9 procurement
+  goodsReceiptLines   GoodsReceiptLine[]   @relation("GoodsReceiptLineBatch")
+  supplierReturnLines SupplierReturnLine[] @relation("SupplierReturnLineBatch")
 
   @@unique([companyId, itemId, batchNumber])
   @@index([companyId, status])
@@ -2400,4 +2457,356 @@ model StockCountLine {
 
   @@index([countId])
   @@index([companyId])
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9 procurement
+//
+// Header documents carry their own tenant/branch scope, document number, status
+// and integer-cent totals. Suppliers are existing FinanceParty rows of type
+// SUPPLIER; lines reference InventoryItem and an optional Warehouse. Orders and
+// receipts keep an optional scalar/relation link to a FinanceInvoice for
+// three-way matching. No finance posting or payment is performed here.
+// ---------------------------------------------------------------------------
+
+enum PurchaseRequisitionStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+  CONVERTED
+  CANCELLED
+}
+
+enum PurchaseOrderStatus {
+  DRAFT
+  APPROVED
+  SENT
+  PARTIALLY_RECEIVED
+  RECEIVED
+  CANCELLED
+}
+
+enum GoodsReceiptStatus {
+  DRAFT
+  RECEIVED
+  INSPECTED
+  REJECTED
+  CANCELLED
+}
+
+enum SupplierReturnStatus {
+  DRAFT
+  APPROVED
+  SENT
+  RECEIVED
+  CANCELLED
+}
+
+enum MatchStatus {
+  PENDING
+  MATCHED
+  DISCREPANCY
+  APPROVED
+}
+
+model PurchaseRequisition {
+  id             String                     @id @default(cuid())
+  companyId      String                     @default("cmp_comet")
+  tenant         Company                    @relation(fields: [companyId], references: [id])
+  branchId       String?
+  branch         Branch?                    @relation(fields: [branchId], references: [id])
+  number         String
+  status         PurchaseRequisitionStatus  @default(DRAFT)
+  requisitionDate String
+  requiredDate   String?
+  supplierId     String?
+  supplier       FinanceParty?              @relation("PurchaseRequisitionSupplier", fields: [supplierId], references: [id])
+  currency       String                     @default("KES")
+  totalCents     Int                        @default(0)
+  notes          String?
+  classification DataClassification         @default(INTERNAL)
+  submittedAt    DateTime?
+  approvedAt     DateTime?
+  approvedById   String?
+  approvedBy     User?                      @relation("PurchaseRequisitionApprovedBy", fields: [approvedById], references: [id])
+  createdById    String?
+  createdBy      User?                      @relation("PurchaseRequisitionCreatedBy", fields: [createdById], references: [id])
+  createdAt      DateTime                   @default(now())
+  updatedAt      DateTime                   @updatedAt
+
+  lines          PurchaseRequisitionLine[]
+  purchaseOrders PurchaseOrder[]
+
+  @@unique([companyId, number])
+  @@index([companyId, status, requisitionDate])
+  @@index([companyId, supplierId])
+}
+
+model PurchaseRequisitionLine {
+  id             String              @id @default(cuid())
+  companyId      String              @default("cmp_comet")
+  tenant         Company             @relation(fields: [companyId], references: [id])
+  branchId       String?
+  branch         Branch?             @relation(fields: [branchId], references: [id])
+  requisitionId  String
+  requisition    PurchaseRequisition @relation(fields: [requisitionId], references: [id])
+  itemId         String
+  item           InventoryItem       @relation("PurchaseRequisitionLineItem", fields: [itemId], references: [id])
+  warehouseId    String?
+  warehouse      Warehouse?          @relation("PurchaseRequisitionLineWarehouse", fields: [warehouseId], references: [id])
+  description    String
+  qty            Float
+  unitCostCents  Int
+  totalCents     Int                 @default(0)
+  position       Int                 @default(0)
+  classification DataClassification  @default(INTERNAL)
+  createdById    String?
+  createdBy      User?               @relation("PurchaseRequisitionLineCreatedBy", fields: [createdById], references: [id])
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  @@index([requisitionId])
+  @@index([companyId, itemId])
+}
+
+model PurchaseOrder {
+  id               String              @id @default(cuid())
+  companyId        String              @default("cmp_comet")
+  tenant           Company             @relation(fields: [companyId], references: [id])
+  branchId         String?
+  branch           Branch?             @relation(fields: [branchId], references: [id])
+  number           String
+  status           PurchaseOrderStatus @default(DRAFT)
+  requisitionId    String?
+  requisition      PurchaseRequisition? @relation(fields: [requisitionId], references: [id])
+  supplierId       String
+  supplier         FinanceParty        @relation("PurchaseOrderSupplier", fields: [supplierId], references: [id])
+  orderDate        String
+  expectedDate     String?
+  currency         String              @default("KES")
+  totalCents       Int                 @default(0)
+  notes            String?
+  classification   DataClassification  @default(INTERNAL)
+  approvedAt       DateTime?
+  approvedById     String?
+  approvedBy       User?               @relation("PurchaseOrderApprovedBy", fields: [approvedById], references: [id])
+  sentAt           DateTime?
+  // Plain link to finance; procurement never creates a journal or payment.
+  financeInvoiceId String?
+  financeInvoice   FinanceInvoice?     @relation("PurchaseOrderInvoice", fields: [financeInvoiceId], references: [id])
+  createdById      String?
+  createdBy        User?               @relation("PurchaseOrderCreatedBy", fields: [createdById], references: [id])
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  lines           PurchaseOrderLine[]
+  goodsReceipts   GoodsReceipt[]
+  threeWayMatches ThreeWayMatch[]
+
+  @@unique([companyId, number])
+  @@index([companyId, status, orderDate])
+  @@index([companyId, supplierId])
+}
+
+model PurchaseOrderLine {
+  id             String              @id @default(cuid())
+  companyId      String              @default("cmp_comet")
+  tenant         Company             @relation(fields: [companyId], references: [id])
+  branchId       String?
+  branch         Branch?             @relation(fields: [branchId], references: [id])
+  orderId        String
+  order          PurchaseOrder       @relation(fields: [orderId], references: [id])
+  itemId         String
+  item           InventoryItem       @relation("PurchaseOrderLineItem", fields: [itemId], references: [id])
+  warehouseId    String?
+  warehouse      Warehouse?          @relation("PurchaseOrderLineWarehouse", fields: [warehouseId], references: [id])
+  description    String
+  qty            Float
+  receivedQty    Float               @default(0)
+  unitCostCents  Int
+  totalCents     Int                 @default(0)
+  position       Int                 @default(0)
+  classification DataClassification  @default(INTERNAL)
+  createdById    String?
+  createdBy      User?               @relation("PurchaseOrderLineCreatedBy", fields: [createdById], references: [id])
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  receiptLines GoodsReceiptLine[]
+
+  @@index([orderId])
+  @@index([companyId, itemId])
+}
+
+model GoodsReceipt {
+  id               String             @id @default(cuid())
+  companyId        String             @default("cmp_comet")
+  tenant           Company            @relation(fields: [companyId], references: [id])
+  branchId         String?
+  branch           Branch?            @relation(fields: [branchId], references: [id])
+  number           String
+  status           GoodsReceiptStatus @default(DRAFT)
+  orderId          String
+  order            PurchaseOrder      @relation(fields: [orderId], references: [id])
+  supplierId       String
+  supplier         FinanceParty       @relation("GoodsReceiptSupplier", fields: [supplierId], references: [id])
+  receiptDate      String
+  currency         String             @default("KES")
+  totalCents       Int                @default(0)
+  notes            String?
+  classification   DataClassification @default(INTERNAL)
+  receivedAt       DateTime?
+  inspectedAt      DateTime?
+  financeInvoiceId String?
+  financeInvoice   FinanceInvoice?    @relation("GoodsReceiptInvoice", fields: [financeInvoiceId], references: [id])
+  createdById      String?
+  createdBy        User?              @relation("GoodsReceiptCreatedBy", fields: [createdById], references: [id])
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  lines           GoodsReceiptLine[]
+  threeWayMatches ThreeWayMatch[]
+  supplierReturns SupplierReturn[]
+
+  @@unique([companyId, number])
+  @@index([companyId, status, receiptDate])
+  @@index([companyId, orderId])
+}
+
+model GoodsReceiptLine {
+  id             String             @id @default(cuid())
+  companyId      String             @default("cmp_comet")
+  tenant         Company            @relation(fields: [companyId], references: [id])
+  branchId       String?
+  branch         Branch?            @relation(fields: [branchId], references: [id])
+  receiptId      String
+  receipt        GoodsReceipt       @relation(fields: [receiptId], references: [id])
+  orderLineId    String
+  orderLine      PurchaseOrderLine  @relation(fields: [orderLineId], references: [id])
+  itemId         String
+  item           InventoryItem      @relation("GoodsReceiptLineItem", fields: [itemId], references: [id])
+  warehouseId    String?
+  warehouse      Warehouse?         @relation("GoodsReceiptLineWarehouse", fields: [warehouseId], references: [id])
+  batchId        String?
+  batch          InventoryBatch?    @relation("GoodsReceiptLineBatch", fields: [batchId], references: [id])
+  description    String
+  qty            Float
+  unitCostCents  Int
+  totalCents     Int                @default(0)
+  position       Int                @default(0)
+  classification DataClassification @default(INTERNAL)
+  createdById    String?
+  createdBy      User?              @relation("GoodsReceiptLineCreatedBy", fields: [createdById], references: [id])
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  returnLines SupplierReturnLine[]
+
+  @@index([receiptId])
+  @@index([companyId, itemId])
+}
+
+model SupplierReturn {
+  id             String              @id @default(cuid())
+  companyId      String              @default("cmp_comet")
+  tenant         Company             @relation(fields: [companyId], references: [id])
+  branchId       String?
+  branch         Branch?             @relation(fields: [branchId], references: [id])
+  number         String
+  status         SupplierReturnStatus @default(DRAFT)
+  orderId        String
+  supplierId     String
+  supplier       FinanceParty        @relation("SupplierReturnSupplier", fields: [supplierId], references: [id])
+  receiptId      String?
+  receipt        GoodsReceipt?       @relation(fields: [receiptId], references: [id])
+  returnDate     String
+  reason         String?
+  currency       String              @default("KES")
+  totalCents     Int                 @default(0)
+  classification DataClassification  @default(INTERNAL)
+  approvedAt     DateTime?
+  approvedById   String?
+  approvedBy     User?               @relation("SupplierReturnApprovedBy", fields: [approvedById], references: [id])
+  sentAt         DateTime?
+  receivedAt     DateTime?
+  createdById    String?
+  createdBy      User?               @relation("SupplierReturnCreatedBy", fields: [createdById], references: [id])
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  lines SupplierReturnLine[]
+
+  @@unique([companyId, number])
+  @@index([companyId, status, returnDate])
+  @@index([companyId, supplierId])
+}
+
+model SupplierReturnLine {
+  id             String              @id @default(cuid())
+  companyId      String              @default("cmp_comet")
+  tenant         Company             @relation(fields: [companyId], references: [id])
+  branchId       String?
+  branch         Branch?             @relation(fields: [branchId], references: [id])
+  returnId       String
+  return         SupplierReturn      @relation(fields: [returnId], references: [id])
+  receiptLineId  String?
+  receiptLine    GoodsReceiptLine?   @relation(fields: [receiptLineId], references: [id])
+  itemId         String
+  item           InventoryItem       @relation("SupplierReturnLineItem", fields: [itemId], references: [id])
+  warehouseId    String?
+  warehouse      Warehouse?          @relation("SupplierReturnLineWarehouse", fields: [warehouseId], references: [id])
+  batchId        String?
+  batch          InventoryBatch?     @relation("SupplierReturnLineBatch", fields: [batchId], references: [id])
+  description    String
+  qty            Float
+  unitCostCents  Int
+  totalCents     Int                 @default(0)
+  position       Int                 @default(0)
+  classification DataClassification  @default(INTERNAL)
+  createdById    String?
+  createdBy      User?               @relation("SupplierReturnLineCreatedBy", fields: [createdById], references: [id])
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  @@index([returnId])
+  @@index([companyId, itemId])
+}
+
+model ThreeWayMatch {
+  id                 String             @id @default(cuid())
+  companyId          String             @default("cmp_comet")
+  tenant             Company            @relation(fields: [companyId], references: [id])
+  branchId           String?
+  branch             Branch?            @relation(fields: [branchId], references: [id])
+  number             String
+  status             MatchStatus        @default(PENDING)
+  orderId            String
+  order              PurchaseOrder      @relation(fields: [orderId], references: [id])
+  receiptId          String?
+  receipt            GoodsReceipt?      @relation(fields: [receiptId], references: [id])
+  supplierId         String
+  supplier           FinanceParty       @relation("ThreeWayMatchSupplier", fields: [supplierId], references: [id])
+  financeInvoiceId   String?
+  financeInvoice     FinanceInvoice?    @relation("ThreeWayMatchInvoice", fields: [financeInvoiceId], references: [id])
+  poTotalCents       Int                @default(0)
+  receiptTotalCents  Int                @default(0)
+  invoiceTotalCents  Int?
+  priceVarianceCents Int                @default(0)
+  invoiceVarianceCents Int?
+  quantityVarianceQty Float             @default(0)
+  toleranceBps       Int                @default(0)
+  notes              String?
+  classification     DataClassification @default(INTERNAL)
+  approvedAt         DateTime?
+  approvedById       String?
+  approvedBy         User?              @relation("ThreeWayMatchApprovedBy", fields: [approvedById], references: [id])
+  createdById        String?
+  createdBy          User?              @relation("ThreeWayMatchCreatedBy", fields: [createdById], references: [id])
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  @@unique([companyId, number])
+  @@index([companyId, status])
+  @@index([companyId, orderId])
 }

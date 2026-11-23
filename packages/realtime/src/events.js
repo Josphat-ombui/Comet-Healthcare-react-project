@@ -43,6 +43,16 @@ const INVENTORY_EVENT_TYPES = new Set([
   'ReorderLevelBreached',
 ])
 
+// Phase 9 procurement events are ID/classification-only company-wide signals —
+// never user, thread, inbox or branch rooms. ERP clients refetch all values.
+const PROCUREMENT_EVENT_TYPES = new Set([
+  'PurchaseRequisitionApproved',
+  'PurchaseOrderApproved',
+  'GoodsReceiptReceived',
+  'SupplierReturnApproved',
+  'ThreeWayMatchFlagged',
+])
+
 function eventRooms(event) {
   const prefix = `company:${event.companyId}`
   const data = event.data || {}
@@ -104,6 +114,9 @@ function eventRooms(event) {
 
   // ------------------------------------------------------ phase 8 inventory
   if (INVENTORY_EVENT_TYPES.has(event.type)) return unique([prefix])
+
+  // ---------------------------------------------------- phase 9 procurement
+  if (PROCUREMENT_EVENT_TYPES.has(event.type)) return unique([prefix])
   return []
 }
 
@@ -143,6 +156,11 @@ function socketEventFor(type) {
     StockTransferApproved: 'inventory:transfer',
     StockCountApproved: 'inventory:count',
     ReorderLevelBreached: 'inventory:alert',
+    PurchaseRequisitionApproved: 'procurement:requisition',
+    PurchaseOrderApproved: 'procurement:order',
+    GoodsReceiptReceived: 'procurement:receipt',
+    SupplierReturnApproved: 'procurement:return',
+    ThreeWayMatchFlagged: 'procurement:match',
   }[type] || null
 }
 
